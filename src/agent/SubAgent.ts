@@ -6,8 +6,9 @@
 
 import { generateText } from 'ai'
 import type { LanguageModel } from 'ai'
-import type { NexusEvent, SubAgentResult, SubAgentTask } from './types'
+import type { NexusEvent, PermissionMode, SubAgentResult, SubAgentTask } from './types'
 import type { ToolRegistry, ToolContext } from '../tools/registry'
+import { requiresForcedApproval } from '../sandbox/CommandGuard'
 
 export interface SubAgentConfig {
   model: LanguageModel
@@ -15,6 +16,10 @@ export interface SubAgentConfig {
   toolContext: ToolContext
   maxIterations: number
   onEvent: (event: NexusEvent) => void
+  /** 权限模式（与 Executor 一致） */
+  permissionMode: PermissionMode
+  /** 审批回调 */
+  requestApproval: (tool: string, params: Record<string, unknown>, diff?: string) => Promise<boolean>
 }
 
 export class SubAgent {
@@ -78,6 +83,16 @@ export class SubAgent {
           const callId = `sub-${task.id}-${iterations}-${toolCall.toolName}`
           const args = toolCall.args as Record<string, unknown>
 
+          // 权限检查（与 Executor 一致的逻辑）
+          const approved = await this.checkPermission(toolCall.toolName, args)
+          if (!approved) {
+            messages.push({
+              role: 'user',
+              content: `[工具被拒绝 ${toolCall.toolName}]: 用户拒绝了此操作`,
+            } as never)
+            continue
+          }
+
           const toolResult = await toolRegistry.execute(toolCall.toolName, args, {
             ...toolContext,
             callId,
@@ -116,6 +131,31 @@ export class SubAgent {
       }
     }
   }
+
+  /** 权限检查（与 Executor 逻辑一致） */
+  private async checkPermission(toolName: string, args: Record<string, unknown>): Promise<boolean> {
+    const { toolRegistry, permissionMode, requestApproval } = this.config
+    const handler = toolRegistry.get(toolName)
+    // 只读工具无需审批
+    if (!handler?.definition.requiresApproval) return true
+
+    // bash 危险命令始终强制审批
+    if (toolName === 'bash' && typeof args.command === 'string' && requiresForcedApproval(args.command)) {
+      return requestApproval(toolName, args)
+    }
+
+    switch (permissionMode) {
+      case 'yolo':
+        return true
+      case 'auto-all':
+        return true
+      case 'auto-edit':
+        return toolName === 'edit_file' ? true : requestApproval(toolName, args)
+      case 'ask':
+      default:
+        return requestApproval(toolName, args)
+    }
+  }
 }
 
 /** dispatch_subagent 工具的定义(暴露给主 Agent 的 LLM) */
@@ -142,6 +182,6 @@ export const dispatchSubagentToolDefinition = {
     },
     required: ['description'],
   },
-  requiresApproval: false,
+  requiresApproval: true,
   phase: 'execute' as const,
 }

@@ -3,6 +3,8 @@
  * 版本化 schema 变更,确保向前兼容
  */
 
+import type { Database } from 'bun:sqlite'
+
 export interface Migration {
   version: number
   name: string
@@ -82,9 +84,9 @@ export const migrations: Migration[] = [
 ]
 
 /** 获取当前 schema 版本 */
-export function getCurrentVersion(db: { prepare: (sql: string) => { get: () => { version: number } | undefined; run: () => void } }): number {
+export function getCurrentVersion(db: Database): number {
   try {
-    const row = db.prepare('SELECT MAX(version) as version FROM _migrations').get()
+    const row = db.prepare('SELECT MAX(version) as version FROM _migrations').get() as { version: number } | undefined
     return row?.version ?? 0
   } catch {
     return 0
@@ -92,7 +94,7 @@ export function getCurrentVersion(db: { prepare: (sql: string) => { get: () => {
 }
 
 /** 运行待执行的迁移 */
-export function runMigrations(db: { prepare: (sql: string) => { run: (...args: unknown[]) => void }; exec: (sql: string) => void }): void {
+export function runMigrations(db: Database): void {
   // 创建迁移记录表
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (
@@ -102,7 +104,7 @@ export function runMigrations(db: { prepare: (sql: string) => { run: (...args: u
     )
   `)
 
-  const currentVersion = getCurrentVersion(db as never)
+  const currentVersion = getCurrentVersion(db)
 
   for (const migration of migrations) {
     if (migration.version > currentVersion) {

@@ -1,6 +1,6 @@
 /**
  * 斜杠命令注册与处理
- * /model /cost /clear /undo /history /help
+ * /model /cost /clear /undo /compact /resume /help
  */
 
 export interface SlashCommand {
@@ -13,10 +13,24 @@ export interface SlashCommand {
 export interface CommandContext {
   getModel: () => string
   setModel: (model: string) => void
-  getCost: () => { total: number; inputTokens: number; outputTokens: number }
+  /** 重新初始化 providers 并切换到指定模型（用于添加新模型后的保存与切换） */
+  reinitAndSelectModel: (model: string) => Promise<void>
+  /** 仅重新初始化 providers（用于删除自定义模型后回退 auto 选择） */
+  reinitProviders: () => Promise<void>
+  getAvailableModels: () => Array<{ name: string; provider: string; current: boolean }>
+  getAllKnownModels: () => Array<{ name: string; provider: string; configured: boolean; current: boolean }>
+  isProviderConfigured: (providerName: string) => boolean
+  getCost: () => { total: number; inputTokens: number; outputTokens: number; byModel?: Record<string, { cost: number; inputTokens: number; outputTokens: number }> }
   clearContext: () => void
   undo: () => Promise<string>
+  compact: () => Promise<{ tokensUsed: number } | string>
   getHistory: () => string[]
+  /** 设置是否跳过 Plan 阶段（运行时切换 plan/auto 模式） */
+  setSkipPlan: (skip: boolean) => void
+  /** 获取当前是否跳过 Plan 阶段 */
+  getSkipPlan: () => boolean
+  /** 将当前模型持久化到 secrets（下次启动时恢复） */
+  saveLastModel: (model: string) => Promise<void>
 }
 
 const commands: SlashCommand[] = [
@@ -26,42 +40,92 @@ const commands: SlashCommand[] = [
     description: '查看或切换当前模型',
     handler: async (args, ctx) => {
       if (!args.trim()) {
-        return `当前模型: ${ctx.getModel()}`
+        const current = ctx.getModel()
+        // 无参数 /model 由 TUI 层拦截打开交互式选择器；此文本作为非交互兜底提示
+        return `当前模型: ${current}\n\n(交互模式下输入 /model 打开选择器；使用 /model <名称> 直接切换，或 /config 打开配置面板)`
       }
-      ctx.setModel(args.trim())
-      return `已切换模型为: ${args.trim()}`
+
+      const modelName = args.trim()
+      const allModels = ctx.getAllKnownModels()
+      const modelInfo = allModels.find((m) => m.name === modelName)
+
+      if (!modelInfo) {
+        const known = allModels.map((m) => m.name).join(', ')
+        return `未知模型: ${modelName}\n已知模型: ${known}`
+      }
+
+      if (!ctx.isProviderConfigured(modelInfo.provider)) {
+        const envVar = modelInfo.provider.toUpperCase() + '_API_KEY'
+        return `模型 ${modelName} 需要 ${envVar}，请先通过 /config 或环境变量配置`
+      }
+
+      ctx.setModel(modelName)
+      await ctx.saveLastModel(modelName)
+      return `已切换到模型: ${modelName}`
+    },
+  },
+  {
+    name: 'config',
+    aliases: ['api'],
+    description: '打开交互式 API 配置面板（↑↓ 选择 Provider，输入 Key/URL/Model）',
+    handler: async () => {
+      // 由 TUI 层（App.tsx）拦截并打开配置面板；此 handler 仅作非交互兜底
+      return '交互模式下输入 /config 打开配置面板，按 ↑↓ 选择 Provider 并配置 API Key'
     },
   },
   {
     name: 'cost',
-    aliases: ['c'],
-    description: '查看本次会话花费',
+    aliases: [],
+    description: '查看本次会话花费（含按模型分类明细）',
     handler: async (_args, ctx) => {
       const cost = ctx.getCost()
-      return `本次会话: $${cost.total.toFixed(4)} (${cost.inputTokens} input / ${cost.outputTokens} output tokens)`
+      const lines: string[] = [
+        `本次会话: $${cost.total.toFixed(4)}`,
+        `  输入 tokens: ${cost.inputTokens}`,
+        `  输出 tokens: ${cost.outputTokens}`,
+      ]
+      if (cost.byModel && Object.keys(cost.byModel).length > 0) {
+        lines.push('\n按模型分类:')
+        for (const [model, info] of Object.entries(cost.byModel)) {
+          lines.push(`  ${model}: $${info.cost.toFixed(4)} (${info.inputTokens} in / ${info.outputTokens} out)`)
+        }
+      }
+      return lines.join('\n')
     },
   },
   {
     name: 'clear',
     aliases: ['cls'],
-    description: '清除当前上下文',
+    description: '清除当前对话上下文',
     handler: async (_args, ctx) => {
       ctx.clearContext()
-      return '上下文已清除'
+      return '对话上下文已清除'
+    },
+  },
+  {
+    name: 'compact',
+    aliases: [],
+    description: '触发上下文压缩，减少 token 使用',
+    handler: async (_args, ctx) => {
+      const result = await ctx.compact()
+      if (typeof result === 'string') {
+        return result
+      }
+      return `上下文已压缩，当前 token 使用: ~${Math.round(result.tokensUsed / 1000)}k`
     },
   },
   {
     name: 'undo',
     aliases: ['u'],
-    description: '回滚到上一个检查点',
+    description: '回滚到上一个 Git 检查点',
     handler: async (_args, ctx) => {
       return await ctx.undo()
     },
   },
   {
-    name: 'history',
-    aliases: ['h'],
-    description: '查看会话历史',
+    name: 'resume',
+    aliases: ['r'],
+    description: '恢复上次会话的历史记录',
     handler: async (_args, ctx) => {
       const history = ctx.getHistory()
       if (history.length === 0) return '暂无历史记录'
@@ -69,12 +133,33 @@ const commands: SlashCommand[] = [
     },
   },
   {
+    name: 'plan',
+    aliases: [],
+    description: '切换到 Plan 模式（规划→审批→执行）',
+    handler: async (_args, ctx) => {
+      ctx.setSkipPlan(false)
+      return '已切换到 Plan 模式（规划→审批→执行）'
+    },
+  },
+  {
+    name: 'auto',
+    aliases: [],
+    description: '切换到 Auto 模式（跳过规划，直接执行）',
+    handler: async (_args, ctx) => {
+      ctx.setSkipPlan(true)
+      return '已切换到 Auto 模式（跳过规划，直接执行）'
+    },
+  },
+  {
     name: 'help',
     aliases: ['?'],
-    description: '显示可用命令',
+    description: '显示可用命令及其说明',
     handler: async () => {
       return commands
-        .map((cmd) => `/${cmd.name} (${cmd.aliases.join(', ')}) - ${cmd.description}`)
+        .map((cmd) => {
+          const aliasStr = cmd.aliases.length > 0 ? ` (别名: ${cmd.aliases.join(', ')})` : ''
+          return `/${cmd.name}${aliasStr} — ${cmd.description}`
+        })
         .join('\n')
     },
   },
@@ -84,23 +169,56 @@ export function isSlashCommand(input: string): boolean {
   return input.startsWith('/')
 }
 
+/**
+ * 根据用户输入的前缀查找匹配的命令
+ * 匹配策略（优先级从高到低）：
+ *  1. 精确匹配命令名或别名
+ *  2. 前缀匹配命令名（不含别名）
+ */
+function findMatchingCommands(name: string): SlashCommand[] {
+  // 精确匹配命令名
+  const exactName = commands.find((c) => c.name === name)
+  if (exactName) return [exactName]
+
+  // 精确匹配别名
+  const exactAlias = commands.find((c) => c.aliases.includes(name))
+  if (exactAlias) return [exactAlias]
+
+  // 前缀匹配命令名（不匹配别名，避免 /m 误匹配所有命令）
+  return commands.filter((c) => c.name.startsWith(name))
+}
+
 export async function handleSlashCommand(input: string, ctx: CommandContext): Promise<string | null> {
   const trimmed = input.slice(1) // 去掉 /
   const [name, ...rest] = trimmed.split(' ')
   const args = rest.join(' ')
 
-  const cmd = commands.find(
-    (c) => c.name === name || c.aliases.includes(name)
-  )
+  const matches = findMatchingCommands(name)
 
-  if (!cmd) {
+  if (matches.length === 0) {
     return `未知命令: /${name}。输入 /help 查看可用命令。`
   }
 
-  const result = await cmd.handler(args, ctx)
+  // 多个匹配时提示用户更精确
+  if (matches.length > 1) {
+    const suggestions = matches.map((c) => `/${c.name}`).join(', ')
+    return `命令模糊，请更精确输入。匹配项: ${suggestions}`
+  }
+
+  const result = await matches[0].handler(args, ctx)
   return result ?? null
 }
 
 export function getAvailableCommands(): SlashCommand[] {
   return commands
+}
+
+/**
+ * 获取以指定前缀开头的命令名列表（用于自动补全）
+ */
+export function getCommandCompletions(prefix: string): string[] {
+  const p = prefix.startsWith('/') ? prefix.slice(1) : prefix
+  return commands
+    .filter((c) => c.name.startsWith(p))
+    .map((c) => `/${c.name}`)
 }

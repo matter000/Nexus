@@ -3,7 +3,7 @@
  * 每次调用记录 token 数和估算成本,会话结束显示总花费
  */
 
-import type { CostRecord, ModelRole, ProviderName } from '../agent/types'
+import type { CostRecord, ModelRole } from '../agent/types'
 
 export class CostTracker {
   private records: CostRecord[] = []
@@ -14,7 +14,7 @@ export class CostTracker {
   /** 记录一次 LLM 调用 */
   record(params: {
     role: ModelRole
-    provider: ProviderName
+    provider: string
     model: string
     inputTokens: number
     outputTokens: number

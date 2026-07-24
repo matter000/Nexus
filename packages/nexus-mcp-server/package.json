@@ -1,7 +1,7 @@
 {
   "name": "@nexus/mcp-server",
   "version": "0.1.0",
-  "description": "Nexus MCP Server - 可独立发布的 MCP Server 包,让外部 IDE 挂载 Nexus 工具",
+  "description": "Nexus MCP Server — 让 Cursor/VSCode/Claude Desktop 通过 MCP 协议调用 Nexus 工具（read_file, edit_file, bash, grep）",
   "type": "module",
   "main": "src/index.ts",
   "bin": {
@@ -11,7 +11,18 @@
     "start": "bun run src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun"
   },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "coding-agent",
+    "nexus",
+    "cli-tools",
+    "ai",
+    "code-editing"
+  ],
+  "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0"
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.0"
   }
 }

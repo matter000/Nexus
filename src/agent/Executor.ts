@@ -3,12 +3,16 @@
  * ReAct Loop 核心:逐步执行计划,每步可回滚
  */
 
-import { generateText } from 'ai'
+import { streamText, generateText } from 'ai'
 import type { LanguageModel } from 'ai'
-import type { ChatMessage, NexusEvent, PermissionMode, Plan, Todo } from './types'
+import type { ChatMessage, NexusEvent, PermissionMode, Plan, Todo, ModelRole } from './types'
 import type { ToolRegistry, ToolContext } from '../tools/registry'
+import { toolSchemas } from '../tools/schemas'
 import { requiresForcedApproval } from '../sandbox/CommandGuard'
 import type { CheckpointManager } from '../sandbox/Checkpoint'
+import type { CostTracker } from '../router/CostTracker'
+import { setTodoStore } from '../tools/todo'
+import { callWithRetry } from '../utils'
 
 const EXECUTE_SYSTEM_SUFFIX = `
 ## 当前阶段: Execute (执行)
@@ -22,8 +26,12 @@ const EXECUTE_SYSTEM_SUFFIX = `
 ## 重要规则
 - edit_file 的 old_string 必须包含足够上下文确保唯一匹配
 - 如果 edit 失败(未找到/不唯一),先 read_file 获取最新内容再重试
-- 每完成一个 todo 项,说明完成情况
-- 遇到无法解决的问题,诚实说明而不是强行修改`
+- 每完成一个步骤,必须调用 update_todo(action="complete", id="...") 标记该步骤完成
+- 遇到无法解决的问题,诚实说明而不是强行修改
+
+## Auto 模式（无预设 todo 时）
+- 如无预设 todo,请先用 update_todo(action="add", content="...") 拆解任务为 2-5 个步骤,再逐步执行
+- 每完成一个步骤后调用 update_todo(action="complete") 标记完成`
 
 export interface ExecutorConfig {
   model: LanguageModel
@@ -35,12 +43,64 @@ export interface ExecutorConfig {
   onEvent: (event: NexusEvent) => void
   /** 审批回调:返回 true=批准, false=拒绝 */
   requestApproval: (tool: string, params: Record<string, unknown>, diff?: string) => Promise<boolean>
+  /** 成本追踪器 */
+  costTracker: CostTracker
+  /** 当前模型角色（用于成本记录） */
+  modelRole: ModelRole
+  /** 当前 provider 名称（用于成本记录，内置为 ProviderName，自定义为任意键名） */
+  providerName: string
+  /** 当前模型名称（用于成本记录） */
+  modelName: string
+  /** 输入 token 单价（每 1k） */
+  costPer1kInput: number
+  /** 输出 token 单价（每 1k） */
+  costPer1kOutput: number
+  /** 会话成本上限 */
+  maxSessionCost: number
+  /** 获取降级模型（主模型全部重试失败后使用） */
+  getFallbackModel?: () => LanguageModel | null
+  /** 降级模型名称（用于事件通知） */
+  fallbackModelName?: string
+  /** 中断信号（Orchestrator.abort() 时触发） */
+  abortSignal?: AbortSignal
+}
+
+/**
+ * 简单的 Promise 信号量，限制并发数
+ */
+class Semaphore {
+  private queue: Array<() => void> = []
+  private active = 0
+  constructor(private readonly limit: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.active < this.limit) {
+      this.active++
+      return
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(() => {
+        this.active++
+        resolve()
+      })
+    })
+  }
+
+  release(): void {
+    this.active--
+    const next = this.queue.shift()
+    if (next) next()
+  }
 }
 
 export class Executor {
   private config: ExecutorConfig
   private todos: Todo[] = []
   private iterations = 0
+  /** bash 并发信号量，上限 3 */
+  private bashSemaphore = new Semaphore(3)
+  /** 必须串行执行的工具 */
+  private static readonly SERIAL_TOOLS = new Set(['edit_file', 'update_todo'])
 
   constructor(config: ExecutorConfig) {
     this.config = config
@@ -55,6 +115,7 @@ export class Executor {
 
     onEvent({ type: 'llm_start', phase: 'execute' })
     onEvent({ type: 'todo_update', todos: this.todos })
+    setTodoStore(this.todos)
 
     // Execute 阶段用全部工具
     const execTools = toolRegistry.getForPhase('execute')
@@ -62,7 +123,7 @@ export class Executor {
     for (const tool of execTools) {
       toolsForAI[tool.definition.name] = {
         description: tool.definition.description,
-        parameters: tool.definition.inputSchema as unknown,
+        parameters: toolSchemas[tool.definition.name] ?? tool.definition.inputSchema,
       }
     }
 
@@ -75,81 +136,135 @@ export class Executor {
     ]
 
     let finalText = ''
+    let executionError = false
 
     // ReAct Loop
     while (this.iterations < maxIterations) {
+      // 检查中断信号
+      if (this.config.abortSignal?.aborted) {
+        finalText = '执行已被中断。'
+        executionError = true
+        break
+      }
       this.iterations++
 
-      const result = await generateText({
-        model,
-        system: EXECUTE_SYSTEM_SUFFIX,
-        messages,
-        tools: toolsForAI,
-        maxSteps: 1,
-      })
+      // 使用 callWithRetry 包装整个流式消费过程，支持重试 + 降级
+      const callStream = (m: LanguageModel) =>
+        callWithRetry(async () => {
+          const result = streamText({
+            model: m,
+            system: EXECUTE_SYSTEM_SUFFIX,
+            messages,
+            tools: toolsForAI,
+            maxSteps: 1,
+            abortSignal: this.config.abortSignal,
+          })
 
-      // 无工具调用 → 执行完成
-      if (!result.toolCalls || result.toolCalls.length === 0) {
-        finalText = result.text
-        onEvent({ type: 'llm_chunk', text: finalText })
+          // 流式消费文本
+          let streamedText = ''
+          for await (const chunk of result.textStream) {
+            streamedText += chunk
+            onEvent({ type: 'llm_chunk', text: chunk })
+          }
+
+          // 流式结束后获取完整结果（含 toolCalls、usage）
+          const finalResult = await result
+          const usage = await finalResult.usage
+          const toolCalls = await finalResult.toolCalls
+          return { streamedText, usage, toolCalls }
+        }, {
+          onRetry: ({ attempt, delay, error }) => {
+            onEvent({
+              type: 'error',
+              message: `流式请求重试 #${attempt}（${delay}ms 后）: ${error.message}`,
+              recoverable: true,
+            })
+          },
+        })
+
+      let streamResult: { streamedText: string; usage: unknown; toolCalls: unknown[] }
+      try {
+        streamResult = await callStream(model)
+      } catch (primaryError) {
+        // 主模型 3 次重试全部失败，尝试降级到备用模型
+        const fallbackModel = this.config.getFallbackModel?.() ?? null
+        if (fallbackModel) {
+          onEvent({
+            type: 'error',
+            message: `主模型不可用 (${(primaryError as Error).message})，降级到备用模型 ${this.config.fallbackModelName ?? 'unknown'}`,
+            recoverable: true,
+          })
+          try {
+            streamResult = await callStream(fallbackModel)
+          } catch (fallbackError) {
+            finalText = `LLM 调用失败：主模型和备用模型均不可用。\n主模型错误: ${(primaryError as Error).message}\n备用模型错误: ${(fallbackError as Error).message}`
+            onEvent({ type: 'error', message: '所有模型均不可用', recoverable: false })
+            break
+          }
+        } else {
+          finalText = `LLM 调用失败且无可用降级模型: ${(primaryError as Error).message}`
+          onEvent({ type: 'error', message: 'LLM 调用失败', recoverable: false })
+          executionError = true
+          break
+        }
+      }
+
+      const { streamedText, usage, toolCalls } = streamResult as {
+        streamedText: string
+        usage: { promptTokens: number; completionTokens: number } | undefined
+        toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>
+      }
+
+      // 记录 token 用量到 CostTracker
+      if (usage) {
+        this.config.costTracker.record({
+          role: this.config.modelRole,
+          provider: this.config.providerName,
+          model: this.config.modelName,
+          inputTokens: usage.promptTokens,
+          outputTokens: usage.completionTokens,
+          costPer1kInput: this.config.costPer1kInput,
+          costPer1kOutput: this.config.costPer1kOutput,
+        })
+        onEvent({
+          type: 'cost_update',
+          inputTokens: usage.promptTokens,
+          outputTokens: usage.completionTokens,
+          cost: this.config.costTracker.getTotalCost(),
+        })
+      }
+
+      // 检查成本上限
+      if (this.config.costTracker.isOverBudget(this.config.maxSessionCost)) {
+        finalText = `会话成本已超过上限 ($${this.config.maxSessionCost})。当前花费: ${this.config.costTracker.getSummary()}`
+        onEvent({ type: 'error', message: '成本超限', recoverable: false })
+        executionError = true
         break
       }
 
-      // 有工具调用
-      if (result.text) {
-        onEvent({ type: 'llm_chunk', text: result.text })
+      // 无工具调用 → 执行完成
+      if (!toolCalls || toolCalls.length === 0) {
+        finalText = streamedText
+        break
       }
-      messages.push({ role: 'assistant', content: result.text || '' } as never)
 
-      for (const toolCall of result.toolCalls) {
-        const callId = `exec-${this.iterations}-${toolCall.toolName}`
-        const args = toolCall.args as Record<string, unknown>
+      // 有工具调用（文本已在流式过程中通过 llm_chunk 发送）
+      messages.push({ role: 'assistant', content: streamedText || '' } as never)
 
-        onEvent({ type: 'tool_call', tool: toolCall.toolName, params: args, callId })
+      // 分离串行和并行工具调用
+      const serialCalls = toolCalls.filter(tc => Executor.SERIAL_TOOLS.has(tc.toolName))
+      const parallelCalls = toolCalls.filter(tc => !Executor.SERIAL_TOOLS.has(tc.toolName))
 
-        // 权限检查
-        const approved = await this.checkPermission(toolCall.toolName, args)
-        if (!approved) {
-          // 拒绝也是观察:喂回 LLM 让它改道
-          const rejectMsg = '用户拒绝了此操作。请换一种方式完成任务,或解释为什么需要这个操作。'
-          messages.push({ role: 'user', content: `[工具被拒绝 ${toolCall.toolName}]: ${rejectMsg}` } as never)
-          onEvent({ type: 'tool_result', callId, tool: toolCall.toolName, result: '', error: rejectMsg })
-          continue
-        }
+      // 并行执行只读/非串行工具
+      if (parallelCalls.length > 0) {
+        await Promise.allSettled(
+          parallelCalls.map(tc => this.executeSingleToolCall(tc, messages))
+        )
+      }
 
-        // 执行工具
-        const toolResult = await toolRegistry.execute(toolCall.toolName, args, {
-          ...toolContext,
-          callId,
-        })
-
-        onEvent({
-          type: 'tool_result',
-          callId,
-          tool: toolCall.toolName,
-          result: toolResult.result,
-          error: toolResult.error,
-        })
-
-        // edit_file 成功后创建 checkpoint
-        if (toolCall.toolName === 'edit_file' && !toolResult.error) {
-          const checkpoint = await this.config.checkpoint.create(
-            `edit: ${args.path}`,
-            this.getCurrentTodoId()
-          )
-          if (checkpoint) {
-            onEvent({ type: 'checkpoint', step: checkpoint.step, message: checkpoint.message })
-          }
-        }
-
-        // 将结果喂回
-        const resultContent = toolResult.error
-          ? `[工具错误 ${toolCall.toolName}]: ${toolResult.error}`
-          : `[工具结果 ${toolCall.toolName}]: ${toolResult.result}`
-        messages.push({ role: 'user', content: resultContent } as never)
-
-        // 更新 todo 状态
-        this.updateTodoProgress(toolCall.toolName, args)
+      // 串行执行写工具（edit_file / update_todo）
+      for (const tc of serialCalls) {
+        await this.executeSingleToolCall(tc, messages)
       }
     }
 
@@ -157,10 +272,159 @@ export class Executor {
     if (this.iterations >= maxIterations) {
       finalText = `已达到最大迭代次数 (${maxIterations})。当前进度:\n${this.formatTodos()}`
       onEvent({ type: 'error', message: '达到迭代上限', recoverable: true })
+      executionError = true
     }
 
     onEvent({ type: 'todo_update', todos: this.todos })
+    setTodoStore(this.todos)
+
+    // ─── 验证阶段 ───
+    // 仅在执行正常完成（非错误退出）时运行验证
+    if (!executionError) {
+      onEvent({ type: 'phase_change', phase: 'verifying' })
+      const verifyResult = await this.runVerification(plan, finalText, messages, toolsForAI)
+      if (verifyResult) {
+        finalText = finalText
+          ? `${finalText}\n\n## 验证\n${verifyResult}`
+          : `## 验证\n${verifyResult}`
+      }
+    }
+
     return finalText
+  }
+
+  /**
+   * 执行后验证：用单轮 LLM 调用检查修改是否完成所有 todo
+   * 允许使用 bash（跑测试）和 read_file（检查改动），不允许 edit_file
+   */
+  private async runVerification(
+    plan: Plan,
+    executionResult: string,
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+    _toolsForAI: Record<string, { description: string; parameters: unknown }>,
+  ): Promise<string> {
+    const { model, toolRegistry, toolContext, onEvent } = this.config
+
+    // 验证阶段仅允许只读工具（bash + read_file + grep 等，不允许 edit_file）
+    const verifyTools = toolRegistry.getForPhase('plan')
+    const verifyToolsForAI: Record<string, { description: string; parameters: unknown }> = {}
+    for (const tool of verifyTools) {
+      verifyToolsForAI[tool.definition.name] = {
+        description: tool.definition.description,
+        parameters: toolSchemas[tool.definition.name] ?? tool.definition.inputSchema,
+      }
+    }
+
+    const todoStatus = this.formatTodos()
+    const verifyPrompt = `## 验证任务
+
+执行已完成。请验证以上修改是否正确：
+
+计划摘要: ${plan.summary}
+
+当前 todo 状态:
+${todoStatus}
+
+执行结果:
+${executionResult || '(无文本输出)'}
+
+请执行以下验证：
+1. 用 read_file 检查关键修改的文件，确认改动正确
+2. 如果有测试，用 bash 运行测试验证
+3. 输出验证结论：哪些通过，哪些失败，是否需要进一步修改
+
+注意：验证阶段不允许修改文件（无 edit_file 工具）。`
+
+    try {
+      const result = await callWithRetry(async () => {
+        const genResult = await generateText({
+          model,
+          system: '你是验证助手。只读验证执行结果，不修改文件。',
+          messages: [...messages, { role: 'user', content: verifyPrompt }],
+          tools: verifyToolsForAI,
+          maxSteps: 5,
+          abortSignal: this.config.abortSignal,
+        })
+        return genResult.text
+      }, {
+        maxRetries: 1,
+        onRetry: ({ attempt, delay, error }) => {
+          onEvent({ type: 'error', message: `验证请求重试 #${attempt}（${delay}ms 后）: ${error.message}`, recoverable: true })
+        },
+      })
+
+      onEvent({ type: 'system_info', message: '验证完成' })
+      return result || ''
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      onEvent({ type: 'error', message: `验证阶段失败: ${msg}`, recoverable: true })
+      return `验证失败: ${msg}`
+    }
+  }
+
+  /**
+   * 执行单个工具调用（权限检查 → 执行 → checkpoint → 结果回写）
+   * 支持并发调用，bash 受信号量限制
+   */
+  private async executeSingleToolCall(
+    toolCall: { toolName: string; args: Record<string, unknown> },
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  ): Promise<void> {
+    const { toolRegistry, toolContext, onEvent } = this.config
+    const callId = `exec-${this.iterations}-${toolCall.toolName}`
+    const args = toolCall.args as Record<string, unknown>
+
+    onEvent({ type: 'tool_call', tool: toolCall.toolName, params: args, callId })
+
+    // 权限检查
+    const approved = await this.checkPermission(toolCall.toolName, args)
+    if (!approved) {
+      const rejectMsg = '用户拒绝了此操作。请换一种方式完成任务,或解释为什么需要这个操作。'
+      messages.push({ role: 'user', content: `[工具被拒绝 ${toolCall.toolName}]: ${rejectMsg}` } as never)
+      onEvent({ type: 'tool_result', callId, tool: toolCall.toolName, result: '', error: rejectMsg })
+      return
+    }
+
+    // bash 工具受信号量并发限制
+    let toolResult: { result: string; error?: string }
+    if (toolCall.toolName === 'bash') {
+      await this.bashSemaphore.acquire()
+      try {
+        toolResult = await toolRegistry.execute(toolCall.toolName, args, { ...toolContext, callId })
+      } finally {
+        this.bashSemaphore.release()
+      }
+    } else {
+      toolResult = await toolRegistry.execute(toolCall.toolName, args, { ...toolContext, callId })
+    }
+
+    onEvent({
+      type: 'tool_result',
+      callId,
+      tool: toolCall.toolName,
+      result: toolResult.result,
+      error: toolResult.error,
+    })
+
+    // edit_file 成功后创建 checkpoint
+    if (toolCall.toolName === 'edit_file' && !toolResult.error) {
+      const checkpoint = await this.config.checkpoint.create(
+        `edit: ${args.path}`,
+        this.getCurrentTodoId()
+      )
+      if (checkpoint) {
+        onEvent({ type: 'checkpoint', step: checkpoint.step, message: checkpoint.message })
+      }
+    }
+
+    // 将结果喂回消息列表
+    const resultContent = toolResult.error
+      ? `[工具错误 ${toolCall.toolName}]: ${toolResult.error}`
+      : `[工具结果 ${toolCall.toolName}]: ${toolResult.result}`
+    messages.push({ role: 'user', content: resultContent } as never)
+
+    // 更新 todo 状态
+    this.updateTodoProgress(toolCall.toolName, args)
   }
 
   /** 权限检查 */
@@ -194,22 +458,14 @@ export class Executor {
     }
   }
 
-  /** 更新 todo 进度 */
-  private updateTodoProgress(toolName: string, args: Record<string, unknown>): void {
-    // 找到第一个 pending 的 todo 并标记为 in_progress
+  /** 更新 todo 进度（仅自动标记 in_progress；完成由 LLM 通过 update_todo 工具控制） */
+  private updateTodoProgress(toolName: string, _args: Record<string, unknown>): void {
+    // edit_file 时自动将第一个 pending todo 标记为 in_progress
     const pending = this.todos.find((t) => t.status === 'pending')
     if (pending && toolName === 'edit_file') {
       pending.status = 'in_progress'
       this.config.onEvent({ type: 'todo_update', todos: this.todos })
-    }
-
-    // bash 运行测试成功 → 标记当前 in_progress 为 complete
-    if (toolName === 'bash' && !args.command?.toString().includes('test')) {
-      const inProgress = this.todos.find((t) => t.status === 'in_progress')
-      if (inProgress) {
-        inProgress.status = 'complete'
-        this.config.onEvent({ type: 'todo_update', todos: this.todos })
-      }
+      setTodoStore(this.todos)
     }
   }
 

@@ -12,6 +12,7 @@ export type NexusEvent =
   | { type: 'llm_done'; text: string }
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; callId: string }
   | { type: 'tool_approval_request'; callId: string; tool: string; params: Record<string, unknown>; diff?: string }
+  | { type: 'plan_approval_request'; plan: Plan }
   | { type: 'tool_result'; callId: string; tool: string; result: string; error?: string }
   | { type: 'todo_update'; todos: Todo[] }
   | { type: 'checkpoint'; step: number; message: string }
@@ -19,6 +20,8 @@ export type NexusEvent =
   | { type: 'phase_change'; phase: AgentPhase }
   | { type: 'done'; summary: string }
   | { type: 'error'; message: string; recoverable: boolean }
+  | { type: 'config_updated' }
+  | { type: 'system_info'; message: string }
 
 // ─── Agent 状态 ───────────────────────────────────────────────────────────────
 
@@ -81,12 +84,13 @@ export type ToolPermission = 'auto' | 'approval' | 'denied'
 
 // ─── 模型路由类型 ─────────────────────────────────────────────────────────────
 
-export type ProviderName = 'anthropic' | 'openai' | 'google' | 'ollama' | 'openrouter' | 'deepseek' | 'custom'
+export type ProviderName = 'anthropic' | 'openai' | 'google' | 'openrouter' | 'deepseek' | 'custom'
 
 export type ModelRole = 'planner' | 'executor' | 'summarizer' | 'verifier'
 
 export interface ModelRoute {
-  provider: ProviderName
+  /** provider 名称（内置为 ProviderName，自定义条目为任意键名） */
+  provider: string
   model: string
   role: ModelRole
   costPer1kInput: number
@@ -99,7 +103,8 @@ export interface ModelRoute {
 export interface CostRecord {
   timestamp: number
   role: ModelRole
-  provider: ProviderName
+  /** provider 名称（内置为 ProviderName，自定义条目为任意键名） */
+  provider: string
   model: string
   inputTokens: number
   outputTokens: number

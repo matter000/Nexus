@@ -208,3 +208,78 @@ export function stripBom(content: string): { bom: string; text: string } {
   }
   return { bom: '', text: content }
 }
+
+// ─── LLM 调用重试 ─────────────────────────────────────────────────────────────
+
+/** 判断错误是否可重试（HTTP 429/5xx、网络超时等） */
+export function isRetryable(error: unknown): boolean {
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase()
+    return (
+      msg.includes('rate limit') ||
+      msg.includes('429') ||
+      msg.includes('500') ||
+      msg.includes('502') ||
+      msg.includes('503') ||
+      msg.includes('504') ||
+      msg.includes('timeout') ||
+      msg.includes('network') ||
+      msg.includes('econnrefused') ||
+      msg.includes('enotfound') ||
+      msg.includes('overloaded') ||
+      msg.includes('connection')
+    )
+  }
+  return false
+}
+
+export interface CallWithRetryOptions {
+  maxRetries?: number
+  baseDelay?: number
+  /** 每次重试前的回调，参数为 { attempt, delay, error } */
+  onRetry?: (info: { attempt: number; delay: number; error: Error }) => void
+}
+
+/**
+ * 带指数退避的异步调用封装
+ * 默认最多 3 次重试，退避间隔 1s → 2s → 4s
+ * 仅对可重试错误（429/5xx/网络错误）进行重试
+ */
+export async function callWithRetry<T>(
+  fn: () => Promise<T>,
+  options: CallWithRetryOptions = {},
+): Promise<T> {
+  const { maxRetries = 3, baseDelay = 1000, onRetry } = options
+  let lastError: Error | null = null
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+      if (!isRetryable(error) || attempt === maxRetries) break
+
+      const delay = baseDelay * Math.pow(2, attempt)
+      onRetry?.({ attempt: attempt + 1, delay, error: lastError })
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+  throw lastError!
+}
+
+// ─── 路径安全 ──────────────────────────────────────────────────────────────
+
+import { resolve, relative, isAbsolute } from 'path'
+
+/**
+ * 检查目标路径是否在项目根目录内（防止路径遍历攻击）。
+ * 使用 relative() + .. 检测，比 startsWith 前缀匹配更可靠。
+ * @returns true 表示安全（在项目内），false 表示越界
+ */
+export function isInsideProject(projectRoot: string, targetPath: string): boolean {
+  const resolvedRoot = resolve(projectRoot)
+  const resolvedTarget = resolve(projectRoot, targetPath)
+  const rel = relative(resolvedRoot, resolvedTarget)
+  // 如果相对路径以 .. 开头或为绝对路径，说明目标在项目外
+  return !rel.startsWith('..') && !isAbsolute(rel)
+}

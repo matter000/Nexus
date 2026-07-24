@@ -1,13 +1,13 @@
 /**
  * bash 工具
  * 执行 shell 命令,带危险命令检测、超时、输出截断、工作目录锁定
+ * 通过 SandboxEngine 接口执行命令,复用统一的进程管理逻辑
  */
 
-import { spawn } from 'child_process'
 import { resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
 import type { ToolHandler, ToolContext } from './registry'
-import { isDangerousCommand } from '../sandbox/CommandGuard'
+import { createSandboxEngine } from '../sandbox/SandboxEngine'
 import { truncateTail, sanitizeBinaryOutput, formatSize } from '../utils'
 
 const definition: ToolDefinition = {
@@ -32,82 +32,6 @@ const definition: ToolDefinition = {
   phase: 'execute',
 }
 
-interface ExecResult {
-  stdout: string
-  stderr: string
-  exitCode: number
-  timedOut: boolean
-}
-
-/** 执行命令,带超时和进程组管理 */
-function execCommand(command: string, cwd: string, timeoutMs: number): Promise<ExecResult> {
-  return new Promise((resolvePromise) => {
-    const isWindows = process.platform === 'win32'
-    const shell = isWindows ? 'powershell.exe' : '/bin/bash'
-    const shellArgs = isWindows ? ['-Command', command] : ['-c', command]
-
-    const child = spawn(shell, shellArgs, {
-      cwd,
-      env: { ...process.env, TERM: 'dumb' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // Windows 上用 windowsHide,Unix 上用 detached 以便进程组 kill
-      ...(isWindows ? { windowsHide: true } : { detached: true }),
-    })
-
-    let stdout = ''
-    let stderr = ''
-    let timedOut = false
-    let settled = false
-
-    const timer = setTimeout(() => {
-      timedOut = true
-      killProcessGroup(child, isWindows)
-    }, timeoutMs)
-
-    child.stdout?.on('data', (data: Buffer) => {
-      stdout += data.toString()
-    })
-
-    child.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString()
-    })
-
-    child.on('close', (code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolvePromise({ stdout, stderr, exitCode: code ?? 1, timedOut })
-    })
-
-    child.on('error', (err) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolvePromise({ stdout, stderr: err.message, exitCode: 1, timedOut: false })
-    })
-  })
-}
-
-/** 杀死整个进程组 */
-function killProcessGroup(child: ReturnType<typeof spawn>, isWindows: boolean): void {
-  try {
-    if (isWindows) {
-      // Windows: taskkill /T 杀进程树
-      if (child.pid) {
-        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
-      }
-    } else {
-      // Unix: kill 整个进程组
-      if (child.pid) {
-        process.kill(-child.pid, 'SIGKILL')
-      }
-    }
-  } catch {
-    // 进程可能已退出
-    child.kill('SIGKILL')
-  }
-}
-
 /** 截断输出(借鉴 pi: bash 用尾部截断,保留错误信息) */
 function truncateOutput(output: string, maxBytes: number): { text: string; truncated: boolean } {
   // 先清理二进制控制字符
@@ -123,21 +47,21 @@ function truncateOutput(output: string, maxBytes: number): { text: string; trunc
 async function execute(params: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
   const { callId, projectRoot, bashTimeout, maxOutputBytes } = context
   const command = params.command as string
-  const timeout = ((params.timeout as number) ?? bashTimeout) * 1000
+  // 超时：优先用 LLM 指定值，回退到上下文默认值；下限 1 秒防止 0/负值
+  const rawTimeout = (params.timeout as number) ?? bashTimeout
+  const timeout = Math.max(1, rawTimeout) * 1000
 
   try {
-    // 危险命令检测(这里只做标记,实际拦截在审批层)
-    const dangerInfo = isDangerousCommand(command)
-    if (dangerInfo.dangerous) {
-      // 危险命令仍然执行(审批层已处理),但在结果中标注
-      // 实际拦截逻辑在 Orchestrator 的权限检查中
-    }
-
     // 工作目录锁定在项目根
     const cwd = resolve(projectRoot)
 
-    // 执行命令
-    const result = await execCommand(command, cwd, timeout)
+    // 通过 SandboxEngine 执行命令(危险命令检测、超时、进程管理统一在引擎内)
+    const engine = createSandboxEngine()
+    const result = await engine.execute(command, {
+      cwd,
+      timeoutMs: timeout,
+      maxOutputBytes,
+    })
 
     // 截断输出
     const stdoutTrunc = truncateOutput(result.stdout, maxOutputBytes)
@@ -160,8 +84,8 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
       parts.push(`\n--- stderr ---\n${stderrTrunc.text}`)
     }
 
-    if (dangerInfo.dangerous) {
-      parts.push(`\n⚠️ 此命令被标记为潜在危险: ${dangerInfo.reason}`)
+    if (result.dangerAssessment?.dangerous) {
+      parts.push(`\n⚠️ 此命令被标记为潜在危险: ${result.dangerAssessment.reason}`)
     }
 
     return {

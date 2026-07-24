@@ -1,6 +1,7 @@
 /**
  * 消息列表组件
- * 渲染用户输入、assistant 流式输出、工具调用结果
+ * 渲染用户输入、assistant 输出、系统消息
+ * Claude Code 风格：紧凑、角色标记清晰
  */
 
 import React from 'react'
@@ -11,7 +12,6 @@ export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
-  streaming?: boolean
 }
 
 interface MessageListProps {
@@ -20,9 +20,11 @@ interface MessageListProps {
 
 export function MessageList({ messages }: MessageListProps) {
   return (
-    <Box flexDirection="column" gap={1}>
-      {messages.map((msg) => (
-        <MessageItem key={msg.id} message={msg} />
+    <Box flexDirection="column">
+      {messages.map((msg, i) => (
+        <Box key={msg.id} flexDirection="column" marginTop={i > 0 ? 1 : 0}>
+          <MessageItem message={msg} />
+        </Box>
       ))}
     </Box>
   )
@@ -35,7 +37,9 @@ function MessageItem({ message }: { message: Message }) {
         <Text color={theme.colors.user} bold>
           {theme.symbols.user} 用户
         </Text>
-        <Text>{message.content}</Text>
+        <Box paddingLeft={2}>
+          <Text>{message.content}</Text>
+        </Box>
       </Box>
     )
   }
@@ -44,9 +48,22 @@ function MessageItem({ message }: { message: Message }) {
     return (
       <Box flexDirection="column">
         <Text color={theme.colors.assistant} bold>
-          {theme.symbols.assistant} Nexus{message.streaming ? ' (思考中...)' : ''}
+          {theme.symbols.assistant} Nexus
         </Text>
-        <Text>{message.content}</Text>
+        <Box paddingLeft={2}>
+          <Text>{message.content}</Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  // system 消息：斜杠命令结果、错误提示等
+  if (message.role === 'system') {
+    return (
+      <Box>
+        <Text color={theme.colors.primary}>
+          ⚙ {message.content}
+        </Text>
       </Box>
     )
   }

@@ -7,6 +7,7 @@ import { readFile, stat } from 'fs/promises'
 import { resolve, relative } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
 import type { ToolHandler, ToolContext } from './registry'
+import { isInsideProject } from '../utils'
 
 const definition: ToolDefinition = {
   name: 'read_file',
@@ -61,8 +62,8 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
     const fullPath = resolve(projectRoot, filePath)
     const relPath = relative(projectRoot, fullPath)
 
-    // 安全检查:不允许读取项目外的文件
-    if (fullPath.startsWith('..') || !fullPath.startsWith(resolve(projectRoot))) {
+    // 安全检查:不允许读取项目外的文件（使用 relative 检测，比 startsWith 更可靠）
+    if (!isInsideProject(projectRoot, filePath)) {
       return {
         callId,
         tool: 'read_file',

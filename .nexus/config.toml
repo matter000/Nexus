@@ -16,10 +16,6 @@ default_model = "claude-sonnet-4-20250514"
 api_key_env = "OPENAI_API_KEY"
 default_model = "gpt-4o"
 
-[models.providers.ollama]
-base_url = "http://localhost:11434"
-default_model = "llama3"
-
 [models.providers.deepseek]
 api_key_env = "DEEPSEEK_API_KEY"
 base_url = "https://api.deepseek.com"
@@ -59,3 +55,30 @@ recent_turns_keep = 5
 auto_checkpoint = true
 # checkpoint 分支名
 branch = "nexus/checkpoints"
+
+# === 外部 MCP Server 配置 ===
+# 取消注释以启用
+
+# 文件系统增强（提供高级文件操作）
+# [[mcp_servers]]
+# name = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+# 内存/知识库（跨会话记忆）
+# [[mcp_servers]]
+# name = "memory"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-memory"]
+
+# Web Fetch（网页内容获取）
+# [[mcp_servers]]
+# name = "fetch"
+# command = "npx"
+# args = ["-y", "@tokenizin/mcp-npx-fetch"]
+
+# Git 增强（高级 Git 操作）
+# [[mcp_servers]]
+# name = "git"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-git", "--repository", "."]

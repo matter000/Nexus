@@ -30,13 +30,26 @@ function git(args: string[], cwd: string): Promise<{ stdout: string; stderr: str
 export class CheckpointManager {
   private projectRoot: string
   private branch: string
+  private workBranch = '' // 用户进入会话前的工作分支
   private checkpoints: Checkpoint[] = []
   private step = 0
   private initialized = false
+  /** 是否启用检查点（对应 config.checkpoint.autoCheckpoint） */
+  private enabled = true
 
   constructor(projectRoot: string, branch = 'nexus/checkpoints') {
     this.projectRoot = projectRoot
     this.branch = branch
+  }
+
+  /** 设置是否启用检查点 */
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled
+  }
+
+  /** 检查点是否启用 */
+  isEnabled(): boolean {
+    return this.enabled
   }
 
   /** 初始化检查点系统:确保在 git 仓库中,创建 checkpoint 分支 */
@@ -57,6 +70,15 @@ export class CheckpointManager {
       await git(['commit', '--allow-empty', '-m', 'nexus: initial checkpoint'], this.projectRoot)
     }
 
+    // 记录当前工作分支(在切换到 checkpoint 分支之前)
+    const currentBranch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], this.projectRoot)
+    if (currentBranch.exitCode === 0 && currentBranch.stdout && currentBranch.stdout !== 'HEAD') {
+      this.workBranch = currentBranch.stdout
+    } else {
+      // detached HEAD 或无法获取分支名,使用 'main' 作为 fallback
+      this.workBranch = 'main'
+    }
+
     // 创建或切换到 checkpoint 分支
     const branchCheck = await git(['rev-parse', '--verify', this.branch], this.projectRoot)
     if (branchCheck.exitCode !== 0) {
@@ -71,6 +93,8 @@ export class CheckpointManager {
 
   /** 创建检查点:暂存所有变更并提交 */
   async create(message: string, todoId?: string): Promise<Checkpoint | null> {
+    // 检查点未启用时不创建（也不惰性初始化，避免意外切换分支）
+    if (!this.enabled) return null
     if (!this.initialized) await this.init()
 
     this.step++
@@ -164,18 +188,61 @@ export class CheckpointManager {
     return this.step
   }
 
-  /** 会话结束时,询问是否合并到工作分支 */
-  async mergeToWorkBranch(targetBranch: string): Promise<string> {
-    const result = await git(['checkout', targetBranch], this.projectRoot)
-    if (result.exitCode !== 0) {
-      return `切换到 ${targetBranch} 失败: ${result.stderr}`
+  /** 是否有检查点历史 */
+  hasCheckpoints(): boolean {
+    return this.checkpoints.length > 0
+  }
+
+  /** 获取用户进入会话前的工作分支名 */
+  getWorkBranch(): string {
+    return this.workBranch
+  }
+
+  /** 会话结束时,将 checkpoint 分支合并回工作分支 */
+  async mergeToWorkBranch(targetBranch?: string): Promise<{ success: boolean; message: string }> {
+    const target = targetBranch ?? this.workBranch
+    if (!target) {
+      return { success: false, message: '无法确定目标工作分支' }
     }
 
+    if (this.checkpoints.length === 0) {
+      // 即使无检查点，也要切回工作分支（init 可能已切换到 checkpoint 分支）
+      if (this.initialized) {
+        const checkout = await git(['checkout', target], this.projectRoot)
+        if (checkout.exitCode !== 0) {
+          return { success: false, message: `切换到 ${target} 失败: ${checkout.stderr}` }
+        }
+      }
+      return { success: true, message: '无检查点需要合并' }
+    }
+
+    // 切回工作分支
+    const checkout = await git(['checkout', target], this.projectRoot)
+    if (checkout.exitCode !== 0) {
+      return { success: false, message: `切换到 ${target} 失败: ${checkout.stderr}` }
+    }
+
+    // 合并 checkpoint 分支
     const merge = await git(['merge', this.branch, '--no-edit'], this.projectRoot)
     if (merge.exitCode !== 0) {
-      return `合并失败: ${merge.stderr}`
+      // 检测是否为合并冲突
+      const isConflict = merge.stderr.includes('CONFLICT') || merge.stderr.includes('Automatic merge failed')
+      if (isConflict) {
+        // 中止合并,保留工作区状态,让用户手动解决
+        await git(['merge', '--abort'], this.projectRoot)
+        return {
+          success: false,
+          message: `合并冲突!checkpoint 分支 "${this.branch}" 与 "${target}" 存在冲突。` +
+            `请手动执行: git checkout ${target} && git merge ${this.branch}，解决冲突后提交。`,
+        }
+      }
+      return { success: false, message: `合并失败: ${merge.stderr}` }
     }
 
-    return `已将 ${this.checkpoints.length} 个检查点合并到 ${targetBranch}`
+    // 注意: 不删除 checkpoint 分支,保留历史以支持 /undo
+    return {
+      success: true,
+      message: `已将 ${this.checkpoints.length} 个检查点合并到 ${target}`,
+    }
   }
 }

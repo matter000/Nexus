@@ -38,7 +38,7 @@ Nexus - 终端 AI 编程助手
 
 选项:
   -m, --model <model>        指定模型 (e.g. claude-sonnet-4-20250514, gpt-4o)
-  -p, --provider <provider>  指定 provider (anthropic, openai, ollama)
+  -p, --provider <provider>  指定 provider (anthropic, openai, deepseek, custom)
   --permission <mode>        权限模式: ask | auto-edit | auto-all | yolo
   --cwd <dir>                项目根目录 (默认: 当前目录)
   --skip-plan                跳过 Plan 阶段,直接执行
@@ -81,18 +81,31 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--provider':
         args.provider = argv[++i]
         break
-      case '--permission':
-        args.permissionMode = argv[++i] as PermissionMode
+      case '--permission': {
+        const mode = argv[++i] as string
+        const validModes: PermissionMode[] = ['ask', 'auto-edit', 'auto-all', 'yolo']
+        if (!validModes.includes(mode as PermissionMode)) {
+          console.error(`错误: 无效的权限模式 "${mode}"，可选值: ${validModes.join(', ')}`)
+          process.exit(1)
+        }
+        args.permissionMode = mode as PermissionMode
         break
+      }
       case '--cwd':
         args.cwd = argv[++i]
         break
       case '--skip-plan':
         args.skipPlan = true
         break
-      case '--max-iterations':
-        args.maxIterations = parseInt(argv[++i], 10)
+      case '--max-iterations': {
+        const val = parseInt(argv[++i], 10)
+        if (isNaN(val) || val < 1) {
+          console.error(`错误: --max-iterations 必须是正整数`)
+          process.exit(1)
+        }
+        args.maxIterations = val
         break
+      }
       case '--non-interactive':
         args.nonInteractive = true
         break

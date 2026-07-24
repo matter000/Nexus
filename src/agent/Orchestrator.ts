@@ -23,6 +23,14 @@ import { loadRules } from '../context/RulesLoader'
 import { ModelRouter } from '../router/ModelRouter'
 import { CostTracker } from '../router/CostTracker'
 import { CheckpointManager } from '../sandbox/Checkpoint'
+import { compressHistory } from '../context/Compressor'
+import { loadSecrets, type SecretsConfig } from '../config-secrets'
+import { NexusDB } from '../storage/db'
+import { ExternalMCPManager, type ExternalServerConfig } from '../tools/external'
+import { buildCodeGraph, type CodeGraph } from '../context/CodeGraph'
+import { readFile } from 'fs/promises'
+import { join } from 'path'
+import { parse } from 'smol-toml'
 
 export interface OrchestratorConfig {
   projectRoot: string
@@ -32,6 +40,8 @@ export interface OrchestratorConfig {
   maxIterations: number
   onEvent: (event: NexusEvent) => void
   requestApproval: (tool: string, params: Record<string, unknown>, diff?: string) => Promise<boolean>
+  /** 计划审批：返回 'approve' | 'reject' | 反馈文本（反馈文本触发重规划） */
+  requestPlanApproval: (plan: Plan) => Promise<'approve' | 'reject' | string>
 }
 
 export class Orchestrator {
@@ -41,23 +51,51 @@ export class Orchestrator {
   private todos: Todo[] = []
   private toolRegistry = createToolRegistry()
   private costTracker = new CostTracker()
-  private router: ModelRouter
+  private router: ModelRouter | null = null
+  private secrets: SecretsConfig = { providers: {} }
   private checkpoint: CheckpointManager
   private assembler: ContextAssembler | null = null
   private rules: ProjectRules | null = null
   private aborted = false
+  private db: NexusDB | null = null
+  private currentSessionId: string | null = null
+  private shutdownCalled = false
+  private subAgent: SubAgent | null = null
+  private mcpManager: ExternalMCPManager | null = null
+  private codeGraph: CodeGraph | null = null
+  private noProviderAvailable = false
+  /** 是否跳过 Plan 阶段（运行时可切换） */
+  private skipPlan: boolean
+  /** 中断控制器（abort() 时触发，传递给 Executor/Planner 的 streamText） */
+  private abortController: AbortController | null = null
 
   constructor(cfg: OrchestratorConfig) {
     this.cfg = cfg
-    this.router = new ModelRouter(cfg.config, this.costTracker)
+    this.skipPlan = cfg.skipPlan
     this.checkpoint = new CheckpointManager(
       cfg.projectRoot,
       cfg.config.checkpoint.branch
     )
+    this.checkpoint.setEnabled(cfg.config.checkpoint.autoCheckpoint)
   }
 
-  /** 初始化:加载规则、构建上下文组装器 */
+  /** 设置是否跳过 Plan 阶段（运行时切换 plan/auto 模式） */
+  setSkipPlan(skip: boolean): void {
+    this.skipPlan = skip
+  }
+
+  /** 获取当前是否跳过 Plan 阶段 */
+  getSkipPlan(): boolean {
+    return this.skipPlan
+  }
+
+  /** 初始化:加载 secrets、规则、构建上下文组装器（仅关键路径，快速完成） */
   async init(): Promise<void> {
+    // 加载 API Key secrets(全局 ~/.nexus/secrets.toml)
+    this.secrets = await loadSecrets(this.cfg.projectRoot)
+    // 用 secrets 初始化 ModelRouter,确保 DeepSeek 等 provider 正确注册
+    this.router = new ModelRouter(this.cfg.config, this.costTracker, this.secrets)
+
     this.rules = await loadRules(this.cfg.projectRoot)
     const contextWindow = this.router.getContextWindow('executor')
     const budget = new TokenBudget(
@@ -73,9 +111,145 @@ export class Orchestrator {
       recentTurnsKeep: this.cfg.config.context.recentTurnsKeep,
     })
 
-    // 初始化 git checkpoint
+    // 创建 SubAgent 实例并注入工具注册表
+    // 如果无可用 provider，推迟到首次 submit() 时创建
+    if (this.router.hasAvailableProvider()) {
+      this.subAgent = new SubAgent({
+        model: this.router.getModel('executor'),
+        toolRegistry: this.toolRegistry,
+        toolContext: this.getToolContext(),
+        maxIterations: Math.min(10, this.cfg.config.limits.maxIterations),
+        onEvent: (e) => this.emit(e),
+        permissionMode: this.cfg.permissionMode,
+        requestApproval: this.cfg.requestApproval,
+      })
+      this.toolRegistry.setSubAgentRunner(this.subAgent)
+    } else {
+      this.noProviderAvailable = true
+    }
+  }
+
+  /** 后台初始化:在 TUI render 之后异步执行，避免阻塞终端启动 */
+  async startBackgroundInit(): Promise<void> {
+    // 初始化 git checkpoint（可能涉及 git 操作，较慢）
     if (this.cfg.config.checkpoint.autoCheckpoint) {
-      await this.checkpoint.init()
+      try {
+        await this.checkpoint.init()
+      } catch (err) {
+        console.warn('[Checkpoint] 初始化失败:', err)
+      }
+    }
+
+    // 初始化 NexusDB 会话持久化（静默，不在 TUI 中显示恢复提示）
+    try {
+      this.db = new NexusDB(this.cfg.projectRoot)
+    } catch (err) {
+      console.warn('[NexusDB] 数据库初始化失败，会话将不会持久化:', err)
+      this.db = null
+    }
+
+    // 构建代码图谱（后台异步，失败不阻塞）
+    try {
+      this.codeGraph = await buildCodeGraph(this.cfg.projectRoot)
+      this.assembler?.setCodeGraph(this.codeGraph)
+      if (this.codeGraph && this.codeGraph.files.size > 0) {
+        this.emit({
+          type: 'system_info',
+          message: `[CodeGraph] 图谱构建完成，共 ${this.codeGraph.files.size} 个文件`,
+        })
+      }
+    } catch (err) {
+      console.warn('[CodeGraph] 代码图谱构建失败，将跳过代码地图注入:', err)
+      this.codeGraph = null
+    }
+
+    // 初始化外部 MCP Server 并注册工具
+    try {
+      await this.initExternalMCP()
+    } catch (err) {
+      console.warn('[MCP] 外部 MCP Server 初始化失败:', err)
+    }
+  }
+
+  /** 读取 .nexus/config.toml 中的 mcp_servers 配置，连接外部 Server 并注册工具 */
+  private async initExternalMCP(): Promise<void> {
+    const mcpServers = await this.loadMCPServerConfigs()
+    if (mcpServers.length === 0) return
+
+    this.mcpManager = new ExternalMCPManager()
+
+    // 注册所有 server 配置
+    for (const server of mcpServers) {
+      this.mcpManager.register(server)
+    }
+
+    // 逐个连接，失败不阻塞启动
+    for (const server of mcpServers) {
+      const ok = await this.mcpManager.connect(server.name)
+      if (ok) {
+        this.emit({ type: 'phase_change', phase: this.phase })
+        console.log(`[MCP] 已连接外部 Server: ${server.name}`)
+      } else {
+        console.warn(`[MCP] 外部 Server "${server.name}" 连接失败，跳过其工具`)
+      }
+    }
+
+    // 将外部工具注册到 ToolRegistry
+    try {
+      const handlers = await this.mcpManager.listAllTools()
+      for (const handler of handlers) {
+        this.toolRegistry.register(handler)
+      }
+      if (handlers.length > 0) {
+        console.log(`[MCP] 已注册 ${handlers.length} 个外部工具`)
+      }
+    } catch (err) {
+      console.warn('[MCP] 注册外部工具失败:', err)
+    }
+  }
+
+  /** 从 .nexus/config.toml 读取 [[mcp_servers]] 配置 */
+  private async loadMCPServerConfigs(): Promise<ExternalServerConfig[]> {
+    const configPath = join(this.cfg.projectRoot, '.nexus', 'config.toml')
+    try {
+      const content = await readFile(configPath, 'utf-8')
+      const raw = parse(content) as Record<string, unknown>
+      const servers = raw.mcp_servers
+      if (!Array.isArray(servers)) return []
+
+      return servers
+        .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
+        .filter((s) => typeof s.name === 'string' && typeof s.command === 'string')
+        .map((s) => ({
+          name: s.name as string,
+          command: s.command as string,
+          args: Array.isArray(s.args) ? (s.args as string[]) : [],
+          env: s.env as Record<string, string> | undefined,
+        }))
+    } catch {
+      // 配置文件不存在或无 mcp_servers，静默跳过
+      return []
+    }
+  }
+
+  /** 重新初始化 providers（TUI 中保存 API Key 后调用） */
+  async reinitProviders(): Promise<void> {
+    this.secrets = await loadSecrets(this.cfg.projectRoot)
+    this.router?.reinit(this.secrets)
+
+    // 如果之前因无 provider 推迟了 SubAgent 创建，现在补建
+    if (this.noProviderAvailable && this.router?.hasAvailableProvider()) {
+      this.noProviderAvailable = false
+      this.subAgent = new SubAgent({
+        model: this.router.getModel('executor'),
+        toolRegistry: this.toolRegistry,
+        toolContext: this.getToolContext(),
+        maxIterations: Math.min(10, this.cfg.config.limits.maxIterations),
+        onEvent: (e) => this.emit(e),
+        permissionMode: this.cfg.permissionMode,
+        requestApproval: this.cfg.requestApproval,
+      })
+      this.toolRegistry.setSubAgentRunner(this.subAgent)
     }
   }
 
@@ -85,8 +259,46 @@ export class Orchestrator {
       await this.init()
     }
 
+    // 若初始化时无 provider，再尝试一次（用户可能已通过 TUI 配置了 API Key）
+    if (this.noProviderAvailable) {
+      await this.reinitProviders()
+      if (this.noProviderAvailable) {
+        const errorMsg = [
+          '❌ 未检测到任何可用的 AI 模型 API Key。',
+          '',
+          '请至少配置一个 provider：',
+          '  • Anthropic:  export ANTHROPIC_API_KEY=sk-...',
+          '  • OpenAI:     export OPENAI_API_KEY=sk-...',
+          '  • DeepSeek:   export DEEPSEEK_API_KEY=sk-...',
+        ].join('\n')
+        this.emit({ type: 'error', message: errorMsg, recoverable: true })
+        return errorMsg
+      }
+    }
+
     this.aborted = false
+    this.abortController = new AbortController()
     this.emit({ type: 'user_input', text: userInput })
+
+    // 创建持久化会话
+    if (this.db && !this.currentSessionId) {
+      try {
+        this.currentSessionId = crypto.randomUUID()
+        this.db.createSession(this.currentSessionId, this.cfg.projectRoot)
+      } catch (err) {
+        console.warn('[NexusDB] 创建会话失败:', err)
+        this.currentSessionId = null
+      }
+    }
+
+    // 持久化用户消息
+    if (this.db && this.currentSessionId) {
+      try {
+        this.db.addMessage(this.currentSessionId, 'user', userInput)
+      } catch (err) {
+        console.warn('[NexusDB] 持久化用户消息失败:', err)
+      }
+    }
 
     // 构建上下文
     const systemPrompt = await this.assembler!.buildSystemPrompt(this.todos)
@@ -94,7 +306,7 @@ export class Orchestrator {
 
     let result: string
 
-    if (this.cfg.skipPlan) {
+    if (this.skipPlan) {
       // 跳过 Plan,直接执行
       result = await this.executeDirectly(userInput, messages)
     } else {
@@ -106,50 +318,87 @@ export class Orchestrator {
     this.history.push({ role: 'user', content: userInput })
     this.history.push({ role: 'assistant', content: result })
 
+    // 持久化 assistant 回复
+    if (this.db && this.currentSessionId) {
+      try {
+        this.db.addMessage(this.currentSessionId, 'assistant', result)
+      } catch (err) {
+        console.warn('[NexusDB] 持久化 assistant 消息失败:', err)
+      }
+    }
+
     this.phase = 'done'
     this.emit({ type: 'done', summary: result })
     return result
   }
 
-  /** Plan → Execute 双阶段 */
+  /** Plan → Execute 双阶段（支持重规划循环） */
   private async planAndExecute(userInput: string, messages: ChatMessage[]): Promise<string> {
     // ─── Plan 阶段 ───
     this.setPhase('planning')
 
+    const plannerRoute = this.router!.getRouteInfo('planner')
     const planner = new Planner({
-      model: this.router.getModel('planner'),
+      model: this.router!.getModel('planner'),
       toolRegistry: this.toolRegistry,
       toolContext: this.getToolContext(),
       maxIterations: Math.min(this.cfg.maxIterations, 15),
       onEvent: (e) => this.emit(e),
+      costTracker: this.costTracker,
+      modelRole: 'planner',
+      providerName: plannerRoute.provider,
+      modelName: plannerRoute.model,
+      costPer1kInput: plannerRoute.costPer1kInput,
+      costPer1kOutput: plannerRoute.costPer1kOutput,
     })
 
-    const plan = await planner.plan(userInput, messages)
-    this.todos = plan.todos
+    let currentPlan = await planner.plan(userInput, messages)
+    this.todos = currentPlan.todos
     this.emit({ type: 'todo_update', todos: this.todos })
 
-    // 等待用户审批计划
-    this.setPhase('awaiting_approval')
-    const approved = await this.cfg.requestApproval('plan', { plan: plan.summary })
-    if (!approved) {
-      return '计划被拒绝。请重新描述你的需求,或告诉我需要调整什么。'
-    }
+    // ─── 审批 + 重规划循环 ───
+    const MAX_REPLAN = 3
+    let replanAttempts = 0
 
-    if (this.aborted) return '已中断。'
+    while (true) {
+      if (this.aborted) return '已中断。'
+
+      this.setPhase('awaiting_approval')
+      const feedback = await this.cfg.requestPlanApproval(currentPlan)
+
+      if (feedback === 'approve') {
+        break // 批准 → 进入执行
+      }
+      if (feedback === 'reject') {
+        return '计划被拒绝。请重新描述你的需求,或告诉我需要调整什么。'
+      }
+
+      // feedback 是用户反馈文本 → 带反馈重规划
+      replanAttempts++
+      if (replanAttempts > MAX_REPLAN) {
+        return '已达到最大重规划次数(3)。请重新提交需求。'
+      }
+
+      this.setPhase('planning')
+      currentPlan = await planner.replan(userInput, messages, currentPlan, feedback)
+      this.todos = currentPlan.todos
+      this.emit({ type: 'todo_update', todos: this.todos })
+    }
 
     // ─── Execute 阶段 ───
-    return await this.runExecutor(plan, messages)
+    return await this.runExecutor(currentPlan, messages)
   }
 
-  /** 直接执行(跳过 Plan) */
+  /** 直接执行(跳过 Plan，Auto 模式) */
   private async executeDirectly(userInput: string, messages: ChatMessage[]): Promise<string> {
+    // Auto 模式：空 todos，由 LLM 在执行中通过 update_todo 自主拆解
     const plan: Plan = {
       summary: userInput,
-      todos: [{ id: '1', content: userInput, status: 'pending' }],
+      todos: [],
       filesToModify: [],
-      estimatedSteps: 1,
+      estimatedSteps: 0,
     }
-    this.todos = plan.todos
+    this.todos = []
     return await this.runExecutor(plan, messages)
   }
 
@@ -157,8 +406,9 @@ export class Orchestrator {
   private async runExecutor(plan: Plan, messages: ChatMessage[]): Promise<string> {
     this.setPhase('executing')
 
+    const executorRoute = this.router!.getRouteInfo('executor')
     const executor = new Executor({
-      model: this.router.getModel('executor'),
+      model: this.router!.getModel('executor'),
       toolRegistry: this.toolRegistry,
       toolContext: this.getToolContext(),
       checkpoint: this.checkpoint,
@@ -166,6 +416,16 @@ export class Orchestrator {
       permissionMode: this.cfg.permissionMode,
       onEvent: (e) => this.emit(e),
       requestApproval: this.cfg.requestApproval,
+      costTracker: this.costTracker,
+      modelRole: 'executor',
+      providerName: executorRoute.provider,
+      modelName: executorRoute.model,
+      costPer1kInput: executorRoute.costPer1kInput,
+      costPer1kOutput: executorRoute.costPer1kOutput,
+      maxSessionCost: this.cfg.config.limits.maxSessionCost,
+      getFallbackModel: () => this.router!.getModelWithFallback('executor'),
+      fallbackModelName: this.router!.getFallbackModelName('executor') ?? undefined,
+      abortSignal: this.abortController?.signal,
     })
 
     const result = await executor.execute(plan, messages)
@@ -176,6 +436,7 @@ export class Orchestrator {
   /** 中断当前操作 */
   abort(): void {
     this.aborted = true
+    this.abortController?.abort()
   }
 
   /** 回滚到上一个检查点 */
@@ -205,19 +466,138 @@ export class Orchestrator {
 
   /** 获取当前模型 */
   getCurrentModel(): string {
+    if (!this.router) return 'not-initialized'
+    if (!this.router.hasAvailableProvider()) return '未配置，请先配置 API Key'
+    // 直接返回实际解析后的模型名，不带 auto 前缀
     return this.router.getCurrentModel('executor')
   }
 
-  /** 切换模型 */
+  /** 切换模型（校验是否支持 tool calling） */
   setModel(model: string): void {
-    this.router.setModel('executor', model)
-    this.router.setModel('planner', model)
+    if (this.router && !this.router.modelSupportsTools(model)) {
+      throw new Error(`模型 ${model} 不支持 tool calling，不能用于 executor/planner 角色`)
+    }
+    this.router?.setModel('executor', model)
+    this.router?.setModel('planner', model)
+  }
+
+  /** 获取所有已知模型（含未配置 provider 的） */
+  getAllKnownModels(): Array<{ name: string; provider: string; configured: boolean; current: boolean }> {
+    return this.router?.getAllKnownModels() ?? []
+  }
+
+  /** 检查指定 provider 是否已配置 API Key */
+  isProviderConfigured(providerName: string): boolean {
+    return this.router?.isProviderConfigured(providerName as any) ?? false
+  }
+
+  /** 获取可用模型列表 */
+  getAvailableModels(): Array<{ name: string; provider: string; current: boolean }> {
+    return this.router?.getAvailableModels() ?? []
+  }
+
+  /** 会话结束时自动合并 checkpoint 到工作分支 */
+  async mergeCheckpoints(): Promise<void> {
+    // 即使 autoCheckpoint 关闭，若已初始化仍需切回工作分支
+    if (!this.cfg.config.checkpoint.autoCheckpoint) {
+      // 仅在已初始化（可能已切换到 checkpoint 分支）时恢复
+      if (this.checkpoint.hasCheckpoints()) {
+        await this.checkpoint.mergeToWorkBranch()
+      }
+      return
+    }
+    if (!this.checkpoint.hasCheckpoints()) return
+
+    this.emit({ type: 'phase_change', phase: 'verifying' })
+
+    const result = await this.checkpoint.mergeToWorkBranch()
+
+    if (result.success) {
+      // 合并成功,发出 checkpoint 事件通知
+      this.emit({
+        type: 'checkpoint',
+        step: this.checkpoint.getCurrentStep(),
+        message: result.message,
+      })
+    } else {
+      // 合并失败(可能是冲突),发出错误事件提示用户手动解决
+      this.emit({
+        type: 'error',
+        message: result.message,
+        recoverable: true,
+      })
+    }
+  }
+
+  /** 结束当前会话并关闭数据库 */
+  async shutdown(): Promise<void> {
+    if (this.shutdownCalled) return
+    this.shutdownCalled = true
+
+    // 先合并 checkpoint
+    try {
+      await this.mergeCheckpoints()
+    } catch (err) {
+      console.warn('[Checkpoint] 合并检查点失败:', err)
+    }
+
+    if (this.db && this.currentSessionId) {
+      try {
+        const cost = this.getCostSummary()
+        this.db.endSession(
+          this.currentSessionId,
+          cost.total,
+          cost.inputTokens,
+          cost.outputTokens,
+          this.history.length
+        )
+      } catch (err) {
+        console.warn('[NexusDB] 结束会话失败:', err)
+      }
+      this.currentSessionId = null
+    }
+    this.db?.close()
+    this.db = null
+
+    // 断开所有外部 MCP Server 连接
+    if (this.mcpManager) {
+      try {
+        await this.mcpManager.disconnectAll()
+      } catch (err) {
+        console.warn('[MCP] 断开外部 Server 失败:', err)
+      }
+      this.mcpManager = null
+    }
   }
 
   /** 清除上下文 */
   clearContext(): void {
     this.history = []
     this.todos = []
+  }
+
+  /** 压缩上下文历史 */
+  compactHistory(): { tokensUsed: number } | string {
+    if (this.history.length < 4) {
+      return '消息数量较少，无需压缩'
+    }
+
+    const contextWindow = this.router?.getContextWindow('executor') ?? 128000
+    const maxTokens = Math.floor(contextWindow * (this.cfg.config.context?.budgetRatio ?? 0.8))
+    const recentKeep = this.cfg.config.context?.recentTurnsKeep ?? 5
+
+    const result = compressHistory(this.history, recentKeep, maxTokens)
+
+    if (result.compressedCount === 0) {
+      return `无需压缩（当前 ~${Math.round(result.originalTokens / 1000)}k tokens，上限 ~${Math.round(maxTokens / 1000)}k）`
+    }
+
+    this.history = result.messages
+    const currentTokens = result.compressedTokens
+
+    return {
+      tokensUsed: currentTokens,
+    }
   }
 
   /** 获取历史摘要 */

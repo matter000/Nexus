@@ -15,11 +15,11 @@
     "sourceMap": true,
     "outDir": "./dist",
     "rootDir": ".",
-    "types": ["node"],
+    "types": ["node", "bun-types"],
     "paths": {
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*", "tests/**/*"],
+  "include": ["src/**/*", "tests/**/*", "packages/**/*"],
   "exclude": ["node_modules", "dist"]
 }

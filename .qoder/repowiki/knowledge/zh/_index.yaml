@@ -1,0 +1,29 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-07-24T08:00:07Z"
+modules:
+    "":
+        dir_name: Nexus 终端 Coding Agent 项目根
+        title: Nexus 终端 Coding Agent 项目根
+        scope:
+            - README.md
+            - DESIGN.md
+            - nexus-logo-philosophy.md
+            - .gitignore
+            - bunfig.toml
+            - tsconfig.json
+            - package.json
+            - bun.lock
+            - package-lock.json
+            - generate_logo.py
+            - nexus-favicon.png
+            - nexus-logo-transparent.png
+            - nexus-logo-wordmark.png
+            - nexus-logo.png
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

@@ -7,6 +7,7 @@ import { spawn } from 'child_process'
 import { resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
 import type { ToolHandler, ToolContext } from './registry'
+import { isInsideProject } from '../utils'
 
 const definition: ToolDefinition = {
   name: 'grep',
@@ -86,6 +87,15 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
   const caseInsensitive = (params.case_insensitive as boolean) ?? false
 
   try {
+    // 安全检查：搜索路径不能越出项目根
+    if (!isInsideProject(projectRoot, searchPath)) {
+      return {
+        callId,
+        tool: 'grep',
+        result: '',
+        error: `路径越界: ${searchPath} 不在项目目录内`,
+      }
+    }
     const cwd = resolve(projectRoot)
 
     // 构建 rg 参数

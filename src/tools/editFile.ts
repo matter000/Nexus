@@ -9,6 +9,7 @@ import { resolve, relative, dirname } from 'path'
 import { createPatch } from 'diff'
 import type { ToolDefinition, ToolResult } from '../agent/types'
 import type { ToolHandler, ToolContext } from './registry'
+import { isInsideProject } from '../utils'
 import { stripBom, detectLineEnding, normalizeToLF, restoreLineEndings } from '../utils'
 
 const definition: ToolDefinition = {
@@ -69,7 +70,7 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
     const relPath = relative(projectRoot, fullPath)
 
     // 安全检查:不允许编辑项目外的文件
-    if (!fullPath.startsWith(resolve(projectRoot))) {
+    if (!isInsideProject(projectRoot, filePath)) {
       return {
         callId,
         tool: 'edit_file',

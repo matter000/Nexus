@@ -3,9 +3,10 @@
  * 单文件、无服务,存储会话历史、索引、embedding
  */
 
-import Database from 'better-sqlite3'
+import { Database } from 'bun:sqlite'
 import { join } from 'path'
 import { mkdirSync } from 'fs'
+import { runMigrations } from './migrations'
 
 export interface SessionRecord {
   id: string
@@ -28,7 +29,7 @@ export interface MessageRecord {
 }
 
 export class NexusDB {
-  private db: Database.Database
+  private db: Database
   private dbPath: string
 
   constructor(projectRoot: string) {
@@ -36,49 +37,8 @@ export class NexusDB {
     mkdirSync(nexusDir, { recursive: true })
     this.dbPath = join(nexusDir, 'nexus.db')
     this.db = new Database(this.dbPath)
-    this.db.pragma('journal_mode = WAL')
-    this.migrate()
-  }
-
-  /** 运行迁移 */
-  private migrate(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        project_root TEXT NOT NULL,
-        start_time INTEGER NOT NULL,
-        end_time INTEGER,
-        total_cost REAL DEFAULT 0,
-        total_input_tokens INTEGER DEFAULT 0,
-        total_output_tokens INTEGER DEFAULT 0,
-        message_count INTEGER DEFAULT 0
-      );
-
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        tool_name TEXT,
-        timestamp INTEGER NOT NULL,
-        FOREIGN KEY (session_id) REFERENCES sessions(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS checkpoints (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        step INTEGER NOT NULL,
-        commit_hash TEXT NOT NULL,
-        message TEXT NOT NULL,
-        todo_id TEXT,
-        timestamp INTEGER NOT NULL,
-        files_changed TEXT,
-        FOREIGN KEY (session_id) REFERENCES sessions(id)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-      CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id);
-    `)
+    this.db.exec('PRAGMA journal_mode = WAL')
+    runMigrations(this.db)
   }
 
   /** 创建新会话 */

@@ -6,12 +6,12 @@
 
 import { readFile } from 'fs/promises'
 import { spawn } from 'child_process'
-import { join } from 'path'
 import type { ChatMessage, ProjectRules, Todo } from '../agent/types'
 import type { ToolHandler } from '../tools/registry'
 import { estimateTokens, TokenBudget } from './TokenBudget'
-import { compressHistory } from './Compressor'
-import { formatRulesForPrompt } from './RulesLoader'
+import { compressHistory, compressSingleToolResult } from './Compressor'
+import { formatRulesForPrompt, getAlwaysIncludePaths } from './RulesLoader'
+import { formatGraphForContext, type CodeGraph } from './CodeGraph'
 
 const SYSTEM_PROMPT_BASE = `你是 Nexus,一个运行在终端的 AI 编程助手。
 
@@ -47,9 +47,15 @@ export interface AssemblerConfig {
 
 export class ContextAssembler {
   private config: AssemblerConfig
+  private codeGraph: CodeGraph | null = null
 
   constructor(config: AssemblerConfig) {
     this.config = config
+  }
+
+  /** 设置代码图谱实例（由 Orchestrator 在图谱构建完成后调用） */
+  setCodeGraph(graph: CodeGraph | null): void {
+    this.codeGraph = graph
   }
 
   /** 构建 system prompt (L1 静态上下文) */
@@ -65,6 +71,16 @@ export class ContextAssembler {
       parts.push(`- ${tool.definition.name}: ${tool.definition.description}`)
     }
 
+    // 常驻上下文文件
+    const alwaysIncludePaths = getAlwaysIncludePaths(this.config.rules, this.config.projectRoot)
+    if (alwaysIncludePaths.length > 0) {
+      const alwaysIncludeContent = await this.loadAlwaysIncludeFiles(alwaysIncludePaths)
+      if (alwaysIncludeContent) {
+        parts.push('\n## 常驻参考文件')
+        parts.push(alwaysIncludeContent)
+      }
+    }
+
     // Git 状态
     const gitStatus = await this.getGitStatus()
     if (gitStatus) {
@@ -75,6 +91,23 @@ export class ContextAssembler {
     const tree = await this.getProjectTree()
     if (tree) {
       parts.push(`\n## 项目结构\n\`\`\`\n${tree}\n\`\`\``)
+    }
+
+    // 代码地图（来自 CodeGraph，注入 L1 上下文）
+    if (this.codeGraph) {
+      const graphText = formatGraphForContext(this.codeGraph)
+      if (graphText) {
+        const maxGraphTokens = Math.floor(this.config.budget.allocate().systemPrompt * 0.1)
+        const graphTokens = estimateTokens(graphText)
+        if (graphTokens > maxGraphTokens) {
+          // 截断到预算范围内
+          const charsPerToken = 4
+          const maxChars = maxGraphTokens * charsPerToken
+          parts.push(`\n${graphText.slice(0, maxChars)}\n...（代码图谱过大，已截断：${graphTokens} tokens → ${maxGraphTokens} tokens）`)
+        } else {
+          parts.push(`\n${graphText}`)
+        }
+      }
     }
 
     // Todos
@@ -98,21 +131,85 @@ export class ContextAssembler {
     const budget = this.config.budget
     const allocation = budget.allocate()
 
-    // 检查 system prompt 是否超预算
-    const systemTokens = estimateTokens(systemPrompt)
+    // 1. 检查 system prompt 是否超预算，超预算则裁剪
+    const trimmedSystemPrompt = this.trimSystemPrompt(systemPrompt, allocation.systemPrompt)
 
-    // 压缩历史
+    // 2. 对历史中的工具结果做实时压缩（使用 toolResults 预算）
+    const compressedHistory = this.compressToolResultsInHistory(history, allocation.toolResults)
+
+    // 3. 压缩历史（使用 history 预算）
     const historyBudget = allocation.history
-    const compressed = compressHistory(history, this.config.recentTurnsKeep, historyBudget)
+    const compressed = compressHistory(compressedHistory, this.config.recentTurnsKeep, historyBudget)
 
     // 组装最终消息
     const messages: ChatMessage[] = [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: trimmedSystemPrompt },
       ...compressed.messages,
       { role: 'user', content: userInput },
     ]
 
     return messages
+  }
+
+  /** 裁剪 system prompt 到预算范围内 */
+  private trimSystemPrompt(systemPrompt: string, maxTokens: number): string {
+    const currentTokens = estimateTokens(systemPrompt)
+    if (currentTokens <= maxTokens) return systemPrompt
+
+    // 按优先级裁剪：先裁项目树，再裁代码地图，再裁 git 状态，最后裁常驻文件
+    const trimOrder = ['## 项目结构', '## 代码地图', '## 当前 Git 状态', '## 常驻参考文件']
+
+    let result = systemPrompt
+    for (const sectionHeader of trimOrder) {
+      const tokens = estimateTokens(result)
+      if (tokens <= maxTokens) break
+
+      result = this.removeSection(result, sectionHeader)
+    }
+
+    // 如果仍然超预算，做最终截断
+    if (estimateTokens(result) > maxTokens) {
+      const charsPerToken = 4
+      const maxChars = maxTokens * charsPerToken
+      result = result.slice(0, maxChars) + '\n...(system prompt 已裁剪)'
+    }
+
+    return result
+  }
+
+  /** 从 system prompt 中移除指定段落 */
+  private removeSection(prompt: string, sectionHeader: string): string {
+    const lines = prompt.split('\n')
+    const result: string[] = []
+    let skipping = false
+
+    for (const line of lines) {
+      if (line.startsWith('## ')) {
+        skipping = line === sectionHeader
+        if (!skipping) {
+          result.push(line)
+        }
+        continue
+      }
+      if (!skipping) {
+        result.push(line)
+      }
+    }
+
+    return result.join('\n')
+  }
+
+  /** 对历史消息中的工具结果做实时压缩 */
+  private compressToolResultsInHistory(history: ChatMessage[], _toolResultsBudget: number): ChatMessage[] {
+    // 对每条工具消息调用 compressSingleToolResult 做实时压缩
+    return history.map((msg) => {
+      if (msg.role === 'tool' && msg.name) {
+        const hasError = msg.content.includes('Error') || msg.content.includes('error:')
+        const compressed = compressSingleToolResult(msg.name, msg.content, hasError)
+        return { ...msg, content: compressed }
+      }
+      return msg
+    })
   }
 
   /** 获取 git 状态 */

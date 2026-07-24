@@ -23,10 +23,6 @@ const DEFAULT_CONFIG: NexusConfig = {
         apiKeyEnv: 'OPENAI_API_KEY',
         defaultModel: 'gpt-4o',
       },
-      ollama: {
-        baseUrl: 'http://localhost:11434',
-        defaultModel: 'llama3',
-      },
       deepseek: {
         apiKeyEnv: 'DEEPSEEK_API_KEY',
         baseUrl: 'https://api.deepseek.com',
@@ -88,10 +84,12 @@ function mergeConfig(raw: Record<string, unknown>): NexusConfig {
     const providers = models.providers as Record<string, Record<string, string>> | undefined
     if (providers) {
       for (const [name, pConfig] of Object.entries(providers)) {
+        const existing = config.models.providers[name]
         config.models.providers[name] = {
-          apiKeyEnv: pConfig.api_key_env,
-          baseUrl: pConfig.base_url,
-          defaultModel: pConfig.default_model ?? config.models.providers[name]?.defaultModel ?? '',
+          // 保留默认值回退：TOML 省略字段时不覆盖为 undefined
+          apiKeyEnv: pConfig.api_key_env ?? existing?.apiKeyEnv,
+          baseUrl: pConfig.base_url ?? existing?.baseUrl,
+          defaultModel: pConfig.default_model ?? existing?.defaultModel ?? '',
         }
       }
     }

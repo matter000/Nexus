@@ -11,9 +11,17 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
-import { readFile, writeFile, rename, mkdir } from 'fs/promises'
+import { readFile, writeFile, rename, mkdir, readdir } from 'fs/promises'
 import { resolve, relative, dirname } from 'path'
 import { spawn } from 'child_process'
+import {
+  stripBom,
+  detectLineEnding,
+  normalizeToLF,
+  restoreLineEndings,
+  sanitizeBinaryOutput,
+} from '../../../src/utils/index'
+import { isDangerousCommand } from '../../../src/sandbox/CommandGuard'
 
 // ─── 配置 ─────────────────────────────────────────────────────────────────────
 
@@ -38,66 +46,6 @@ class PathError extends Error {
     super(message)
     this.name = 'PathError'
   }
-}
-
-/** 危险命令检测(内联版本,与 src/sandbox/CommandGuard.ts 保持一致) */
-const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
-  { pattern: /rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?\/(\s|$)/, reason: '删除根目录' },
-  { pattern: /rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?~\/?(\s|$)/, reason: '删除用户主目录' },
-  { pattern: /rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+\//, reason: '递归强制删除根路径' },
-  { pattern: /\bdd\b.*of=\/dev\//, reason: '直接写入块设备' },
-  { pattern: /\bmkfs\b/, reason: '格式化文件系统' },
-  { pattern: /\bshred\b/, reason: '安全擦除文件' },
-  { pattern: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, reason: 'Fork 炸弹' },
-  { pattern: /curl\s+.*\|\s*(bash|sh|zsh)/, reason: '远程代码执行' },
-  { pattern: /wget\s+.*\|\s*(bash|sh|zsh)/, reason: '远程代码执行' },
-  { pattern: /sudo\s+rm\s+-[a-zA-Z]*r/, reason: '以 root 递归删除' },
-  { pattern: /format\s+[a-zA-Z]:/i, reason: '格式化磁盘分区' },
-  { pattern: /git\s+push\s+.*--force.*\s+(main|master)/, reason: '强制推送到主分支' },
-]
-
-function checkCommandSafety(command: string): { safe: boolean; reason: string } {
-  for (const { pattern, reason } of DANGEROUS_PATTERNS) {
-    if (pattern.test(command)) {
-      return { safe: false, reason }
-    }
-  }
-  return { safe: true, reason: '' }
-}
-
-/** BOM 和行尾处理(与 src/tools/editFile.ts 保持一致) */
-function stripBom(content: string): { bom: string; text: string } {
-  if (content.charCodeAt(0) === 0xfeff) {
-    return { bom: content[0], text: content.slice(1) }
-  }
-  return { bom: '', text: content }
-}
-
-function detectLineEnding(content: string): 'lf' | 'crlf' {
-  const crlfCount = (content.match(/\r\n/g) ?? []).length
-  const lfCount = (content.match(/(?<!\r)\n/g) ?? []).length
-  return crlfCount > lfCount ? 'crlf' : 'lf'
-}
-
-function normalizeToLF(content: string): string {
-  return content.replace(/\r\n/g, '\n')
-}
-
-function restoreLineEndings(content: string, ending: 'lf' | 'crlf'): string {
-  return ending === 'crlf' ? content.replace(/\n/g, '\r\n') : content
-}
-
-/** 二进制输出清理 */
-function sanitizeOutput(str: string): string {
-  return Array.from(str)
-    .filter((char) => {
-      const code = char.codePointAt(0)
-      if (code === undefined) return false
-      if (code === 0x09 || code === 0x0a || code === 0x0d) return true
-      if (code <= 0x1f) return false
-      return true
-    })
-    .join('')
 }
 
 /** 结构化错误返回 */
@@ -233,10 +181,10 @@ server.tool(
     timeout: z.number().optional().default(DEFAULT_TIMEOUT_SECONDS).describe('超时时间(秒),默认 30'),
   },
   async ({ command, timeout }) => {
-    // 危险命令检测: dangerous 级别直接拒绝
-    const safety = checkCommandSafety(command)
-    if (!safety.safe) {
-      return errorResult('DANGEROUS_COMMAND', `命令被拒绝: ${safety.reason}`, '此命令被安全策略拦截,无法执行')
+    // 危险命令检测: dangerous 级别直接拒绝(使用核心 CommandGuard 统一检测)
+    const assessment = isDangerousCommand(command)
+    if (assessment.level === 'dangerous') {
+      return errorResult('DANGEROUS_COMMAND', `命令被拒绝: ${assessment.reason}`, '此命令被安全策略拦截,无法执行')
     }
 
     try {
@@ -283,9 +231,9 @@ server.tool(
         })
       })
 
-      // 清理 + 截断输出
-      const cleanStdout = sanitizeOutput(result.stdout).slice(0, MAX_OUTPUT_BYTES)
-      const cleanStderr = sanitizeOutput(result.stderr).slice(0, MAX_OUTPUT_BYTES)
+      // 清理 + 截断输出(复用核心 sanitizeBinaryOutput)
+      const cleanStdout = sanitizeBinaryOutput(result.stdout).slice(0, MAX_OUTPUT_BYTES)
+      const cleanStderr = sanitizeBinaryOutput(result.stderr).slice(0, MAX_OUTPUT_BYTES)
 
       const parts: string[] = [`$ ${command}`, `Exit code: ${result.code}`]
       if (result.timedOut) parts.push(`⚠️ 命令超时 (${timeout}s)`)
@@ -355,6 +303,115 @@ server.tool(
   }
 )
 
+// ─── Resources ────────────────────────────────────────────────────────────────
+
+/** nexus://config — 返回当前 Nexus 配置 */
+server.resource(
+  'nexus-config',
+  'nexus://config',
+  { description: '当前 Nexus 项目配置（.nexus/config.toml）' },
+  async () => {
+    try {
+      const configPath = resolve(PROJECT_ROOT, '.nexus', 'config.toml')
+      const content = await readFile(configPath, 'utf-8')
+      return { contents: [{ uri: 'nexus://config', mimeType: 'text/plain', text: content }] }
+    } catch {
+      return { contents: [{ uri: 'nexus://config', mimeType: 'text/plain', text: '# 配置文件不存在，使用默认配置' }] }
+    }
+  }
+)
+
+/** nexus://project-structure — 返回项目目录树 */
+server.resource(
+  'nexus-project-structure',
+  'nexus://project-structure',
+  { description: '项目目录树结构（最多 3 层）' },
+  async () => {
+    try {
+      const tree = await buildDirectoryTree(PROJECT_ROOT, 3)
+      return { contents: [{ uri: 'nexus://project-structure', mimeType: 'text/plain', text: tree }] }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { contents: [{ uri: 'nexus://project-structure', mimeType: 'text/plain', text: `读取目录结构失败: ${msg}` }] }
+    }
+  }
+)
+
+/** 递归构建目录树 */
+async function buildDirectoryTree(dir: string, maxDepth: number, prefix = '', depth = 0): Promise<string> {
+  if (depth >= maxDepth) return prefix + '...\n'
+  const entries = await readdir(dir, { withFileTypes: true })
+  const filtered = entries
+    .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== 'dist')
+    .sort((a, b) => {
+      // 目录优先
+      if (a.isDirectory() && !b.isDirectory()) return -1
+      if (!a.isDirectory() && b.isDirectory()) return 1
+      return a.name.localeCompare(b.name)
+    })
+
+  let result = ''
+  for (let i = 0; i < filtered.length; i++) {
+    const entry = filtered[i]
+    const isLast = i === filtered.length - 1
+    const connector = isLast ? '└── ' : '├── '
+    const childPrefix = isLast ? '    ' : '│   '
+    if (entry.isDirectory()) {
+      result += `${prefix}${connector}${entry.name}/\n`
+      try {
+        const subDir = resolve(dir, entry.name)
+        result += await buildDirectoryTree(subDir, maxDepth, prefix + childPrefix, depth + 1)
+      } catch {
+        // 无权限读取的子目录跳过
+      }
+    } else {
+      result += `${prefix}${connector}${entry.name}\n`
+    }
+  }
+  return result
+}
+
+// ─── Prompts ──────────────────────────────────────────────────────────────────
+
+/** nexus://plan — 规划模板 prompt */
+server.prompt(
+  'nexus-plan',
+  '制定任务执行计划',
+  { task: z.string().describe('需要规划的任务描述') },
+  ({ task }) => ({
+    messages: [
+      {
+        role: 'user' as const,
+        content: {
+          type: 'text' as const,
+          text: `请为以下任务制定详细的执行计划：\n\n${task}\n\n要求：\n1. 将任务分解为可执行的小步骤\n2. 标注每个步骤需要修改的文件\n3. 评估潜在风险和注意事项\n4. 给出预估步骤数`,
+        },
+      },
+    ],
+  })
+)
+
+/** nexus://review — 代码审查模板 prompt */
+server.prompt(
+  'nexus-review',
+  '代码审查',
+  {
+    file_path: z.string().describe('要审查的文件路径'),
+    focus: z.string().optional().describe('审查重点（如性能、安全、可读性）'),
+  },
+  ({ file_path, focus }) => ({
+    messages: [
+      {
+        role: 'user' as const,
+        content: {
+          type: 'text' as const,
+          text: `请审查以下文件的代码：\n\n文件: ${file_path}${focus ? `\n审查重点: ${focus}` : ''}\n\n请检查：\n1. 代码质量和可读性\n2. 潜在 bug 和边界情况\n3. 性能问题\n4. 安全风险\n5. 是否符合项目编码规范\n\n请给出具体的改进建议，附带代码示例。`,
+        },
+      },
+    ],
+  })
+)
+
 // ─── 启动 + 优雅退出 ──────────────────────────────────────────────────────────
 
 async function main() {
@@ -362,6 +419,8 @@ async function main() {
   await server.connect(transport)
   console.error(`[nexus-mcp] Server running on stdio (project: ${PROJECT_ROOT})`)
   console.error(`[nexus-mcp] Tools: read_file, edit_file, bash, grep`)
+  console.error(`[nexus-mcp] Resources: nexus://config, nexus://project-structure`)
+  console.error(`[nexus-mcp] Prompts: nexus-plan, nexus-review`)
   console.error(`[nexus-mcp] Waiting for JSON-RPC requests on stdin...`)
 }
 

@@ -1,11 +1,13 @@
 /**
  * 代码图谱 (v1.1 引入)
- * 用 tree-sitter 解析每个文件,提取函数/类/方法的签名 + docstring
- * 生成“地图”(每文件压缩到几行),常驻 L1 上下文
- *
- * 当前为 TypeScript 侧空图谱 fallback
- * v2 时由 Go 引擎的 tree-sitter 后台索引服务提供实现
+ * 使用 TypeScript Compiler API 解析 TS/JS 文件
+ * 提取函数/类/接口/类型声明 + import/export 关系
+ * 生成"地图"(每文件压缩到几行),常驻 L1 上下文
  */
+
+import ts from 'typescript'
+import { readdir, readFile, stat } from 'fs/promises'
+import { join, relative, extname } from 'path'
 
 export interface CodeSymbol {
   name: string
@@ -92,35 +94,318 @@ export interface GraphEngine {
   readonly name: string
 }
 
-// ─── TypeScript 默认实现 (空图谱 fallback) ─────────────────────────────────
+// ─── 排除目录 ──────────────────────────────────────────────────────────────
+
+const EXCLUDED_DIRS = new Set([
+  'node_modules', '.git', 'dist', 'build', '.next', '.nuxt',
+  'coverage', '__pycache__', '.cache', 'bun.lock',
+])
+
+const SUPPORTED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts'])
+
+// ─── 文件遍历 ──────────────────────────────────────────────────────────────
+
+async function collectFiles(dir: string, rootDir: string): Promise<string[]> {
+  const results: string[] = []
+  let entries: import('fs').Dirent[]
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return results
+  }
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (!EXCLUDED_DIRS.has(entry.name)) {
+        results.push(...await collectFiles(fullPath, rootDir))
+      }
+    } else if (entry.isFile()) {
+      const ext = extname(entry.name)
+      if (SUPPORTED_EXTENSIONS.has(ext)) {
+        results.push(relative(rootDir, fullPath).replace(/\\/g, '/'))
+      }
+    }
+  }
+  return results
+}
+
+// ─── AST 解析 ──────────────────────────────────────────────────────────────
+
+function getJSDocComment(node: ts.Node, sourceFile: ts.SourceFile): string | undefined {
+  const jsDoc = (node as unknown as { jsDoc?: ts.JSDoc[] }).jsDoc
+  if (jsDoc && jsDoc.length > 0) {
+    return jsDoc.map((d) => d.comment ?? '').filter(Boolean).join('\n') || undefined
+  }
+  return undefined
+}
+
+function getSignature(node: ts.Node, sourceFile: ts.SourceFile): string {
+  // Get just the first line or a compact representation
+  const text = node.getText(sourceFile)
+  const firstLine = text.split('\n')[0].trim()
+  // Truncate long signatures
+  return firstLine.length > 120 ? firstLine.slice(0, 120) + '...' : firstLine
+}
+
+function isExported(node: ts.Node): boolean {
+  const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined
+  return modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false
+}
+
+function parseSourceFile(content: string, filePath: string): { symbols: CodeSymbol[]; imports: string[]; lineCount: number } {
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  )
+
+  const symbols: CodeSymbol[] = []
+  const imports: string[] = []
+  const lineCount = sourceFile.getLineAndCharacterOfPosition(sourceFile.getEnd()).line + 1
+
+  function visit(node: ts.Node): void {
+    // Extract imports
+    if (ts.isImportDeclaration(node)) {
+      const moduleSpec = node.moduleSpecifier
+      if (ts.isStringLiteral(moduleSpec)) {
+        imports.push(moduleSpec.text)
+      }
+    }
+
+    // Function declarations
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+      const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1
+      symbols.push({
+        name: node.name.text,
+        kind: 'function',
+        filePath,
+        startLine,
+        endLine,
+        signature: getSignature(node, sourceFile),
+        docstring: getJSDocComment(node, sourceFile),
+        exports: isExported(node),
+      })
+    }
+
+    // Class declarations
+    if (ts.isClassDeclaration(node) && node.name) {
+      const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+      const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1
+      symbols.push({
+        name: node.name.text,
+        kind: 'class',
+        filePath,
+        startLine,
+        endLine,
+        signature: getSignature(node, sourceFile),
+        docstring: getJSDocComment(node, sourceFile),
+        exports: isExported(node),
+      })
+      // Extract methods (top-level only, don't recurse into function bodies)
+      for (const member of node.members) {
+        if (ts.isMethodDeclaration(member) && member.name) {
+          const mName = ts.isIdentifier(member.name) ? member.name.text : member.name.getText(sourceFile)
+          const mStartLine = sourceFile.getLineAndCharacterOfPosition(member.getStart(sourceFile)).line + 1
+          const mEndLine = sourceFile.getLineAndCharacterOfPosition(member.getEnd()).line + 1
+          symbols.push({
+            name: `${node.name.text}.${mName}`,
+            kind: 'method',
+            filePath,
+            startLine: mStartLine,
+            endLine: mEndLine,
+            signature: getSignature(member, sourceFile),
+            docstring: getJSDocComment(member, sourceFile),
+            exports: false,
+          })
+        }
+      }
+      return // Don't recurse deeper into class body
+    }
+
+    // Interface declarations
+    if (ts.isInterfaceDeclaration(node) && node.name) {
+      const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+      const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1
+      symbols.push({
+        name: node.name.text,
+        kind: 'interface',
+        filePath,
+        startLine,
+        endLine,
+        signature: getSignature(node, sourceFile),
+        docstring: getJSDocComment(node, sourceFile),
+        exports: isExported(node),
+      })
+    }
+
+    // Type alias declarations
+    if (ts.isTypeAliasDeclaration(node) && node.name) {
+      const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+      const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1
+      symbols.push({
+        name: node.name.text,
+        kind: 'type',
+        filePath,
+        startLine,
+        endLine,
+        signature: getSignature(node, sourceFile),
+        docstring: getJSDocComment(node, sourceFile),
+        exports: isExported(node),
+      })
+    }
+
+    // Top-level variable declarations (const/let/var)
+    if (ts.isVariableStatement(node) && isExported(node)) {
+      for (const decl of node.declarationList.declarations) {
+        if (ts.isIdentifier(decl.name)) {
+          const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+          const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1
+          symbols.push({
+            name: decl.name.text,
+            kind: 'variable',
+            filePath,
+            startLine,
+            endLine,
+            signature: getSignature(node, sourceFile),
+            docstring: getJSDocComment(node, sourceFile),
+            exports: true,
+          })
+        }
+      }
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  ts.forEachChild(sourceFile, visit)
+
+  return { symbols, imports, lineCount }
+}
+
+// ─── TypeScript 默认实现 ─────────────────────────────────────────────────
 
 /**
  * TypeScript 侧图谱引擎
- * 当前返回空图谱,作为 Go 引擎不可用时的 fallback
+ * 使用 TypeScript Compiler API 解析文件,提取代码结构
  */
 export class TypeScriptGraphEngine implements GraphEngine {
   readonly name = 'typescript'
   private graph: CodeGraph = { files: new Map(), symbolIndex: new Map(), dependencyGraph: new Map() }
+  private projectRoot: string = ''
 
-  async buildGraph(_projectRoot: string): Promise<CodeGraph> {
-    // TODO Phase 4: 使用 tree-sitter (WASM) 实现本地 AST 解析
+  async buildGraph(projectRoot: string): Promise<CodeGraph> {
+    this.projectRoot = projectRoot
+    this.graph = { files: new Map(), symbolIndex: new Map(), dependencyGraph: new Map() }
+
+    const files = await collectFiles(projectRoot, projectRoot)
+    // 大项目限制: 超过 1000 个文件时只提取顶层声明
+    const isLargeProject = files.length > 1000
+
+    for (const relPath of files) {
+      await this.parseAndAddFile(relPath, isLargeProject)
+    }
+
     return this.graph
   }
 
-  async querySymbol(_name: string): Promise<CodeSymbol[]> {
-    return []
+  async querySymbol(name: string): Promise<CodeSymbol[]> {
+    const results: CodeSymbol[] = []
+    const lowerName = name.toLowerCase()
+
+    for (const [symbolName, symbols] of this.graph.symbolIndex) {
+      if (symbolName.toLowerCase() === lowerName || symbolName.toLowerCase().includes(lowerName)) {
+        results.push(...symbols)
+      }
+    }
+    return results
   }
 
-  async getDependencies(_filePath: string): Promise<string[]> {
-    return []
+  async getDependencies(filePath: string): Promise<string[]> {
+    return this.graph.dependencyGraph.get(filePath) ?? []
   }
 
-  async updateGraph(_changedFiles: string[]): Promise<CodeGraph> {
+  async updateGraph(changedFiles: string[]): Promise<CodeGraph> {
+    const isLargeProject = this.graph.files.size > 1000
+
+    for (const filePath of changedFiles) {
+      // Remove old data for this file
+      this.removeFile(filePath)
+      // Re-parse
+      await this.parseAndAddFile(filePath, isLargeProject)
+    }
+
     return this.graph
   }
 
   isAvailable(): boolean {
     return true
+  }
+
+  /** 解析并添加单个文件到图谱 */
+  private async parseAndAddFile(relPath: string, topOnly: boolean): Promise<void> {
+    const absPath = join(this.projectRoot, relPath)
+    let content: string
+    try {
+      content = await readFile(absPath, 'utf-8')
+    } catch {
+      return // 文件不可读,跳过
+    }
+
+    try {
+      const { symbols, imports, lineCount } = parseSourceFile(content, relPath)
+
+      const skeleton: FileSkeleton = { filePath: relPath, symbols, imports, lineCount }
+      this.graph.files.set(relPath, skeleton)
+
+      // Build symbol index
+      for (const symbol of symbols) {
+        const existing = this.graph.symbolIndex.get(symbol.name) ?? []
+        existing.push(symbol)
+        this.graph.symbolIndex.set(symbol.name, existing)
+      }
+
+      // Build dependency graph (resolve relative imports)
+      const resolvedDeps: string[] = []
+      for (const imp of imports) {
+        if (imp.startsWith('.')) {
+          // Resolve relative import path
+          const dir = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : ''
+          const resolved = join(dir, imp).replace(/\\/g, '/')
+          resolvedDeps.push(resolved)
+        } else {
+          // External package - just record the package name
+          resolvedDeps.push(imp)
+        }
+      }
+      this.graph.dependencyGraph.set(relPath, resolvedDeps)
+    } catch {
+      // 单个文件解析失败不阻塞整个图谱构建
+    }
+  }
+
+  /** 移除文件的旧数据 */
+  private removeFile(filePath: string): void {
+    const oldSkeleton = this.graph.files.get(filePath)
+    if (!oldSkeleton) return
+
+    // Remove symbols from index
+    for (const symbol of oldSkeleton.symbols) {
+      const existing = this.graph.symbolIndex.get(symbol.name)
+      if (existing) {
+        const filtered = existing.filter((s) => s.filePath !== filePath)
+        if (filtered.length > 0) {
+          this.graph.symbolIndex.set(symbol.name, filtered)
+        } else {
+          this.graph.symbolIndex.delete(symbol.name)
+        }
+      }
+    }
+
+    this.graph.files.delete(filePath)
+    this.graph.dependencyGraph.delete(filePath)
   }
 }
 
@@ -154,10 +439,14 @@ export function formatGraphForContext(graph: CodeGraph): string {
 
   const parts: string[] = ['## 代码地图']
   for (const [filePath, skeleton] of graph.files) {
-    const symbols = skeleton.symbols
-      .map((s) => `  ${s.kind} ${s.signature}`)
+    // Only show exported symbols for compact context
+    const exportSymbols = skeleton.symbols.filter((s) => s.exports || s.kind === 'class' || s.kind === 'interface' || s.kind === 'type')
+    if (exportSymbols.length === 0) continue
+
+    const symbols = exportSymbols
+      .map((s) => `  ${s.kind} ${s.name} (L${s.startLine}-${s.endLine})`)
       .join('\n')
-    parts.push(`### ${filePath}\n${symbols}`)
+    parts.push(`### ${filePath} (${skeleton.lineCount}L)\n${symbols}`)
   }
   return parts.join('\n\n')
 }
