@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Database
+.nexus/nexus.db
+.nexus/nexus.db-wal
+.nexus/nexus.db-shm
+
+# Secrets (API keys)
+.nexus/secrets.toml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Temp files
+*.nexus-tmp-*
+*.log
+
+# Environment
+.env
+.env.local

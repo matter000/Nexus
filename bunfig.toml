@@ -1,0 +1,8 @@
+[test]
+timeout = 30000
+
+[install]
+peer = false
+
+[run]
+bun = true

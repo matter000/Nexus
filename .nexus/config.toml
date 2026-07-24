@@ -1,0 +1,61 @@
+# Nexus 配置文件
+# 模型路由、权限模式、成本限制等
+
+[models]
+# 各阶段使用的模型,设为 "auto" 让 Nexus 自动选择
+planner = "auto"
+executor = "auto"
+summarizer = "auto"
+verifier = "auto"
+
+[models.providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"
+default_model = "claude-sonnet-4-20250514"
+
+[models.providers.openai]
+api_key_env = "OPENAI_API_KEY"
+default_model = "gpt-4o"
+
+[models.providers.ollama]
+base_url = "http://localhost:11434"
+default_model = "llama3"
+
+[models.providers.deepseek]
+api_key_env = "DEEPSEEK_API_KEY"
+base_url = "https://api.deepseek.com"
+default_model = "deepseek-chat"
+
+# 通用 OpenAI 兼容接口(支持 Moonshot/智谱/硅基流动等任意厂商)
+# 配置 base_url 指向厂商的 OpenAI 兼容端点即可
+[models.providers.custom]
+api_key_env = "CUSTOM_API_KEY"
+base_url = ""  # 例如: https://api.moonshot.cn/v1, https://open.bigmodel.cn/api/paas/v4
+default_model = ""  # 例如: moonshot-v1-8k, glm-4
+
+[permissions]
+# 权限模式: ask | auto-edit | auto-all | yolo
+mode = "ask"
+
+[limits]
+# 每会话最大成本(美元),超过后暂停询问用户
+max_session_cost = 5.0
+# 单次 bash 命令超时(秒)
+bash_timeout = 30
+# 文件读取最大行数(超过则截断)
+max_read_lines = 2000
+# Agent loop 最大迭代步数
+max_iterations = 50
+# bash 输出最大字节数
+max_output_bytes = 102400
+
+[context]
+# Token 预算(占模型上下文窗口的比例)
+budget_ratio = 0.8
+# 近期完整保留的对话轮数
+recent_turns_keep = 5
+
+[checkpoint]
+# 是否自动创建 git checkpoint
+auto_checkpoint = true
+# checkpoint 分支名
+branch = "nexus/checkpoints"

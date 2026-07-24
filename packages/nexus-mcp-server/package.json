@@ -1,0 +1,17 @@
+{
+  "name": "@nexus/mcp-server",
+  "version": "0.1.0",
+  "description": "Nexus MCP Server - 可独立发布的 MCP Server 包,让外部 IDE 挂载 Nexus 工具",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "nexus-mcp": "src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0"
+  }
+}

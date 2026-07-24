@@ -1,0 +1,20 @@
+[project]
+name = "Nexus"
+language = "typescript"
+test_command = "bun test"
+build_command = "bun run build"
+
+[style]
+# 让 agent 生成的代码符合项目风格
+indent = 2
+quote = "single"
+semicolons = false
+
+[constraints]
+# 硬约束,agent 必须遵守
+"不要引入新的运行时依赖" = true
+"修改 core/ 前必须写测试" = true
+
+[context]
+# 额外常驻上下文
+always_include = ["DESIGN.md", "src/agent/types.ts"]
