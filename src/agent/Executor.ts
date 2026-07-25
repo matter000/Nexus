@@ -28,6 +28,7 @@ const EXECUTE_SYSTEM_SUFFIX = `
 - 如果 edit 失败(未找到/不唯一),先 read_file 获取最新内容再重试
 - 每完成一个步骤,必须调用 update_todo(action="complete", id="...") 标记该步骤完成
 - 遇到无法解决的问题,诚实说明而不是强行修改
+- bash 命令的运行目录是项目根目录，不要 cd 到别处，直接用 python3 文件名 即可运行
 
 ## Auto 模式（无预设 todo 时）
 - 如无预设 todo,请先用 update_todo(action="add", content="...") 拆解任务为 2-5 个步骤,再逐步执行
@@ -105,6 +106,8 @@ export class Executor {
   private consecutiveEditFailures = new Map<string, number>()
   /** 自上次 todo 状态变更以来的工具调用数（检测 agent 是否陷入循环） */
   private stepsSinceProgress = 0
+  /** 已发出的 stuck 警告次数（最多 2 次，避免刷屏） */
+  private stuckWarnings = 0
 
   constructor(config: ExecutorConfig) {
     this.config = config
@@ -238,13 +241,14 @@ export class Executor {
         await this.executeSingleToolCall(tc, messages)
       }
 
-      // 检测 agent 是否陷入循环：连续 5 步无 todo 进展时提示用户
-      if (this.stepsSinceProgress >= 5) {
+      // 检测 agent 是否陷入循环：连续 8 步无 progress 时提示（最多 2 次）
+      if (this.stepsSinceProgress >= 8 && this.stuckWarnings < 2) {
+        this.stuckWarnings++
         onEvent({
           type: 'system_info',
-          message: `已执行 ${this.stepsSinceProgress} 步但无 todo 进展，agent 可能在循环中。如果看起来卡住了，可以按 /abort 中断。`,
+          message: `已执行 ${this.stepsSinceProgress} 步但无 todo 进展，agent 可能在循环中。如果看起来卡住了，可以按 Ctrl+C 中断。`,
         })
-        this.stepsSinceProgress = 0 // 重置，避免重复提示
+        this.stepsSinceProgress = 0
       }
     }
 
@@ -284,8 +288,11 @@ export class Executor {
   ): Promise<string> {
     const { model, toolRegistry, toolContext, onEvent } = this.config
 
-    // 验证阶段仅允许只读工具（bash + read_file + grep 等，不允许 edit_file）
+    // 验证阶段允许只读工具 + bash（跑测试），不允许 edit_file
     const verifyTools = toolRegistry.getForPhase('plan')
+    // 额外加入 bash 用于运行测试
+    const bashHandler = toolRegistry.get('bash')
+    if (bashHandler) verifyTools.push(bashHandler)
     const verifyToolsForAI: Record<string, { description: string; parameters: unknown }> = {}
     for (const tool of verifyTools) {
       verifyToolsForAI[tool.definition.name] = {
