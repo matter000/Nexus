@@ -193,6 +193,32 @@ export class CheckpointManager {
     return this.checkpoints.length > 0
   }
 
+  /**
+   * 回滚单个文件到最近的检查点状态
+   * 用于连续编辑失败时自动恢复文件到上一个良好状态
+   */
+  async rollbackFile(filePath: string): Promise<{ success: boolean; message: string }> {
+    if (!this.initialized && this.enabled) {
+      await this.init()
+    }
+
+    // 从 checkpoint 分支的最近 commit 恢复指定文件
+    const result = await git(['checkout', 'HEAD', '--', filePath], this.projectRoot)
+    if (result.exitCode === 0) {
+      return { success: true, message: `已将 ${filePath} 回滚到最近检查点状态` }
+    }
+
+    // 如果 checkpoint 分支无该文件，尝试从工作分支恢复
+    if (this.workBranch) {
+      const fallback = await git(['checkout', this.workBranch, '--', filePath], this.projectRoot)
+      if (fallback.exitCode === 0) {
+        return { success: true, message: `已将 ${filePath} 回滚到 ${this.workBranch} 分支状态` }
+      }
+    }
+
+    return { success: false, message: `回滚 ${filePath} 失败: ${result.stderr}` }
+  }
+
   /** 获取用户进入会话前的工作分支名 */
   getWorkBranch(): string {
     return this.workBranch

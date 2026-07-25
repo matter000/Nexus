@@ -14,6 +14,7 @@ import { submitPlanTool } from './submitPlan'
 import { listDirectoryTool } from './listDirectory'
 import { searchSymbolTool } from './searchSymbol'
 import { fetchUrlTool } from './fetchUrl'
+import { createFileTool } from './createFile'
 import { dispatchSubagentToolDefinition } from '../agent/SubAgent'
 import { toolSchemas } from './schemas'
 import { semanticSearchToolDefinition, getSemanticSearchEngine } from '../context/SemanticSearch'
@@ -171,6 +172,7 @@ export function createToolRegistry(): ToolRegistry {
   registry.register(listDirectoryTool)
   registry.register(searchSymbolTool)
   registry.register(fetchUrlTool)
+  registry.register(createFileTool)
   // 注册语义搜索工具 (异步加载模型,首次 search 时建立索引)
   registry.register({
     definition: {
@@ -240,6 +242,110 @@ export function createToolRegistry(): ToolRegistry {
         callId: context.callId,
         tool: 'dispatch_subagent',
         result: `子任务完成: ${result.summary}${filesNote}`,
+      }
+    },
+  })
+
+  // 注册 dispatch_subagents 并行子任务工具（最多 3 个并行）
+  registry.register({
+    definition: {
+      name: 'dispatch_subagents',
+      description:
+        '并行分派多个独立子任务给子 Agent。每个任务独立执行，最多 3 个并行。适用于多个互不依赖的任务（如同时搜索多个文件、同时分析多个模块）。写权限任务会自动串行执行。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tasks: {
+            type: 'array',
+            description: '子任务数组。每个元素是 {description: string, writable?: boolean, tools?: string[]} 格式的对象',
+            items: {
+              type: 'object',
+              description: '单个子任务: {description, writable?, tools?}',
+            },
+          },
+        },
+        required: ['tasks'],
+      },
+      requiresApproval: false,
+      phase: 'execute',
+    },
+    execute: async (params, context) => {
+      const runner = registry.getSubAgentRunner()
+      if (!runner) {
+        return {
+          callId: context.callId,
+          tool: 'dispatch_subagents',
+          result: '',
+          error: 'SubAgent 未初始化，无法分派子任务',
+        }
+      }
+
+      const taskDefs = params.tasks as Array<{ description: string; writable?: boolean; tools?: string[] }>
+      if (!Array.isArray(taskDefs) || taskDefs.length === 0) {
+        return { callId: context.callId, tool: 'dispatch_subagents', result: '', error: '任务列表为空' }
+      }
+
+      // 分离只读任务和写任务
+      const readTasks = taskDefs.filter((t) => !t.writable)
+      const writeTasks = taskDefs.filter((t) => t.writable)
+
+      const results: Array<{ description: string; success: boolean; summary: string; error?: string }> = []
+
+      // 只读任务并行执行（上限 3）
+      const PARALLEL_LIMIT = 3
+      for (let i = 0; i < readTasks.length; i += PARALLEL_LIMIT) {
+        const batch = readTasks.slice(i, i + PARALLEL_LIMIT)
+        const batchResults = await Promise.all(
+          batch.map((t) => {
+            const task: SubAgentTask = {
+              id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              description: t.description,
+              writable: false,
+              tools: t.tools ?? [],
+              maxIterations: 10,
+            }
+            return runner.run(task)
+          })
+        )
+        for (let j = 0; j < batchResults.length; j++) {
+          results.push({
+            description: batch[j].description,
+            success: batchResults[j].success,
+            summary: batchResults[j].summary,
+            error: batchResults[j].error,
+          })
+        }
+      }
+
+      // 写任务串行执行（互斥）
+      for (const t of writeTasks) {
+        const task: SubAgentTask = {
+          id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          description: t.description,
+          writable: true,
+          tools: t.tools ?? [],
+          maxIterations: 10,
+        }
+        const result = await runner.run(task)
+        results.push({
+          description: t.description,
+          success: result.success,
+          summary: result.summary,
+          error: result.error,
+        })
+      }
+
+      // 汇总结果
+      const succeeded = results.filter((r) => r.success)
+      const failed = results.filter((r) => !r.success)
+      const summaryParts = results.map((r, i) =>
+        `${r.success ? '✅' : '❌'} 任务${i + 1}: ${r.summary || r.error}`
+      )
+
+      return {
+        callId: context.callId,
+        tool: 'dispatch_subagents',
+        result: `并行子任务完成: ${succeeded.length} 成功, ${failed.length} 失败\n${summaryParts.join('\n')}`,
       }
     },
   })

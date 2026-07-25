@@ -46,7 +46,7 @@ export function isDebugEnabled(): boolean {
 export async function logLLMRequest(
   model: unknown,
   system: string,
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<{ role: string; content: unknown }>,
   tools: Record<string, { description: string; parameters: unknown }>,
 ): Promise<void> {
   if (!DEBUG_ENABLED) return
@@ -55,7 +55,10 @@ export async function logLLMRequest(
     time: new Date().toISOString(),
     model,
     system: system.slice(0, 2000),  // 截断超长 system prompt
-    messages: messages.map(m => ({ role: m.role, content: m.content.slice(0, 500) })),
+    messages: messages.map(m => ({
+      role: m.role,
+      content: typeof m.content === 'string' ? m.content.slice(0, 500) : JSON.stringify(m.content).slice(0, 500),
+    })),
     tools: Object.keys(tools),
   })
 }

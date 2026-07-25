@@ -13,6 +13,9 @@ import type { CheckpointManager } from '../sandbox/Checkpoint'
 import type { CostTracker } from '../router/CostTracker'
 import { callLLMWithRetry } from './ReActLoop'
 import { callWithRetry } from '../utils'
+import { generateDiff } from '../tools/editFile'
+import { readFile } from 'fs/promises'
+import { resolve } from 'path'
 
 const EXECUTE_SYSTEM_SUFFIX = `
 ## 当前阶段: Execute (执行)
@@ -142,7 +145,12 @@ export class Executor {
     // 构建初始消息
     const planSummary = `## 已批准的计划\n${plan.summary}\n\n步骤:\n${plan.todos.map((t, i) => `${i + 1}. ${t.content}`).join('\n')}`
 
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+    type ExecMessage =
+      | { role: 'user' | 'assistant'; content: string }
+      | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> }
+      | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }
+
+    const messages: ExecMessage[] = [
       ...contextMessages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
       { role: 'user', content: planSummary },
     ]
@@ -218,20 +226,33 @@ export class Executor {
       // 有工具调用（文本已在流式过程中通过 llm_chunk 发送）
       // 保存 LLM 的叙述文本，防止达到迭代上限时 finalText 为空
       finalText = streamedText || finalText
-      messages.push({ role: 'assistant', content: streamedText || '' } as never)
+
+      // 构建 assistant 消息（包含工具调用信息，让 LLM 知道“我调用了哪些工具”）
+      const assistantMsg: ExecMessage = {
+        role: 'assistant',
+        content: streamedText || '',
+        toolCalls: toolCalls.map((tc, idx) => ({
+          toolCallId: `exec-${this.iterations}-${tc.toolName}-${idx}`,
+          toolName: tc.toolName,
+          args: tc.args,
+        })),
+      }
+      messages.push(assistantMsg)
 
       // 分离串行和并行工具调用
       const serialCalls = toolCalls.filter(tc => Executor.SERIAL_TOOLS.has(tc.toolName))
       const parallelCalls = toolCalls.filter(tc => !Executor.SERIAL_TOOLS.has(tc.toolName))
 
-      // 并行执行只读/非串行工具（使用 all 替代 allSettled，错误会被 executeSingleToolCall 内部捕获并写入 messages）
+      // 收集所有工具结果，最后统一推入 tool 消息
+      const toolResults: Array<{ toolCallId: string; toolName: string; result: string }> = []
+
+      // 并行执行只读/非串行工具
       if (parallelCalls.length > 0) {
-        const parallelResults = await Promise.allSettled(
-          parallelCalls.map(tc => this.executeSingleToolCall(tc, messages))
+        const parallelSettled = await Promise.allSettled(
+          parallelCalls.map((tc, idx) => this.executeSingleToolCall(tc, messages, toolResults, idx))
         )
-        // 检查是否有工具执行异常（非预期的 throw，而非正常的 { error } 返回）
-        for (let i = 0; i < parallelResults.length; i++) {
-          const r = parallelResults[i]
+        for (let i = 0; i < parallelSettled.length; i++) {
+          const r = parallelSettled[i]
           if (r.status === 'rejected') {
             onEvent({
               type: 'error',
@@ -243,8 +264,21 @@ export class Executor {
       }
 
       // 串行执行写工具（edit_file / update_todo）
-      for (const tc of serialCalls) {
-        await this.executeSingleToolCall(tc, messages)
+      for (let idx = 0; idx < serialCalls.length; idx++) {
+        await this.executeSingleToolCall(serialCalls[idx], messages, toolResults, parallelCalls.length + idx)
+      }
+
+      // 将所有工具结果作为一条 tool 消息推入（AI SDK 原生格式）
+      if (toolResults.length > 0) {
+        messages.push({
+          role: 'tool',
+          content: toolResults.map((tr) => ({
+            type: 'tool-result' as const,
+            toolCallId: tr.toolCallId,
+            toolName: tr.toolName,
+            result: tr.result,
+          })),
+        })
       }
 
       // 检测 agent 是否陷入循环：连续 8 步无 progress 时提示（最多 2 次）
@@ -293,20 +327,20 @@ export class Executor {
   }
 
   /**
-   * 执行后验证：用单轮 LLM 调用检查修改是否完成所有 todo
-   * 允许使用 bash（跑测试）和 read_file（检查改动），不允许 edit_file
+   * 执行后验证：mini ReAct loop，每步可执行工具（read_file/grep/bash）
+   * 最多 5 步，每步的工具调用对用户可见
    */
   private async runVerification(
     plan: Plan,
     executionResult: string,
-    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+    messages: Array<{ role: 'user' | 'assistant'; content: string } | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> } | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }>,
     _toolsForAI: Record<string, { description: string; parameters: unknown }>,
   ): Promise<string> {
     const { model, toolRegistry, toolContext, onEvent } = this.config
+    const MAX_VERIFY_STEPS = 5
 
     // 验证阶段允许只读工具 + bash（跑测试），不允许 edit_file
     const verifyTools = toolRegistry.getForPhase('plan')
-    // 额外加入 bash 用于运行测试
     const bashHandler = toolRegistry.get('bash')
     if (bashHandler) verifyTools.push(bashHandler)
     const verifyToolsForAI: Record<string, { description: string; parameters: unknown }> = {}
@@ -336,33 +370,84 @@ ${executionResult || '(无文本输出)'}
 3. 如果有测试，用 bash 运行测试验证
 4. 输出格式：先列出结论（✅/❌ 各多少项），再对每个失败项给出具体修复建议
 
-例如:
-✅ 3/4 步骤已验证通过
-❌ 步骤 2（添加 email 验证）未完成：src/UserService.ts 的 createUser 方法未调用 validateEmail()
-🟡 步骤 4（更新文档）未执行
-
 注意：验证阶段不允许修改文件（无 edit_file 工具）。`
 
+    // 构建验证专用的消息列表（不污染主 messages）
+    type VerifyMsg =
+      | { role: 'user' | 'assistant'; content: string }
+      | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> }
+      | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }
+
+    const verifyMessages: VerifyMsg[] = [
+      ...messages.map((m) => ({ ...m })),
+      { role: 'user', content: verifyPrompt },
+    ]
+
+    let finalVerifyText = ''
+
     try {
-      const result = await callWithRetry(async () => {
-        const genResult = await generateText({
-          model,
-          system: '你是验证助手。只读检查执行结果（可用 read_file + bash），不修改文件。',
-          messages: [...messages, { role: 'user', content: verifyPrompt }],
-          tools: verifyToolsForAI,
-          maxSteps: 5,
-          abortSignal: this.config.abortSignal,
+      for (let step = 0; step < MAX_VERIFY_STEPS; step++) {
+        // 检查中断
+        if (this.config.abortSignal?.aborted) break
+
+        const genResult = await callWithRetry(async () => {
+          return await generateText({
+            model,
+            system: '你是验证助手。只读检查执行结果（可用 read_file + grep + bash），不修改文件。每步先说明你要检查什么，然后调用工具。',
+            messages: verifyMessages as never,
+            tools: verifyToolsForAI,
+            maxSteps: 1,
+            abortSignal: this.config.abortSignal,
+          })
+        }, {
+          maxRetries: 1,
+          onRetry: ({ attempt, delay, error }) => {
+            onEvent({ type: 'error', message: `验证请求重试 #${attempt}（${delay}ms 后）: ${error.message}`, recoverable: true })
+          },
         })
-        return genResult.text
-      }, {
-        maxRetries: 1,
-        onRetry: ({ attempt, delay, error }) => {
-          onEvent({ type: 'error', message: `验证请求重试 #${attempt}（${delay}ms 后）: ${error.message}`, recoverable: true })
-        },
-      })
+
+        const text = genResult.text ?? ''
+        const toolCalls = genResult.toolCalls ?? []
+
+        // 无工具调用 → 验证完成，输出结论
+        if (toolCalls.length === 0) {
+          finalVerifyText = text
+          break
+        }
+
+        // 有工具调用：推入 assistant 消息 + 执行工具 + 推入 tool 结果
+        finalVerifyText = text || finalVerifyText
+        verifyMessages.push({
+          role: 'assistant',
+          content: text,
+          toolCalls: toolCalls.map((tc, idx) => ({
+            toolCallId: `verify-${step}-${tc.toolName}-${idx}`,
+            toolName: tc.toolName,
+            args: tc.args as Record<string, unknown>,
+          })),
+        })
+
+        // 执行工具并收集结果
+        const toolResults: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> = []
+        for (let idx = 0; idx < toolCalls.length; idx++) {
+          const tc = toolCalls[idx]
+          const callId = `verify-${step}-${tc.toolName}-${idx}`
+          const args = tc.args as Record<string, unknown>
+
+          onEvent({ type: 'tool_call', tool: tc.toolName, params: args, callId })
+
+          const result = await toolRegistry.execute(tc.toolName, args, { ...toolContext, callId })
+          const resultText = result.error ? `[错误] ${result.error}` : result.result
+
+          onEvent({ type: 'tool_result', callId, tool: tc.toolName, result: result.result, error: result.error })
+          toolResults.push({ type: 'tool-result', toolCallId: callId, toolName: tc.toolName, result: resultText })
+        }
+
+        verifyMessages.push({ role: 'tool', content: toolResults })
+      }
 
       onEvent({ type: 'system_info', message: '验证完成' })
-      return result || ''
+      return finalVerifyText || '验证完成（无输出）'
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       onEvent({ type: 'error', message: `验证阶段失败: ${msg}`, recoverable: true })
@@ -371,15 +456,17 @@ ${executionResult || '(无文本输出)'}
   }
 
   /**
-   * 执行单个工具调用（权限检查 → 执行 → checkpoint → 结果回写）
-   * 支持并发调用，bash 受信号量限制
+   * 执行单个工具调用（权限检查 → 执行 → checkpoint → 结果收集）
+   * 结果推入 toolResults 数组，由调用方统一组装为 tool 消息
    */
   private async executeSingleToolCall(
     toolCall: { toolName: string; args: Record<string, unknown> },
-    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+    messages: Array<{ role: 'user' | 'assistant'; content: string } | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> } | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }>,
+    toolResults: Array<{ toolCallId: string; toolName: string; result: string }>,
+    callIndex: number,
   ): Promise<void> {
     const { toolRegistry, toolContext, onEvent } = this.config
-    const callId = `exec-${this.iterations}-${toolCall.toolName}`
+    const callId = `exec-${this.iterations}-${toolCall.toolName}-${callIndex}`
     const args = toolCall.args as Record<string, unknown>
 
     onEvent({ type: 'tool_call', tool: toolCall.toolName, params: args, callId })
@@ -388,7 +475,9 @@ ${executionResult || '(无文本输出)'}
     const approved = await this.checkPermission(toolCall.toolName, args)
     if (!approved) {
       const rejectMsg = '用户拒绝了此操作。请换一种方式完成任务,或解释为什么需要这个操作。'
-      messages.push({ role: 'user', content: `[工具被拒绝 ${toolCall.toolName}]: ${rejectMsg}` } as never)
+      // 审批拒绝用 user role（表达“用户不允许”的语义）
+      messages.push({ role: 'user', content: `[工具被拒绝 ${toolCall.toolName}]: ${rejectMsg}` })
+      toolResults.push({ toolCallId: callId, toolName: toolCall.toolName, result: `[拒绝] ${rejectMsg}` })
       onEvent({ type: 'tool_result', callId, tool: toolCall.toolName, result: '', error: rejectMsg })
       return
     }
@@ -425,7 +514,8 @@ ${executionResult || '(无文本输出)'}
       }
     }
 
-    // 将结果喂回消息列表，对 edit_file 失败添加上下文提示
+    // 构建结果文本（包含错误提示）
+    let resultText: string
     if (toolResult.error && toolCall.toolName === 'edit_file') {
       const path = (args.path as string) || '(未知文件)'
       const count = (this.consecutiveEditFailures.get(path) || 0) + 1
@@ -433,18 +523,27 @@ ${executionResult || '(无文本输出)'}
 
       let hint = ''
       if (count >= 3) {
-        hint = `\n\n⚠️ 你对 ${path} 的连续 ${count} 次编辑都失败了。请停下来重新思考策略：\n1. 先用 read_file 查看文件当前内容\n2. 确保 old_string 精准匹配（包括缩进、空行、注释）\n3. 如文件已被其他修改改变，重新读取后再编辑`
-        this.consecutiveEditFailures.set(path, 0) // 重置，防止重复提示
+        // 连续 3 次失败：自动回滚文件到上一个良好状态
+        const rollbackResult = await this.config.checkpoint.rollbackFile(path)
+        this.consecutiveEditFailures.set(path, 0)
+        if (rollbackResult.success) {
+          hint = `\n\n⚠️ 连续 ${count} 次编辑失败，${rollbackResult.message}。\n请重新 read_file 查看文件当前内容，然后制定新的编辑策略。`
+          onEvent({ type: 'system_info', message: `自动回滚: ${rollbackResult.message}` })
+        } else {
+          hint = `\n\n⚠️ 连续 ${count} 次编辑失败。${rollbackResult.message}\n请停下来重新思考策略：\n1. 先用 read_file 查看文件当前内容\n2. 确保 old_string 精准匹配`
+        }
       } else if (toolResult.error.includes('未找到匹配') || toolResult.error.includes('不唯一')) {
         hint = `\n💡 提示: 用 read_file 查看 ${path} 当前内容，确保 old_string 唯一且精准匹配（包括空格和缩进）`
       }
-      messages.push({ role: 'user', content: `[工具错误 ${toolCall.toolName}]: ${toolResult.error}${hint}` } as never)
+      resultText = `[错误] ${toolResult.error}${hint}`
+    } else if (toolResult.error) {
+      resultText = `[错误] ${toolResult.error}`
     } else {
-      const resultContent = toolResult.error
-        ? `[工具错误 ${toolCall.toolName}]: ${toolResult.error}`
-        : `[工具结果 ${toolCall.toolName}]: ${toolResult.result}`
-      messages.push({ role: 'user', content: resultContent } as never)
+      resultText = toolResult.result
     }
+
+    // 推入结果收集数组
+    toolResults.push({ toolCallId: callId, toolName: toolCall.toolName, result: resultText })
 
     // edit_file 成功时重置该文件的失败计数
     if (toolCall.toolName === 'edit_file' && !toolResult.error) {
@@ -457,7 +556,7 @@ ${executionResult || '(无文本输出)'}
     this.updateTodoProgress(toolCall.toolName, args)
   }
 
-  /** 权限检查 */
+  /** 权限检查（edit_file 审批前生成 diff 预览） */
   private async checkPermission(toolName: string, args: Record<string, unknown>): Promise<boolean> {
     const { permissionMode, requestApproval } = this.config
     const handler = this.config.toolRegistry.get(toolName)
@@ -474,6 +573,7 @@ ${executionResult || '(无文本输出)'}
     }
 
     // 按权限模式判断
+    let needsApproval = false
     switch (permissionMode) {
       case 'yolo':
         return true
@@ -481,10 +581,45 @@ ${executionResult || '(无文本输出)'}
         return true
       case 'auto-edit':
         if (toolName === 'edit_file') return true
-        return requestApproval(toolName, args)
+        needsApproval = true
+        break
       case 'ask':
       default:
-        return requestApproval(toolName, args)
+        needsApproval = true
+        break
+    }
+
+    if (!needsApproval) return true
+
+    // edit_file 审批前生成 diff 预览
+    if (toolName === 'edit_file') {
+      const diff = await this.previewEditDiff(args)
+      return requestApproval(toolName, args, diff ?? undefined)
+    }
+
+    return requestApproval(toolName, args)
+  }
+
+  /** 为 edit_file 生成审批用的 diff 预览 */
+  private async previewEditDiff(args: Record<string, unknown>): Promise<string | null> {
+    try {
+      const filePath = args.path as string
+      const oldString = args.old_string as string
+      const newString = args.new_string as string
+      if (!filePath || oldString === undefined || newString === undefined) return null
+
+      const fullPath = resolve(this.config.toolContext.projectRoot, filePath)
+      const content = await readFile(fullPath, 'utf-8')
+
+      // 检查是否能匹配
+      if (oldString !== '' && !content.includes(oldString)) return null
+
+      const newContent = oldString === ''
+        ? newString
+        : content.replace(oldString, newString)
+      return generateDiff(filePath, content, newContent)
+    } catch {
+      return null
     }
   }
 

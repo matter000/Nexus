@@ -14,6 +14,7 @@ import { App } from './tui/App'
 import { eventBus } from './core/eventBus'
 import type { CommandContext } from './cli/commands'
 import type { NexusConfig, NexusEvent } from './agent/types'
+import { exportSession } from './utils/export'
 
 const VERSION = '0.1.0'
 
@@ -301,12 +302,39 @@ async function main() {
       currentSecrets.lastModel = model
       await saveSecrets(args.cwd, currentSecrets)
     },
+    restoreSession: async (sessionId?) => {
+      return orchestrator.restoreSession(sessionId)
+    },
+    listRecentSessions: (limit?) => {
+      return orchestrator.listRecentSessions(limit)
+    },
+    exportSession: async (outputPath?) => {
+      return exportSession({
+        history: orchestrator.getFullHistory(),
+        todos: orchestrator.getTodos(),
+        cost: orchestrator.getCostSummary(),
+        projectRoot: args.cwd,
+      }, outputPath)
+    },
+    getStatus: () => {
+      return orchestrator.getStatus()
+    },
   }
 
   // 非交互模式
   if (args.nonInteractive && args.prompt) {
     // 非交互模式需要同步完成后台初始化（CodeGraph / DB / MCP），才能正确执行 submit
     await orchestrator.startBackgroundInit()
+
+    // 非交互模式下支持 --resume
+    if (args.resume) {
+      const sessionId = typeof args.resume === 'string' ? args.resume : undefined
+      const result = await orchestrator.restoreSession(sessionId)
+      if (result.restored) {
+        console.log(result.message)
+      }
+    }
+
     const result = await orchestrator.submit(args.prompt)
     console.log(result)
     const cost = orchestrator.getCostSummary()
@@ -356,7 +384,13 @@ async function main() {
   }
 
   // TUI 已渲染，后台异步完成剩余初始化（CodeGraph / DB / MCP），不阻塞用户交互
-  orchestrator.startBackgroundInit().catch((err) => {
+  orchestrator.startBackgroundInit().then(async () => {
+    // 初始化完成后处理 --resume 标志
+    if (args.resume) {
+      const sessionId = typeof args.resume === 'string' ? args.resume : undefined
+      await orchestrator.restoreSession(sessionId)
+    }
+  }).catch((err) => {
     eventBus.emit({ type: 'error', message: `后台初始化失败: ${err}`, recoverable: true })
   })
 

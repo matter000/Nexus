@@ -23,14 +23,16 @@ import { loadRules } from '../context/RulesLoader'
 import { ModelRouter } from '../router/ModelRouter'
 import { CostTracker } from '../router/CostTracker'
 import { CheckpointManager } from '../sandbox/Checkpoint'
-import { compressHistory } from '../context/Compressor'
+import { compressHistory, llmCompressHistory } from '../context/Compressor'
 import { loadSecrets, type SecretsConfig } from '../config-secrets'
 import { NexusDB } from '../storage/db'
 import { ExternalMCPManager, type ExternalServerConfig } from '../tools/external'
-import { buildCodeGraph, type CodeGraph } from '../context/CodeGraph'
+import { buildCodeGraph, updateCodeGraph, type CodeGraph } from '../context/CodeGraph'
+import { FileWatcher } from '../context/FileWatcher'
 import { readFile } from 'fs/promises'
 import { join } from 'path'
 import { parse } from 'smol-toml'
+import { logError } from '../utils/debugLog'
 
 export interface OrchestratorConfig {
   projectRoot: string
@@ -63,6 +65,7 @@ export class Orchestrator {
   private subAgent: SubAgent | null = null
   private mcpManager: ExternalMCPManager | null = null
   private codeGraph: CodeGraph | null = null
+  private fileWatcher: FileWatcher | null = null
   private noProviderAvailable = false
   /** 是否跳过 Plan 阶段（运行时可切换） */
   private skipPlan: boolean
@@ -174,6 +177,26 @@ export class Orchestrator {
       await this.initExternalMCP()
     } catch (err) {
       console.warn('[MCP] 外部 MCP Server 初始化失败:', err)
+    }
+
+    // 启动文件监听（增量更新 CodeGraph）
+    try {
+      this.fileWatcher = new FileWatcher({
+        projectRoot: this.cfg.projectRoot,
+        debounceMs: 2000,
+        onChange: (changedFiles) => {
+          // 增量更新代码图谱
+          if (this.codeGraph) {
+            updateCodeGraph(this.codeGraph, changedFiles).then((updated) => {
+              this.codeGraph = updated
+              this.assembler?.setCodeGraph(updated)
+            }).catch(() => {})
+          }
+        },
+      })
+      this.fileWatcher.start()
+    } catch (err) {
+      console.warn('[FileWatcher] 文件监听启动失败:', err)
     }
   }
 
@@ -311,6 +334,32 @@ export class Orchestrator {
 
     // 构建上下文
     const systemPrompt = await this.assembler!.buildSystemPrompt(this.todos)
+
+    // 自动压缩检测：历史过长时用 LLM 压缩早期对话
+    if (this.history.length > this.cfg.config.context.recentTurnsKeep * 4 && this.router) {
+      const contextWindow = this.router.getContextWindow('executor')
+      const maxTokens = Math.floor(contextWindow * this.cfg.config.context.budgetRatio)
+      try {
+        const summarizerModel = this.router.getModel('summarizer')
+        const result = await llmCompressHistory(
+          this.history,
+          summarizerModel,
+          this.cfg.config.context.recentTurnsKeep,
+          maxTokens,
+        )
+        if (result.compressed) {
+          this.history = result.messages
+          this.emit({
+            type: 'system_info',
+            message: `上下文已自动压缩: ~${Math.round(result.originalTokens / 1000)}k → ~${Math.round(result.compressedTokens / 1000)}k tokens`,
+          })
+        }
+      } catch (err) {
+        // 压缩失败不阻塞主流程，但记录日志
+        logError('auto-compress', err).catch(() => {})
+      }
+    }
+
     const messages = this.assembler!.assembleMessages(systemPrompt, this.history, userInput)
 
     let result: string
@@ -331,6 +380,10 @@ export class Orchestrator {
     if (this.db && this.currentSessionId) {
       try {
         this.db.addMessage(this.currentSessionId, 'assistant', result)
+        // 持久化 todos 快照（用于会话恢复）
+        if (this.todos.length > 0) {
+          this.db.saveTodos(this.currentSessionId, this.todos)
+        }
       } catch (err) {
         console.warn('[NexusDB] 持久化 assistant 消息失败:', err)
       }
@@ -577,12 +630,85 @@ export class Orchestrator {
       }
       this.mcpManager = null
     }
+
+    // 停止文件监听
+    if (this.fileWatcher) {
+      this.fileWatcher.stop()
+      this.fileWatcher = null
+    }
   }
 
   /** 清除上下文 */
   clearContext(): void {
     this.history = []
     this.todos = []
+  }
+
+  /** 恢复指定会话（从 DB 加载 history + todos） */
+  async restoreSession(sessionId?: string): Promise<{ restored: boolean; message: string }> {
+    // 确保 DB 已初始化
+    if (!this.db) {
+      try {
+        this.db = new NexusDB(this.cfg.projectRoot)
+      } catch {
+        return { restored: false, message: '数据库不可用，无法恢复会话' }
+      }
+    }
+
+    // 查找目标会话
+    const session = sessionId
+      ? this.db.getSession(sessionId)
+      : this.db.getLatestSession(this.cfg.projectRoot)
+
+    if (!session) {
+      return { restored: false, message: sessionId ? `未找到会话: ${sessionId}` : '没有可恢复的历史会话' }
+    }
+
+    // 加载消息历史
+    const messages = this.db.getMessages(session.id)
+    if (messages.length === 0) {
+      return { restored: false, message: '该会话没有消息记录' }
+    }
+
+    // 重建 history（只恢复 user/assistant 角色）
+    this.history = messages
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+
+    // 加载 todos
+    this.todos = this.db.loadTodos(session.id)
+
+    // 设置当前会话 ID 为恢复的会话（继续在同一会话下追加消息）
+    this.currentSessionId = session.id
+
+    const todoInfo = this.todos.length > 0
+      ? `，${this.todos.filter((t) => t.status !== 'complete').length} 个待办未完成`
+      : ''
+    const msg = `已恢复会话（${new Date(session.start_time).toLocaleString()}）：${this.history.length} 条消息${todoInfo}`
+
+    this.emit({ type: 'system_info', message: msg })
+    if (this.todos.length > 0) {
+      this.emit({ type: 'todo_update', todos: this.todos })
+    }
+
+    return { restored: true, message: msg }
+  }
+
+  /** 列出最近会话（供 /resume 命令展示） */
+  listRecentSessions(limit = 5): Array<{ id: string; startTime: number; messageCount: number; cost: number }> {
+    if (!this.db) {
+      try {
+        this.db = new NexusDB(this.cfg.projectRoot)
+      } catch {
+        return []
+      }
+    }
+    return this.db.listRecentSessions(limit, this.cfg.projectRoot).map((s) => ({
+      id: s.id,
+      startTime: s.start_time,
+      messageCount: s.message_count,
+      cost: s.total_cost,
+    }))
   }
 
   /** 压缩上下文历史 */
@@ -614,6 +740,23 @@ export class Orchestrator {
     return this.history
       .filter((m) => m.role === 'user')
       .map((m) => m.content.slice(0, 80))
+  }
+
+  /** 获取完整历史（用于导出） */
+  getFullHistory(): ChatMessage[] {
+    return [...this.history]
+  }
+
+  /** 获取各子系统健康状态 */
+  getStatus(): { db: boolean; codeGraph: boolean; mcp: boolean; watcher: boolean; model: string; cost: number } {
+    return {
+      db: this.db !== null,
+      codeGraph: this.codeGraph !== null && this.codeGraph.files.size > 0,
+      mcp: this.mcpManager !== null,
+      watcher: this.fileWatcher !== null && this.fileWatcher.isRunning(),
+      model: this.getCurrentModel(),
+      cost: this.costTracker.getTotalCost(),
+    }
   }
 
   private getToolContext(): ToolContext {

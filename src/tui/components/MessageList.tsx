@@ -7,6 +7,7 @@
 import React from 'react'
 import { Box, Text } from 'ink'
 import { theme } from '../theme'
+import { Markdown } from './Markdown'
 
 export interface Message {
   id: string
@@ -51,7 +52,7 @@ function MessageItem({ message }: { message: Message }) {
           {theme.symbols.assistant} Nexus
         </Text>
         <Box paddingLeft={2}>
-          <Text>{message.content}</Text>
+          <Markdown content={message.content} />
         </Box>
       </Box>
     )

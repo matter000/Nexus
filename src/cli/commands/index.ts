@@ -31,6 +31,14 @@ export interface CommandContext {
   getSkipPlan: () => boolean
   /** 将当前模型持久化到 secrets（下次启动时恢复） */
   saveLastModel: (model: string) => Promise<void>
+  /** 恢复指定会话（或最近一次） */
+  restoreSession: (sessionId?: string) => Promise<{ restored: boolean; message: string }>
+  /** 列出最近会话 */
+  listRecentSessions: (limit?: number) => Array<{ id: string; startTime: number; messageCount: number; cost: number }>
+  /** 导出当前会话 */
+  exportSession: (outputPath?: string) => Promise<string>
+  /** 获取系统状态 */
+  getStatus: () => { db: boolean; codeGraph: boolean; mcp: boolean; watcher: boolean; model: string; cost: number }
 }
 
 const commands: SlashCommand[] = [
@@ -125,11 +133,26 @@ const commands: SlashCommand[] = [
   {
     name: 'resume',
     aliases: ['r'],
-    description: '恢复上次会话的历史记录',
-    handler: async (_args, ctx) => {
-      const history = ctx.getHistory()
-      if (history.length === 0) return '暂无历史记录'
-      return history.map((h, i) => `${i + 1}. ${h}`).join('\n')
+    description: '恢复历史会话（/resume 恢复最近一次，/resume <id> 恢复指定会话）',
+    handler: async (args, ctx) => {
+      const sessionId = args.trim() || undefined
+
+      // 无参数时先展示最近会话列表，然后恢复最近一次
+      if (!sessionId) {
+        const sessions = ctx.listRecentSessions(5)
+        if (sessions.length === 0) return '没有可恢复的历史会话'
+
+        const result = await ctx.restoreSession()
+        const list = sessions.map((s, i) => {
+          const time = new Date(s.startTime).toLocaleString()
+          const marker = i === 0 ? ' ← 已恢复' : ''
+          return `  ${i + 1}. [${s.id.slice(0, 8)}] ${time} | ${s.messageCount} 条消息 | $${s.cost.toFixed(4)}${marker}`
+        }).join('\n')
+        return `${result.message}\n\n最近会话:\n${list}\n\n提示: 使用 /resume <id> 恢复其他会话`
+      }
+
+      const result = await ctx.restoreSession(sessionId)
+      return result.message
     },
   },
   {
@@ -156,6 +179,39 @@ const commands: SlashCommand[] = [
     description: '运行评估任务（nexus eval <dir> 的 TUI 入口）',
     handler: async () => {
       return '请使用 CLI 命令: nexus eval <任务目录> [--mock] [--task <id>] [--json <file>]'
+    },
+  },
+  {
+    name: 'status',
+    aliases: ['st'],
+    description: '显示各子系统健康状态（DB/CodeGraph/MCP/Watcher）',
+    handler: async (_args, ctx) => {
+      const status = ctx.getStatus()
+      const icon = (ok: boolean) => ok ? '✅' : '❌'
+      return [
+        `系统状态:`,
+        `  ${icon(status.db)} 数据库 (NexusDB)`,
+        `  ${icon(status.codeGraph)} 代码图谱 (CodeGraph)`,
+        `  ${icon(status.mcp)} 外部 MCP Server`,
+        `  ${icon(status.watcher)} 文件监听 (FileWatcher)`,
+        ``,
+        `  模型: ${status.model}`,
+        `  花费: $${status.cost.toFixed(4)}`,
+      ].join('\n')
+    },
+  },
+  {
+    name: 'export',
+    aliases: ['e'],
+    description: '导出当前会话为 Markdown 文件（/export [路径]）',
+    handler: async (args, ctx) => {
+      const outputPath = args.trim() || undefined
+      try {
+        const filePath = await ctx.exportSession(outputPath)
+        return `会话已导出到: ${filePath}`
+      } catch (err) {
+        return `导出失败: ${err instanceof Error ? err.message : String(err)}`
+      }
     },
   },
   {

@@ -7,6 +7,8 @@
  */
 
 import type { ChatMessage } from '../agent/types'
+import type { LanguageModel } from 'ai'
+import { generateText } from 'ai'
 import { estimateTokens } from './TokenBudget'
 
 export interface CompressionResult {
@@ -209,5 +211,113 @@ export function compressSingleToolResult(toolName: string, result: string, hasEr
     }
     default:
       return result.length > 1000 ? result.slice(0, 1000) + '\n...(已截断)' : result
+  }
+}
+
+// ─── LLM 驱动的智能压缩 ────────────────────────────────────────────────────────
+
+export interface LLMCompressionResult {
+  /** 压缩后的消息列表（摘要 + 近期消息） */
+  messages: ChatMessage[]
+  /** 压缩前的 token 数 */
+  originalTokens: number
+  /** 压缩后的 token 数 */
+  compressedTokens: number
+  /** 是否实际执行了压缩 */
+  compressed: boolean
+}
+
+/**
+ * LLM 驱动的智能压缩
+ * 用 summarizer 模型将旧对话压缩为结构化摘要，保留关键决策和文件路径
+ */
+export async function llmCompressHistory(
+  messages: ChatMessage[],
+  model: LanguageModel,
+  recentKeep: number,
+  maxTokens: number,
+): Promise<LLMCompressionResult> {
+  const originalTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
+
+  // 未超阈值，不压缩
+  if (originalTokens <= maxTokens * 0.7) {
+    return { messages, originalTokens, compressedTokens: originalTokens, compressed: false }
+  }
+
+  // 分离近期和早期消息
+  const recentMessages = messages.slice(-recentKeep * 2)
+  const earlyMessages = messages.slice(0, -recentKeep * 2)
+
+  if (earlyMessages.length < 4) {
+    return { messages, originalTokens, compressedTokens: originalTokens, compressed: false }
+  }
+
+  // 构建早期消息的简化文本（截断过长的单条消息）
+  const earlyText = earlyMessages.map((m) => {
+    const prefix = m.role === 'user' ? '用户' : m.role === 'assistant' ? 'Agent' : '工具'
+    const content = m.content.length > 500 ? m.content.slice(0, 500) + '...' : m.content
+    return `[${prefix}] ${content}`
+  }).join('\n\n')
+
+  const summaryPrompt = `请将以下对话历史压缩为结构化摘要。保留：
+1. 用户的原始需求和关键决策
+2. 修改过的文件路径和具体操作
+3. 未解决的问题或待办事项
+4. 重要的错误信息和解决方案
+
+丢弃：冗余的工具输出、重复的文件读取、中间探索过程。
+
+输出格式：
+## 对话摘要
+- 需求: ...
+- 已完成: ...
+- 修改文件: ...
+- 待处理: ...
+
+--- 历史对话 ---
+${earlyText}`
+
+  try {
+    const result = await generateText({
+      model,
+      system: '你是对话压缩助手。将冗长的对话历史压缩为简洁的结构化摘要，保留关键信息。',
+      messages: [{ role: 'user', content: summaryPrompt }],
+      maxTokens: 1000,
+    })
+
+    const summary = result.text
+    if (!summary || summary.length < 50) {
+      // LLM 压缩失败，回退到规则压缩
+      const fallback = compressHistory(messages, recentKeep, maxTokens)
+      return {
+        messages: fallback.messages,
+        originalTokens,
+        compressedTokens: fallback.compressedTokens,
+        compressed: fallback.compressedCount > 0,
+      }
+    }
+
+    const compressedMessages: ChatMessage[] = [
+      { role: 'user', content: `[历史摘要 - ${earlyMessages.length} 条消息已由 LLM 压缩]\n${summary}` },
+      ...recentMessages,
+    ]
+
+    const compressedTokens = compressedMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
+
+    return {
+      messages: compressedMessages,
+      originalTokens,
+      compressedTokens,
+      compressed: true,
+    }
+  } catch {
+    // LLM 调用失败，回退到规则压缩
+    const fallback = compressHistory(messages, recentKeep, maxTokens)
+    return {
+      messages: fallback.messages,
+      originalTokens,
+      compressedTokens: fallback.compressedTokens,
+      compressed: fallback.compressedCount > 0,
+    }
   }
 }

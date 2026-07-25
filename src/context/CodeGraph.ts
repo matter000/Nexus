@@ -8,6 +8,7 @@
 import ts from 'typescript'
 import { readdir, readFile, stat } from 'fs/promises'
 import { join, relative, extname } from 'path'
+import { getParserForFile, getSupportedExtensions } from './parsers/index'
 
 export interface CodeSymbol {
   name: string
@@ -101,7 +102,7 @@ const EXCLUDED_DIRS = new Set([
   'coverage', '__pycache__', '.cache', 'bun.lock',
 ])
 
-const SUPPORTED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts'])
+const SUPPORTED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', ...getSupportedExtensions()])
 
 // ─── 文件遍历 ──────────────────────────────────────────────────────────────
 
@@ -355,7 +356,25 @@ export class TypeScriptGraphEngine implements GraphEngine {
     }
 
     try {
-      const { symbols, imports, lineCount } = parseSourceFile(content, relPath)
+      const ext = extname(relPath)
+      let symbols: CodeSymbol[]
+      let imports: string[]
+      let lineCount: number
+
+      // TS/JS 用精确 AST 解析，其他语言用正则 parser
+      if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts'].includes(ext)) {
+        const parsed = parseSourceFile(content, relPath)
+        symbols = parsed.symbols
+        imports = parsed.imports
+        lineCount = parsed.lineCount
+      } else {
+        const parser = getParserForFile(relPath)
+        if (!parser) return
+        const parsed = parser.parse(content, relPath)
+        symbols = parsed.symbols
+        imports = parsed.imports
+        lineCount = content.split('\n').length
+      }
 
       const skeleton: FileSkeleton = { filePath: relPath, symbols, imports, lineCount }
       this.graph.files.set(relPath, skeleton)

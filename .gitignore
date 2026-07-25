@@ -9,6 +9,11 @@ dist/
 .nexus/nexus.db-wal
 .nexus/nexus.db-shm
 
+# Debug & exports
+.nexus/debug.jsonl
+.nexus/exports/
+.nexus/models/
+
 # Secrets (API keys)
 .nexus/secrets.toml
 

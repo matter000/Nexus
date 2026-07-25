@@ -14,7 +14,11 @@ import type { CostTracker } from '../router/CostTracker'
 export interface LLMCallConfig {
   model: LanguageModel
   system: string
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  messages: Array<
+    | { role: 'user' | 'assistant'; content: string }
+    | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> }
+    | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }
+  >
   tools: Record<string, { description: string; parameters: unknown }>
   maxSteps: number
   abortSignal?: AbortSignal

@@ -36,6 +36,8 @@ export interface CliArgs {
   evalTask?: string
   /** eval：输出 JSON 报告到文件 */
   evalJson?: string
+  /** 恢复上次会话（可指定 sessionId） */
+  resume?: string | boolean
 }
 
 const HELP_TEXT = `
@@ -52,6 +54,7 @@ Nexus - 终端 AI 编程助手
   --skip-plan                跳过 Plan 阶段,直接执行
   --max-iterations <n>       最大迭代步数 (默认: 50)
   --non-interactive          非交互模式,执行完即退出
+  --resume [sessionId]       恢复上次会话（或指定会话 ID）
   -v, --verbose              显示详细日志
   --version                  显示版本号
   -h, --help                 显示帮助
@@ -118,6 +121,17 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--non-interactive':
         args.nonInteractive = true
         break
+      case '--resume': {
+        // --resume 可带可不带参数：下一个参数如果不以 - 开头则视为 sessionId
+        const next = argv[i + 1]
+        if (next && !next.startsWith('-')) {
+          args.resume = next
+          i++
+        } else {
+          args.resume = true
+        }
+        break
+      }
       case 'eval':
         args.evalDir = argv[++i]
         break

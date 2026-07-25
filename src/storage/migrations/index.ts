@@ -81,6 +81,27 @@ export const migrations: Migration[] = [
       DROP TABLE IF EXISTS embeddings;
     `,
   },
+  {
+    version: 3,
+    name: 'add_todos_table',
+    up: `
+      CREATE TABLE IF NOT EXISTS todos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        todo_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        position INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id);
+    `,
+    down: `
+      DROP TABLE IF EXISTS todos;
+    `,
+  },
 ]
 
 /** 获取当前 schema 版本 */
