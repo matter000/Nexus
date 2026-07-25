@@ -1,10 +1,8 @@
 /**
- * 工具调用卡片组件
- * 运行中展开显示详情，完成后自动折叠为单行摘要
- * 按 [T] 键可切换全部展开/折叠
+ * 工具调用卡片组件 — 始终展开显示完整内容
  */
 
-import React, { useState, useEffect } from 'react'
+import React from 'react'
 import { Box, Text } from 'ink'
 import { theme } from '../theme'
 
@@ -16,8 +14,6 @@ interface ToolCardProps {
   status: ToolStatus
   result?: string
   error?: string
-  /** 全局展开开关（App 的 [T] 键控制） */
-  forceExpand?: boolean
 }
 
 const TOOL_EMOJIS: Record<string, string> = {
@@ -26,38 +22,13 @@ const TOOL_EMOJIS: Record<string, string> = {
   update_todo: '📋', semantic_search: '🧠', dispatch_subagent: '🤖',
 }
 
-export function ToolCard({ tool, params, status, result, error, forceExpand }: ToolCardProps) {
+export function ToolCard({ tool, params, status, result, error }: ToolCardProps) {
   const emoji = TOOL_EMOJIS[tool] ?? '🔧'
   const detail = extractDetail(tool, params)
-  const [collapsed, setCollapsed] = useState(true)
-
-  // 运行中自动展开；完成/错误/挂起时收起（forceExpand 时全部展开）
-  useEffect(() => {
-    if (forceExpand || status === 'running') {
-      setCollapsed(false)
-    } else if (status === 'done' || status === 'error' || status === 'pending') {
-      setCollapsed(true)
-    }
-  }, [status, forceExpand])
 
   const statusIcon = { pending: '○', running: '⟳', done: '✓', error: '✗', approval: '⚠️' }[status]
   const statusColor = ({ pending: theme.colors.muted, running: theme.colors.warning, done: theme.colors.success, error: theme.colors.error, approval: theme.colors.warning }[status] as string)
   const borderColor = ({ pending: theme.colors.muted, running: theme.colors.primary, done: theme.colors.muted, error: theme.colors.error, approval: theme.colors.warning }[status] as string)
-
-  // 折叠态：只显示单行标题
-  if (collapsed && status !== 'running') {
-    const summary = status === 'done' ? (result ? truncate(result.split('\n')[0], 60) : '完成') :
-                    status === 'error' ? (error ? truncate(error, 60) : '失败') : ''
-    return (
-      <Box>
-        <Text color={theme.colors.muted}>{emoji} </Text>
-        <Text color={theme.colors.tool}>{tool}</Text>
-        {detail ? <Text color={theme.colors.muted}> ─ {detail}</Text> : null}
-        <Text color={statusColor}> {statusIcon}</Text>
-        {summary ? <Text color={theme.colors.muted} dimColor>  {summary}</Text> : null}
-      </Box>
-    )
-  }
 
   return (
     <Box flexDirection="column" borderStyle="single" borderColor={borderColor} paddingX={1}>
@@ -74,15 +45,11 @@ export function ToolCard({ tool, params, status, result, error, forceExpand }: T
   )
 }
 
-function renderContent(status: ToolStatus, result?: string, error?: string, params?: Record<string, unknown>) {
+function renderContent(status: ToolStatus, result?: string, error?: string, _params?: Record<string, unknown>) {
   switch (status) {
     case 'done':
       if (result) return <Text color={theme.colors.muted}>{truncateLines(result, 4)}</Text>
       return <Text color={theme.colors.success} dimColor>✓ 完成</Text>
-    case 'running': {
-      const summary = params ? Object.keys(params).map(k => `${k}: ${truncate(String(params[k] ?? ''), 30)}`).join(', ') : ''
-      return summary ? <Text color={theme.colors.muted} dimColor>{summary}</Text> : null
-    }
     case 'error':
       if (error) return <Text color={theme.colors.error}>{truncate(error, 200)}</Text>
       return null

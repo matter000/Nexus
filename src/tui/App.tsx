@@ -63,7 +63,6 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   const [renderTick, setRenderTick] = useState(0)
   const [autoApproveTools, setAutoApproveTools] = useState<Set<string>>(new Set())
   const [todoExpanded, setTodoExpanded] = useState(false)
-  const [forceExpandTools, setForceExpandTools] = useState(false)
   const autoApproveRef = useRef<Set<string>>(new Set())
   const msgIdRef = useRef(0)
   // 面板回调 refs（由 App 的 useInput 统一调度，避免多组件 useInput 冲突）
@@ -145,11 +144,6 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
     // Todo 折叠切换（Shift+P）
     if ((input === 'P' || input === 'p') && key.shift) {
       setTodoExpanded(prev => !prev)
-      return
-    }
-    // 工具卡片全局展开/折叠（按 T 切换）
-    if (input === 'T' || input === 't') {
-      setForceExpandTools(prev => !prev)
       return
     }
   })
@@ -414,7 +408,6 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
             status={tc.status}
             result={tc.result}
             error={tc.error}
-            forceExpand={forceExpandTools}
           />
         ))}
 
