@@ -1,8 +1,8 @@
 /**
- * 工具调用卡片组件 — 始终展开显示完整内容
+ * 工具调用卡片 — 默认折叠为单行，运行中自动展开，按 T 全局切换
  */
 
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import { Box, Text } from 'ink'
 import { theme } from '../theme'
 
@@ -14,6 +14,7 @@ interface ToolCardProps {
   status: ToolStatus
   result?: string
   error?: string
+  forceExpand?: boolean
 }
 
 const TOOL_EMOJIS: Record<string, string> = {
@@ -22,14 +23,37 @@ const TOOL_EMOJIS: Record<string, string> = {
   update_todo: '📋', semantic_search: '🧠', dispatch_subagent: '🤖',
 }
 
-export function ToolCard({ tool, params, status, result, error }: ToolCardProps) {
+export function ToolCard({ tool, params, status, result, error, forceExpand }: ToolCardProps) {
   const emoji = TOOL_EMOJIS[tool] ?? '🔧'
   const detail = extractDetail(tool, params)
+  const [collapsed, setCollapsed] = useState(true)
+
+  useEffect(() => {
+    if (forceExpand) { setCollapsed(false) }
+    else if (status === 'running') { setCollapsed(false) }
+    else { setCollapsed(true) }
+  }, [status, forceExpand])
 
   const statusIcon = { pending: '○', running: '⟳', done: '✓', error: '✗', approval: '⚠️' }[status]
   const statusColor = ({ pending: theme.colors.muted, running: theme.colors.warning, done: theme.colors.success, error: theme.colors.error, approval: theme.colors.warning }[status] as string)
   const borderColor = ({ pending: theme.colors.muted, running: theme.colors.primary, done: theme.colors.muted, error: theme.colors.error, approval: theme.colors.warning }[status] as string)
 
+  // 折叠态：单行（无边框）
+  if (collapsed) {
+    const summary = status === 'done' ? (result ? truncate(result.split('\n')[0], 60) : '完成') :
+                    status === 'error' ? (error ? truncate(error, 60) : '失败') : ''
+    return (
+      <Box>
+        <Text color={theme.colors.muted}>{emoji} </Text>
+        <Text color={theme.colors.tool}>{tool}</Text>
+        {detail ? <Text color={theme.colors.muted}> ─ {detail}</Text> : null}
+        <Text color={statusColor}> {statusIcon}</Text>
+        {summary ? <Text color={theme.colors.muted} dimColor>  {summary}</Text> : null}
+      </Box>
+    )
+  }
+
+  // 展开态：完整卡片（带边框）
   return (
     <Box flexDirection="column" borderStyle="single" borderColor={borderColor} paddingX={1}>
       <Box justifyContent="space-between">
@@ -40,22 +64,15 @@ export function ToolCard({ tool, params, status, result, error }: ToolCardProps)
         </Box>
         <Text color={statusColor}>{statusIcon}</Text>
       </Box>
-      {renderContent(status, result, error, params)}
+      {renderContent(status, result, error)}
     </Box>
   )
 }
 
-function renderContent(status: ToolStatus, result?: string, error?: string, _params?: Record<string, unknown>) {
-  switch (status) {
-    case 'done':
-      if (result) return <Text color={theme.colors.muted}>{truncateLines(result, 4)}</Text>
-      return <Text color={theme.colors.success} dimColor>✓ 完成</Text>
-    case 'error':
-      if (error) return <Text color={theme.colors.error}>{truncate(error, 200)}</Text>
-      return null
-    default:
-      return null
-  }
+function renderContent(status: ToolStatus, result?: string, error?: string) {
+  if (status === 'done' && result) return <Text color={theme.colors.muted}>{truncateLines(result, 4)}</Text>
+  if (status === 'error' && error) return <Text color={theme.colors.error}>{truncate(error, 200)}</Text>
+  return null
 }
 
 function extractDetail(tool: string, params: Record<string, unknown>): string {
