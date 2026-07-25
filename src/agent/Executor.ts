@@ -108,6 +108,8 @@ export class Executor {
   private stepsSinceProgress = 0
   /** 已发出的 stuck 警告次数（最多 2 次，避免刷屏） */
   private stuckWarnings = 0
+  /** 是否执行过 edit_file（仅在有代码变更时运行验证） */
+  private hasCodeChanges = false
 
   constructor(config: ExecutorConfig) {
     this.config = config
@@ -119,6 +121,10 @@ export class Executor {
 
     this.todos = [...plan.todos]
     this.iterations = 0
+    this.hasCodeChanges = false
+    this.consecutiveEditFailures.clear()
+    this.stuckWarnings = 0
+    this.stepsSinceProgress = 0
 
     onEvent({ type: 'llm_start', phase: 'execute' })
     onEvent({ type: 'todo_update', todos: this.todos })
@@ -262,8 +268,8 @@ export class Executor {
     onEvent({ type: 'todo_update', todos: this.todos })
 
     // ─── 验证阶段 ───
-    // 仅在执行正常完成（非错误退出）时运行验证
-    if (!executionError) {
+    // 仅在正常完成且有代码修改时运行验证（纯查询/对话跳过）
+    if (!executionError && this.hasCodeChanges) {
       onEvent({ type: 'phase_change', phase: 'verifying' })
       const verifyResult = await this.runVerification(plan, finalText, messages, toolsForAI)
       if (verifyResult) {
@@ -331,7 +337,7 @@ ${executionResult || '(无文本输出)'}
       const result = await callWithRetry(async () => {
         const genResult = await generateText({
           model,
-          system: '你是验证助手。只读验证执行结果，不修改文件。',
+          system: '你是验证助手。只读检查执行结果（可用 read_file + bash），不修改文件。',
           messages: [...messages, { role: 'user', content: verifyPrompt }],
           tools: verifyToolsForAI,
           maxSteps: 5,
@@ -434,6 +440,7 @@ ${executionResult || '(无文本输出)'}
     if (toolCall.toolName === 'edit_file' && !toolResult.error) {
       const path = (args.path as string) || ''
       this.consecutiveEditFailures.set(path, 0)
+      this.hasCodeChanges = true
     }
 
     // 更新 todo 状态
