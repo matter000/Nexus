@@ -168,7 +168,7 @@ export class Planner {
         if (planSubmitted) {
           const plan = consumePendingPlan()
           if (plan) {
-            onEvent({ type: 'llm_done', text: `计划已提交: ${plan.summary}` })
+            onEvent({ type: 'system_info', message: `计划已提交: ${plan.summary}` })
             return plan
           }
         }
@@ -180,9 +180,7 @@ export class Planner {
       break
     }
 
-    onEvent({ type: 'llm_done', text: lastText })
-
-    // 优先检查是否有 submit_plan 提交的计划
+    // plan done: 不发射 llm_done，文本由 Orchestrator 的 done 事件统一处理
     const submittedPlan = consumePendingPlan()
     if (submittedPlan) return submittedPlan
 
@@ -292,7 +290,7 @@ export class Planner {
         if (planSubmitted) {
           const plan = consumePendingPlan()
           if (plan) {
-            onEvent({ type: 'llm_done', text: `重规划已提交: ${plan.summary}` })
+            onEvent({ type: 'system_info', message: `重规划已提交: ${plan.summary}` })
             return plan
           }
         }
@@ -303,7 +301,7 @@ export class Planner {
       break
     }
 
-    onEvent({ type: 'llm_done', text: lastText })
+    // replan done: 不发射 llm_done
     const submittedPlan = consumePendingPlan()
     if (submittedPlan) return submittedPlan
     return this.parsePlan(lastText, userRequest)

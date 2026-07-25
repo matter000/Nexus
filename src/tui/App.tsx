@@ -272,6 +272,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
       case 'done':
         setBusy(false)
         setPhase('done')
+        setStreamingText('')  // 清除流式残留，防止重复显示
         if (event.summary) {
           setMessages((prev) => [
             ...prev,
