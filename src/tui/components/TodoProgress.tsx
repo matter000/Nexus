@@ -18,6 +18,9 @@ export function TodoProgress({ todos, expanded }: TodoProgressProps) {
   const completed = todos.filter((t) => t.status === 'complete').length
   const total = todos.length
 
+  // 全部完成 → 不渲染，保持界面干净
+  if (completed === total) return null
+
   if (!expanded) {
     return (
       <Box paddingLeft={2}>

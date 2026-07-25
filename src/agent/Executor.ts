@@ -265,6 +265,16 @@ export class Executor {
       executionError = true
     }
 
+    // 正常完成时，自动将未完成的 todo 标记为 complete
+    // （LLM 可能忘记调 update_todo，如纯查询任务）
+    if (!executionError) {
+      for (const t of this.todos) {
+        if (t.status === 'pending' || t.status === 'in_progress') {
+          t.status = 'complete'
+        }
+      }
+    }
+
     onEvent({ type: 'todo_update', todos: this.todos })
 
     // ─── 验证阶段 ───
