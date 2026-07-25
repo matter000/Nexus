@@ -19,6 +19,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.qoder/
+.zcode/
 
 # Temp files
 *.nexus-tmp-*
