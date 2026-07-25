@@ -71,6 +71,9 @@ export function getPlanApprovalResolveByCallId(callId: string): ((result: PlanAp
 async function main() {
   const args = parseArgs(process.argv.slice(2))
 
+  // 调试日志位置提示
+  process.stderr.write(`[Nexus] 调试日志: ${process.cwd()}/.nexus/debug.jsonl\n`)
+
   // 版本和帮助
   if (args.version) {
     console.log(`Nexus v${VERSION}`)

@@ -8,6 +8,7 @@ import { streamText } from 'ai'
 import type { LanguageModel } from 'ai'
 import type { NexusEvent, ModelRole } from './types'
 import { callWithRetry } from '../utils'
+import { logLLMRequest, logLLMResponse } from '../utils/debugLog'
 import type { CostTracker } from '../router/CostTracker'
 
 export interface LLMCallConfig {
@@ -63,6 +64,9 @@ export async function callLLMWithRetry(
 
   const doCall = (m: LanguageModel) =>
     callWithRetry(async () => {
+      // 调试日志：记录 LLM 请求
+      logLLMRequest(m, system, messages, tools).catch(() => {})
+
       const result = streamText({
         model: m,
         system,
@@ -123,6 +127,9 @@ export async function callLLMWithRetry(
     toolName: string
     args: Record<string, unknown>
   }>
+
+  // 调试日志：记录 LLM 响应
+  logLLMResponse(streamedText, toolCalls, usage).catch(() => {})
 
   // 记录 token 用量
   if (usage) {

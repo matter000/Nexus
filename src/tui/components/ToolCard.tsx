@@ -31,10 +31,12 @@ export function ToolCard({ tool, params, status, result, error, forceExpand }: T
   const detail = extractDetail(tool, params)
   const [collapsed, setCollapsed] = useState(true)
 
-  // 运行中自动展开；完成后如果没有 forceExpand 则自动折叠
+  // 运行中自动展开；完成/错误/挂起时收起（forceExpand 时全部展开）
   useEffect(() => {
-    if (status === 'running' || forceExpand) {
+    if (forceExpand || status === 'running') {
       setCollapsed(false)
+    } else if (status === 'done' || status === 'error' || status === 'pending') {
+      setCollapsed(true)
     }
   }, [status, forceExpand])
 
