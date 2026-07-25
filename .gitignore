@@ -26,10 +26,10 @@ Thumbs.db
 *.nexus-tmp-*
 *.log
 
-# Logo/image assets
-*.png
-generate_logo.py
-nexus-logo-philosophy.md
+# Logo/image assets (binary files not uploaded)
+assets/*.png
+assets/generate_logo.py
+docs/nexus-logo-philosophy.md
 
 # Environment
 .env
