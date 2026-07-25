@@ -7,7 +7,6 @@
 import type { Todo } from '../agent/types'
 import type { ToolDefinition, ToolResult } from '../agent/types'
 import type { ToolHandler, ToolContext } from './registry'
-import { eventBus } from '../core/eventBus'
 
 const definition: ToolDefinition = {
   name: 'update_todo',
@@ -19,7 +18,7 @@ const definition: ToolDefinition = {
       action: {
         type: 'string',
         description: '操作类型',
-        enum: ['complete', 'add', 'update'],
+        enum: ['complete', 'add', 'update', 'in_progress', 'cancelled'],
       },
       id: {
         type: 'string',
@@ -36,24 +35,10 @@ const definition: ToolDefinition = {
   phase: 'execute',
 }
 
-// ─── TodoStore: 模块级共享状态 ──────────────────────────────────────────────
-
-let currentTodos: Todo[] = []
-
-/** 同步 todos 到 store（由 Executor 调用） */
-export function setTodoStore(todos: Todo[]): void {
-  currentTodos = todos
-}
-
-/** 获取当前 store 中的 todos */
-export function getTodoStore(): Todo[] {
-  return currentTodos
-}
-
 // ─── 工具执行逻辑 ─────────────────────────────────────────────────────────
 
 async function execute(params: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-  const { callId } = context
+  const { callId, todos: currentTodos } = context
   const action = params.action as string
   const id = params.id as string | undefined
   const content = params.content as string | undefined
@@ -69,6 +54,30 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
           return { callId, tool: 'update_todo', result: '', error: `未找到 id 为 "${id}" 的 todo` }
         }
         todo.status = 'complete'
+        break
+      }
+
+      case 'in_progress': {
+        if (!id) {
+          return { callId, tool: 'update_todo', result: '', error: 'in_progress 操作需要提供 id' }
+        }
+        const todo = currentTodos.find((t) => t.id === id)
+        if (!todo) {
+          return { callId, tool: 'update_todo', result: '', error: `未找到 id 为 "${id}" 的 todo` }
+        }
+        todo.status = 'in_progress'
+        break
+      }
+
+      case 'cancelled': {
+        if (!id) {
+          return { callId, tool: 'update_todo', result: '', error: 'cancelled 操作需要提供 id' }
+        }
+        const todo = currentTodos.find((t) => t.id === id)
+        if (!todo) {
+          return { callId, tool: 'update_todo', result: '', error: `未找到 id 为 "${id}" 的 todo` }
+        }
+        todo.status = 'cancelled'
         break
       }
 
@@ -96,9 +105,6 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
       default:
         return { callId, tool: 'update_todo', result: '', error: `未知操作: ${action}` }
     }
-
-    // 通过 eventBus 通知 UI 更新
-    eventBus.emit({ type: 'todo_update', todos: [...currentTodos] })
 
     // 格式化当前状态返回
     const summary = currentTodos

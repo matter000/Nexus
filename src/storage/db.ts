@@ -73,28 +73,6 @@ export class NexusDB {
     `).all(sessionId) as MessageRecord[]
   }
 
-  /** 获取最近会话列表 */
-  getRecentSessions(limit = 10): SessionRecord[] {
-    return this.db.prepare(`
-      SELECT * FROM sessions ORDER BY start_time DESC LIMIT ?
-    `).all(limit) as SessionRecord[]
-  }
-
-  /** 添加检查点 */
-  addCheckpoint(
-    sessionId: string,
-    step: number,
-    commitHash: string,
-    message: string,
-    todoId?: string,
-    filesChanged?: string[]
-  ): void {
-    this.db.prepare(`
-      INSERT INTO checkpoints (session_id, step, commit_hash, message, todo_id, timestamp, files_changed)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(sessionId, step, commitHash, message, todoId ?? null, Date.now(), JSON.stringify(filesChanged ?? []))
-  }
-
   /** 关闭数据库 */
   close(): void {
     this.db.close()

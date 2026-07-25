@@ -156,47 +156,14 @@ export class ContextAssembler {
     const currentTokens = estimateTokens(systemPrompt)
     if (currentTokens <= maxTokens) return systemPrompt
 
-    // 按优先级裁剪：先裁项目树，再裁代码地图，再裁 git 状态，最后裁常驻文件
-    const trimOrder = ['## 项目结构', '## 代码地图', '## 当前 Git 状态', '## 常驻参考文件']
-
-    let result = systemPrompt
-    for (const sectionHeader of trimOrder) {
-      const tokens = estimateTokens(result)
-      if (tokens <= maxTokens) break
-
-      result = this.removeSection(result, sectionHeader)
-    }
-
-    // 如果仍然超预算，做最终截断
-    if (estimateTokens(result) > maxTokens) {
-      const charsPerToken = 4
-      const maxChars = maxTokens * charsPerToken
-      result = result.slice(0, maxChars) + '\n...(system prompt 已裁剪)'
-    }
-
-    return result
-  }
-
-  /** 从 system prompt 中移除指定段落 */
-  private removeSection(prompt: string, sectionHeader: string): string {
-    const lines = prompt.split('\n')
-    const result: string[] = []
-    let skipping = false
-
-    for (const line of lines) {
-      if (line.startsWith('## ')) {
-        skipping = line === sectionHeader
-        if (!skipping) {
-          result.push(line)
-        }
-        continue
-      }
-      if (!skipping) {
-        result.push(line)
-      }
-    }
-
-    return result.join('\n')
+    // 简化为字符截断（接受 ~4 chars/token 的估算偏差），避免 section 边界损坏
+    const charsPerToken = 4
+    const maxChars = maxTokens * charsPerToken
+    // 尝试在最近的行边界截断
+    const sliced = systemPrompt.slice(0, maxChars)
+    const lastNewline = sliced.lastIndexOf('\n')
+    const cutPoint = lastNewline > maxChars * 0.8 ? lastNewline : maxChars
+    return systemPrompt.slice(0, cutPoint) + '\n...(system prompt 已裁剪)'
   }
 
   /** 对历史消息中的工具结果做实时压缩 */

@@ -41,7 +41,7 @@ function createMockPlannerConfig(overrides: Record<string, unknown> = {}) {
     config: {
       model: {} as never,
       toolRegistry: createMockToolRegistry(),
-      toolContext: { projectRoot: '/tmp', callId: '', maxReadLines: 2000, maxOutputBytes: 102400, bashTimeout: 30 },
+      toolContext: { projectRoot: '/tmp', callId: '', maxReadLines: 2000, maxOutputBytes: 102400, bashTimeout: 30, todos: [] },
       maxIterations: 3,
       onEvent: (e: NexusEvent) => { events.push(e) },
       costTracker: new CostTracker(),

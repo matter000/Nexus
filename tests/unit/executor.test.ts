@@ -49,7 +49,7 @@ function createMockExecutorConfig(overrides: Record<string, unknown> = {}) {
     config: {
       model: {} as never,
       toolRegistry: createMockToolRegistry(),
-      toolContext: { projectRoot: '/tmp', callId: '', maxReadLines: 2000, maxOutputBytes: 102400, bashTimeout: 30 },
+      toolContext: { projectRoot: '/tmp', callId: '', maxReadLines: 2000, maxOutputBytes: 102400, bashTimeout: 30, todos: [] },
       checkpoint: createMockCheckpoint(),
       maxIterations: 10,
       permissionMode: 'ask' as const,

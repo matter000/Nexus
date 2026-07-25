@@ -22,6 +22,7 @@ describe('list_directory tool', () => {
       maxReadLines: 2000,
       maxOutputBytes: 102400,
       bashTimeout: 10,
+      todos: [],
     }
 
     // 创建测试目录结构
@@ -94,6 +95,7 @@ describe('search_symbol tool', () => {
       maxReadLines: 2000,
       maxOutputBytes: 102400,
       bashTimeout: 10,
+      todos: [],
     }
 
     await writeFile(join(tempDir, 'app.ts'), [
@@ -170,6 +172,7 @@ describe('fetch_url tool', () => {
       maxReadLines: 2000,
       maxOutputBytes: 102400,
       bashTimeout: 10,
+      todos: [],
     }
   })
 

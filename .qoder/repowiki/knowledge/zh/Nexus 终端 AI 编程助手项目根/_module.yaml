@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: ""
-title: Nexus 终端 Coding Agent 项目根
+title: Nexus 终端 AI 编程助手项目根
 scope:
     - README.md
     - DESIGN.md

@@ -62,7 +62,21 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   const [secrets, setSecrets] = useState<SecretsConfig>({ providers: {} })
   const [renderTick, setRenderTick] = useState(0)
   const [autoApproveTools, setAutoApproveTools] = useState<Set<string>>(new Set())
+  const [todoExpanded, setTodoExpanded] = useState(false)
+  const autoApproveRef = useRef<Set<string>>(new Set())
   const msgIdRef = useRef(0)
+  // 面板回调 refs（由 App 的 useInput 统一调度，避免多组件 useInput 冲突）
+  const approvalRef = useRef<ApprovalState | null>(null)
+  const planApprovalRef = useRef<{ plan: Plan; resolve: (result: 'approve' | 'reject' | string) => void } | null>(null)
+
+  // 同步 state 到 refs
+  useEffect(() => { approvalRef.current = approval }, [approval])
+  useEffect(() => { planApprovalRef.current = planApproval }, [planApproval])
+
+  // 将 autoApproveTools 同步到 ref，避免 handleEvent 闭包陈旧
+  useEffect(() => {
+    autoApproveRef.current = autoApproveTools
+  }, [autoApproveTools])
 
   // 首次启动检测: 无任何 API Key 时自动进入配置向导
   useEffect(() => {
@@ -75,10 +89,62 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
     })
   }, [projectRoot])
 
-  // Ctrl+C 退出
-  useInput((_input, key) => {
-    if (key.ctrl && _input === 'c') {
-      exit()
+  // 统一输入处理：所有交互式面板的输入均由 App 的 useInput 调度
+  // 避免多个组件各自 useInput 导致的 Ink 输入冲突
+  useInput((input, key) => {
+    // Ctrl+C 退出
+    if (key.ctrl && input === 'c') { exit(); return }
+
+    // 工具审批面板（ApprovalPrompt）
+    const aprv = approvalRef.current
+    if (aprv) {
+      if (input === 'y' || key.return) {
+        aprv.resolve(true)
+        setApproval(null)
+        delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
+        onApproval?.(aprv.resolve)
+        return
+      }
+      if (input === 'n' || key.escape) {
+        aprv.resolve(false)
+        setApproval(null)
+        delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
+        onApproval?.(aprv.resolve)
+        return
+      }
+      if (input === 'a') {
+        setAutoApproveTools(prev => new Set([...prev, aprv.tool]))
+        aprv.resolve(true)
+        setApproval(null)
+        delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
+        onApproval?.(aprv.resolve)
+        return
+      }
+      return // 审批面板激活时，不处理其他按键
+    }
+
+    // 计划审批面板（PlanApprovalPanel）
+    const pAprv = planApprovalRef.current
+    if (pAprv) {
+      if (key.return) {
+        pAprv.resolve('approve')
+        setPlanApproval(null)
+        delete (globalThis as Record<string, unknown>).__nexusPlanApprovalResolve
+        return
+      }
+      if (input === 'n' || input === 'N' || key.escape) {
+        pAprv.resolve('reject')
+        setPlanApproval(null)
+        delete (globalThis as Record<string, unknown>).__nexusPlanApprovalResolve
+        return
+      }
+      return // 计划审批激活时，不处理其他按键
+    }
+
+    // Todo 折叠切换（Shift+P，因为 InputBox 自带 shift 过滤）
+    if ((input === 'P' || input === 'p') && key.shift) {
+      setTodoExpanded(prev => !prev)
+      return
     }
   })
 
@@ -153,7 +219,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         if (resolve) {
           // 检查是否在自动批准白名单中（危险命令除外）
           const isDangerous = event.tool === 'bash' && typeof event.params.command === 'string' && requiresForcedApproval(event.params.command)
-          if (autoApproveTools.has(event.tool) && !isDangerous) {
+          if (autoApproveRef.current.has(event.tool) && !isDangerous) {
             resolve(true)
             delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
             break
@@ -223,7 +289,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         ])
         break
     }
-  }, [])
+  }, []) // autoApproveTools 通过 ref 访问，不需要作为依赖
 
   // 通过 eventBus 订阅来自 Orchestrator 的事件
   React.useEffect(() => {
@@ -346,59 +412,16 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         ))}
 
         {/* Todo 进度 */}
-        <TodoProgress todos={todos} disabled={!!approval || !!planApproval || showConfig || showModelSelector} />
+        <TodoProgress todos={todos} expanded={todoExpanded} />
 
-        {/* 审批提示 */}
+        {/* 审批提示 — 输入由 App useInput 统一处理 */}
         {approval && (
-          <ApprovalPrompt
-            tool={approval.tool}
-            description={JSON.stringify(approval.params).slice(0, 100)}
-            diff={approval.diff}
-            onApprove={() => {
-              approval.resolve(true)
-              setApproval(null)
-              setPhase('executing')
-              delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
-              onApproval?.(approval.resolve)
-            }}
-            onReject={() => {
-              approval.resolve(false)
-              setApproval(null)
-              setPhase('executing')
-              delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
-              onApproval?.(approval.resolve)
-            }}
-            onAutoApprove={() => {
-              setAutoApproveTools(prev => new Set([...prev, approval.tool]))
-              approval.resolve(true)
-              setApproval(null)
-              setPhase('executing')
-              delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
-              onApproval?.(approval.resolve)
-            }}
-          />
+          <ApprovalPrompt tool={approval.tool} description={JSON.stringify(approval.params).slice(0, 100)} diff={approval.diff} />
         )}
 
-        {/* 计划审批面板 */}
+        {/* 计划审批面板 — 输入由 App useInput 统一处理 */}
         {planApproval && (
-          <PlanApprovalPanel
-            plan={planApproval.plan}
-            onApprove={() => {
-              planApproval.resolve('approve')
-              setPlanApproval(null)
-              delete (globalThis as Record<string, unknown>).__nexusPlanApprovalResolve
-            }}
-            onReject={() => {
-              planApproval.resolve('reject')
-              setPlanApproval(null)
-              delete (globalThis as Record<string, unknown>).__nexusPlanApprovalResolve
-            }}
-            onFeedback={(feedback) => {
-              planApproval.resolve(feedback)
-              setPlanApproval(null)
-              delete (globalThis as Record<string, unknown>).__nexusPlanApprovalResolve
-            }}
-          />
+          <PlanApprovalPanel plan={planApproval.plan} />
         )}
       </Box>
 

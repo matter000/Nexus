@@ -121,6 +121,60 @@ async function main() {
     }
   }
 
+  // ─── Eval 子命令 ──────────────────────────────────────────────────────────
+  if (args.evalDir) {
+    const { HarnessEngine } = await import('./harness/Engine')
+    const { printReport, exportJSON } = await import('./harness/Reporter')
+    const { writeFile } = await import('fs/promises')
+
+    const engine = new HarnessEngine({
+      tasksDir: args.evalDir,
+      mode: args.evalMock ? 'mock' : 'real',
+      runner: async (task, workDir) => {
+        if (args.evalMock) return { output: '', cost: 0 }
+        try {
+          const orch = new Orchestrator({
+            projectRoot: workDir, config,
+            permissionMode: 'yolo', skipPlan: true,
+            maxIterations: Math.min(config.limits.maxIterations, 20),
+            onEvent: () => {},
+            requestApproval: async () => true,
+            requestPlanApproval: async () => 'approve' as const,
+          })
+          await orch.init()
+          const output = await orch.submit(task.userRequest)
+          const cost = orch.getCostSummary().total
+          await orch.shutdown()
+          return { output, cost }
+        } catch (err) {
+          return { output: `执行失败: ${err instanceof Error ? err.message : String(err)}`, cost: 0 }
+        }
+      },
+    })
+
+    let report
+    if (args.evalTask) {
+      const { loadTasks } = await import('./harness/TaskLoader')
+      const tasks = await loadTasks(args.evalDir)
+      const task = tasks.find(t => t.id === args.evalTask)
+      if (!task) { console.error(`未找到任务: ${args.evalTask}`); process.exit(1) }
+      report = { mode: args.evalMock ? 'mock' as const : 'real' as const, tasksTotal: 1, tasksPassed: 0, tasksFailed: 0, totalCost: 0, totalDurationMs: 0, results: [await engine.runOne(task)], timestamp: Date.now() }
+      report.tasksPassed = report.results[0].pass ? 1 : 0
+      report.tasksFailed = report.results[0].pass ? 0 : 1
+      report.totalCost = report.results[0].cost
+      report.totalDurationMs = report.results[0].durationMs
+    } else {
+      report = await engine.runAll()
+    }
+
+    if (args.evalJson) {
+      await writeFile(args.evalJson, exportJSON(report), 'utf-8')
+      console.log(`报告已导出到: ${args.evalJson}`)
+    }
+    printReport(report)
+    process.exit(report.tasksFailed > 0 ? 1 : 0)
+  }
+
   // 创建 Orchestrator
   const orchestrator = new Orchestrator({
     projectRoot: args.cwd,

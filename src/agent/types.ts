@@ -80,8 +80,6 @@ export interface ToolResult {
   truncated?: boolean
 }
 
-export type ToolPermission = 'auto' | 'approval' | 'denied'
-
 // ─── 模型路由类型 ─────────────────────────────────────────────────────────────
 
 export type ProviderName = 'anthropic' | 'openai' | 'google' | 'openrouter' | 'deepseek' | 'custom'

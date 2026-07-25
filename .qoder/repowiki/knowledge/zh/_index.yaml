@@ -3,11 +3,11 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-07-24T08:00:07Z"
+exported_at: "2026-07-24T14:29:49Z"
 modules:
     "":
-        dir_name: Nexus 终端 Coding Agent 项目根
-        title: Nexus 终端 Coding Agent 项目根
+        dir_name: Nexus 终端 AI 编程助手项目根
+        title: Nexus 终端 AI 编程助手项目根
         scope:
             - README.md
             - DESIGN.md

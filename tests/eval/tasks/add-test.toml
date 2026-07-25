@@ -1,0 +1,34 @@
+[id]
+name = "添加单元测试"
+category = "add-test"
+difficulty = "medium"
+description = "为 greet.ts 中的 greet、farewell、welcome 函数添加单元测试"
+
+[request]
+user_prompt = "为 greet.ts 中的 greet、farewell、welcome 函数添加单元测试，覆盖正常情况和边界情况"
+
+[[initial_files]]
+path = "src/greet.ts"
+content = """
+export function greet(name: string): string {
+  return `Hello, ${name}!`
+}
+
+export function farewell(name: string): string {
+  return `Goodbye, ${name}!`
+}
+
+export function welcome(name: string, time: 'morning' | 'afternoon' | 'evening'): string {
+  const greetings: Record<string, string> = {
+    morning: 'Good morning',
+    afternoon: 'Good afternoon',
+    evening: 'Good evening',
+  }
+  return `${greetings[time]}, ${name}!`
+}
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/greet.test.ts"
+pattern = "function greet"

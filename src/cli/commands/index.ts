@@ -151,6 +151,14 @@ const commands: SlashCommand[] = [
     },
   },
   {
+    name: 'eval',
+    aliases: [],
+    description: '运行评估任务（nexus eval <dir> 的 TUI 入口）',
+    handler: async () => {
+      return '请使用 CLI 命令: nexus eval <任务目录> [--mock] [--task <id>] [--json <file>]'
+    },
+  },
+  {
     name: 'help',
     aliases: ['?'],
     description: '显示可用命令及其说明',

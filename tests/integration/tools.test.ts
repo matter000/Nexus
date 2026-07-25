@@ -23,6 +23,7 @@ describe('Tools Integration', () => {
       maxReadLines: 2000,
       maxOutputBytes: 102400,
       bashTimeout: 10,
+      todos: [],
     }
 
     // 创建测试文件

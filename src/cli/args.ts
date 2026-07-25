@@ -28,6 +28,14 @@ export interface CliArgs {
   help: boolean
   /** 非交互模式(执行完即退出) */
   nonInteractive: boolean
+  /** eval 子命令：任务目录路径 */
+  evalDir?: string
+  /** eval 模式：mock 或 real */
+  evalMock: boolean
+  /** eval：只运行指定 ID 的任务 */
+  evalTask?: string
+  /** eval：输出 JSON 报告到文件 */
+  evalJson?: string
 }
 
 const HELP_TEXT = `
@@ -64,6 +72,7 @@ export function parseArgs(argv: string[]): CliArgs {
     version: false,
     help: false,
     nonInteractive: false,
+    evalMock: false,
   }
 
   const positional: string[] = []
@@ -108,6 +117,18 @@ export function parseArgs(argv: string[]): CliArgs {
       }
       case '--non-interactive':
         args.nonInteractive = true
+        break
+      case 'eval':
+        args.evalDir = argv[++i]
+        break
+      case '--mock':
+        args.evalMock = true
+        break
+      case '--task':
+        args.evalTask = argv[++i]
+        break
+      case '--json':
+        args.evalJson = argv[++i]
         break
       case '-v':
       case '--verbose':

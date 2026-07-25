@@ -1,0 +1,34 @@
+[id]
+name = "修复除零错误"
+category = "bug-fix"
+difficulty = "easy"
+description = "修复 calculator.ts 中 divide 函数未检查除零的 bug"
+
+[request]
+user_prompt = "修复 divide 函数的除零错误，当除数为 0 时应抛出错误或返回特殊值"
+
+[[initial_files]]
+path = "src/calculator.ts"
+content = """
+export function divide(a: number, b: number): number {
+  return a / b
+}
+
+export function safeDivide(a: number, b: number): number {
+  return divide(a, b)
+}
+
+export function average(numbers: number[]): number {
+  const sum = numbers.reduce((acc, n) => acc + n, 0)
+  return divide(sum, numbers.length)
+}
+"""
+
+[[validate]]
+type = "file_exists"
+path = "src/calculator.ts"
+
+[[validate]]
+type = "file_contains"
+path = "src/calculator.ts"
+pattern = "=== 0"

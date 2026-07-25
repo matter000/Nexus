@@ -1,0 +1,58 @@
+[id]
+name = "提取公共验证逻辑"
+category = "refactor"
+difficulty = "hard"
+description = "将 handlers.ts 中两段重复的验证逻辑提取为公共函数"
+
+[request]
+user_prompt = "提取 handlers.ts 中 handleCreateUser 和 handleUpdateUser 重复的验证逻辑为一个公共函数 validateUser，然后在两个 handler 中调用它"
+
+[[initial_files]]
+path = "src/handlers.ts"
+content = """
+interface User {
+  name: string
+  email: string
+  age: number
+}
+
+export function handleCreateUser(data: Record<string, unknown>): User {
+  if (!data.name || typeof data.name !== 'string') {
+    throw new Error('Invalid name')
+  }
+  if (!data.email || typeof data.email !== 'string' || !data.email.includes('@')) {
+    throw new Error('Invalid email')
+  }
+  if (!data.age || typeof data.age !== 'number' || data.age < 0 || data.age > 150) {
+    throw new Error('Invalid age')
+  }
+  return { name: data.name as string, email: data.email as string, age: data.age as number }
+}
+
+export function handleUpdateUser(existing: User, data: Record<string, unknown>): User {
+  if (!data.name || typeof data.name !== 'string') {
+    throw new Error('Invalid name')
+  }
+  if (!data.email || typeof data.email !== 'string' || !data.email.includes('@')) {
+    throw new Error('Invalid email')
+  }
+  if (!data.age || typeof data.age !== 'number' || data.age < 0 || data.age > 150) {
+    throw new Error('Invalid age')
+  }
+  return { name: data.name as string, email: data.email as string, age: data.age as number }
+}
+"""
+
+[[validate]]
+type = "file_exists"
+path = "src/handlers.ts"
+
+[[validate]]
+type = "file_contains"
+path = "src/handlers.ts"
+pattern = "function validate"
+
+[[validate]]
+type = "file_contains"
+path = "src/handlers.ts"
+pattern = "handleCreateUser"

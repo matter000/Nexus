@@ -3,7 +3,7 @@
  * 管理所有内置工具的注册、查找和调用
  */
 
-import type { ToolDefinition, ToolResult, SubAgentTask, SubAgentResult } from '../agent/types'
+import type { ToolDefinition, ToolResult, SubAgentTask, SubAgentResult, Todo } from '../agent/types'
 import { readFileTool } from './readFile'
 import { editFileTool } from './editFile'
 import { bashTool } from './bash'
@@ -17,6 +17,7 @@ import { fetchUrlTool } from './fetchUrl'
 import { dispatchSubagentToolDefinition } from '../agent/SubAgent'
 import { toolSchemas } from './schemas'
 import { semanticSearchToolDefinition, getSemanticSearchEngine } from '../context/SemanticSearch'
+import { isInsideProject } from '../utils'
 
 /** SubAgent 运行器接口(解耦循环依赖) */
 export interface SubAgentRunner {
@@ -34,6 +35,8 @@ export interface ToolContext {
   maxReadLines: number
   maxOutputBytes: number
   bashTimeout: number
+  /** 当前 TODO 列表引用（工具可直接读写，如 update_todo） */
+  todos: Todo[]
 }
 
 class ToolRegistry {
@@ -117,6 +120,38 @@ class ToolRegistry {
         }
       }
       params = parseResult.data as Record<string, unknown>
+    }
+
+    // ─── 自动安全检查：路径 / URL / 命令 ──────────────────────────────
+    // 所有工具无需各自实现，由注册中心统一检查
+
+    // 路径遍历检查
+    if (typeof params.path === 'string') {
+      if (!isInsideProject(context.projectRoot, params.path)) {
+        return {
+          callId: context.callId,
+          tool: name,
+          result: '',
+          error: `路径越界: ${params.path} 不在项目目录内`,
+        }
+      }
+    }
+
+    // SSRF 防护（URL 参数检查）
+    if (typeof params.url === 'string') {
+      try {
+        const u = new URL(params.url)
+        const hostname = u.hostname.toLowerCase()
+        const blocked = ['127.0.0.1', '::1', 'localhost', '169.254.169.254', '0.0.0.0']
+        if (blocked.includes(hostname) || hostname.match(/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/)) {
+          return {
+            callId: context.callId,
+            tool: name,
+            result: '',
+            error: `出于安全原因，不允许访问内网或私有地址: ${params.url}`,
+          }
+        }
+      } catch { /* URL 解析失败，交给工具自己处理 */ }
     }
 
     return handler.execute(params, context)

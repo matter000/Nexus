@@ -164,8 +164,11 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
       truncated = true
     }
 
-    // 统计匹配数
-    const matchCount = output.split('\n').filter((l) => l.trim()).length
+    // 统计匹配数（只统计实际匹配行，排除 context_lines 引入的上下文行和分隔符）
+    const matchCount = output
+      .split('\n')
+      .filter((l) => /^[^:]+:\d+:/.test(l))
+      .length
 
     return {
       callId,

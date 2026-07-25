@@ -6,9 +6,10 @@
 
 import { generateText } from 'ai'
 import type { LanguageModel } from 'ai'
-import type { NexusEvent, PermissionMode, SubAgentResult, SubAgentTask } from './types'
+import type { NexusEvent, PermissionMode, SubAgentResult, SubAgentTask, ModelRole } from './types'
 import type { ToolRegistry, ToolContext } from '../tools/registry'
 import { requiresForcedApproval } from '../sandbox/CommandGuard'
+import type { CostTracker } from '../router/CostTracker'
 
 export interface SubAgentConfig {
   model: LanguageModel
@@ -20,6 +21,18 @@ export interface SubAgentConfig {
   permissionMode: PermissionMode
   /** 审批回调 */
   requestApproval: (tool: string, params: Record<string, unknown>, diff?: string) => Promise<boolean>
+  /** 成本追踪器 */
+  costTracker: CostTracker
+  /** 当前模型角色（用于成本记录） */
+  modelRole: ModelRole
+  /** 当前 provider 名称 */
+  providerName: string
+  /** 当前模型名称 */
+  modelName: string
+  /** 输入 token 单价（每 1k） */
+  costPer1kInput: number
+  /** 输出 token 单价（每 1k） */
+  costPer1kOutput: number
 }
 
 export class SubAgent {
@@ -71,6 +84,20 @@ export class SubAgent {
           tools: toolsForAI,
           maxSteps: 1,
         })
+
+        // 记录成本
+        const usage = await result.usage
+        if (usage) {
+          this.config.costTracker.record({
+            role: this.config.modelRole,
+            provider: this.config.providerName,
+            model: this.config.modelName,
+            inputTokens: usage.promptTokens,
+            outputTokens: usage.completionTokens,
+            costPer1kInput: this.config.costPer1kInput,
+            costPer1kOutput: this.config.costPer1kOutput,
+          })
+        }
 
         if (!result.toolCalls || result.toolCalls.length === 0) {
           summary = result.text

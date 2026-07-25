@@ -36,8 +36,8 @@ export const globSchema = z.object({
 })
 
 export const updateTodoSchema = z.object({
-  action: z.enum(['complete', 'add', 'update']).describe('操作类型'),
-  id: z.string().optional().describe('todo 项 ID(complete/update 时必需)'),
+  action: z.enum(['complete', 'add', 'update', 'in_progress', 'cancelled']).describe('操作类型'),
+  id: z.string().optional().describe('todo 项 ID(complete/update/in_progress/cancelled 时必需)'),
   content: z.string().optional().describe('新 todo 内容(add/update 时)'),
 })
 

@@ -16,14 +16,9 @@ export const theme = {
     assistant: 'cyan',
     tool: 'yellow',
   },
-  /** Logo pixel art palette — electric blue / neon cyan / dark navy */
+  /** Logo pixel art palette — spider blue */
   logo: {
-    pin: '#4A90D9',    // steel blue — chip pins/legs
-    body: '#0088FF',   // electric blue — chip body border
-    trace: '#0066CC',  // medium blue — circuit traces
-    glow: '#00FFFF',   // neon cyan — glowing "N" core
-    node: '#00E5FF',   // bright cyan — endpoint glow nodes
-    bg: '#0A0E1A',     // dark navy — background (not rendered, terminal bg)
+    spider: '#0E76B0',  // spider blue — pure single color silhouette
   },
   symbols: {
     user: '◆',

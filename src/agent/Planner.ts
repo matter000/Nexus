@@ -3,14 +3,13 @@
  * 探索代码库 + 生成结构化计划,只用只读工具(read/grep)
  */
 
-import { streamText } from 'ai'
 import type { LanguageModel } from 'ai'
 import type { ChatMessage, Plan, Todo, NexusEvent, ModelRole } from './types'
 import type { ToolRegistry, ToolContext } from '../tools/registry'
 import { toolSchemas } from '../tools/schemas'
 import { consumePendingPlan, setPendingPlan } from '../tools/submitPlan'
 import type { CostTracker } from '../router/CostTracker'
-import { callWithRetry } from '../utils'
+import { callLLMWithRetry } from './ReActLoop'
 
 const PLAN_SYSTEM_SUFFIX = `
 ## 当前阶段: Plan (规划)
@@ -28,11 +27,21 @@ const PLAN_SYSTEM_SUFFIX = `
 - filesToModify: 预计需要修改的文件路径列表
 - estimatedSteps: 预估总步数
 
+## todo 质量标准
+- 每个 todo 必须对应一个明确的 edit_file 操作。例如:
+  ✓ "修改 src/UserService.ts 的 createUser 方法，添加 email 格式验证"
+  ✗ "重构用户模块"（太笼统，无法执行）
+- 步骤按依赖排序：先创建/修改基础文件，再修改依赖它的文件
+- 如果需求简单（如 "创建一个文件"），1-2 步即可；复杂需求 5-8 步
+
 注意:
-- 计划要具体可执行,每步对应一个明确的文件操作
-- 步骤数量合理(通常 3-10 步)
 - 先理解再规划,不要凭空猜测文件内容
-- 调用 submit_plan 后规划阶段结束,不需要额外输出文本`
+- 调用 submit_plan 后规划阶段结束,不需要额外输出文本
+
+## 重要：必须调用 submit_plan
+
+完成代码探索后，你必须调用 submit_plan 工具提交计划，这是规划阶段结束的唯一方式。
+如果只输出文本而不调用工具，计划将被忽略，执行阶段将使用原始需求作为 todo 直接执行。`
 
 export interface PlannerConfig {
   model: LanguageModel
@@ -92,54 +101,27 @@ export class Planner {
     while (iterations < maxIterations) {
       iterations++
 
-      // 使用 callWithRetry 包装整个流式消费过程
-      const streamResult = await callWithRetry(async () => {
-        const result = streamText({
+      // 使用共享的 LLM 调用工具（统一 streamText + 重试 + 成本记录）
+      const { streamedText, toolCalls } = await callLLMWithRetry(
+        {
           model,
           system: PLAN_SYSTEM_SUFFIX,
           messages: messages as Array<{ role: 'user' | 'assistant'; content: string }>,
           tools: toolsForAI,
           maxSteps: 1,
-        })
-
-        // 流式消费文本
-        let streamedText = ''
-        for await (const chunk of result.textStream) {
-          streamedText += chunk
-          onEvent({ type: 'llm_chunk', text: chunk })
-        }
-
-        // 流式结束后获取完整结果（含 toolCalls、usage）
-        const finalResult = await result
-        const usage = await finalResult.usage
-        const toolCalls = await finalResult.toolCalls
-        return { streamedText, usage, toolCalls }
-      }, {
-        onRetry: ({ attempt, delay, error }) => {
-          onEvent({ type: 'error', message: `流式请求重试 #${attempt}（${delay}ms 后）: ${error.message}`, recoverable: true })
         },
-      })
-
-      const { streamedText, usage, toolCalls } = streamResult
-
-      // 记录 token 用量到 CostTracker
-      if (usage) {
-        this.config.costTracker.record({
-          role: this.config.modelRole,
-          provider: this.config.providerName,
-          model: this.config.modelName,
-          inputTokens: usage.promptTokens,
-          outputTokens: usage.completionTokens,
-          costPer1kInput: this.config.costPer1kInput,
-          costPer1kOutput: this.config.costPer1kOutput,
-        })
-        onEvent({
-          type: 'cost_update',
-          inputTokens: usage.promptTokens,
-          outputTokens: usage.completionTokens,
-          cost: this.config.costTracker.getTotalCost(),
-        })
-      }
+        {
+          onEvent,
+          costConfig: {
+            costTracker: this.config.costTracker,
+            modelRole: this.config.modelRole,
+            providerName: this.config.providerName,
+            modelName: this.config.modelName,
+            costPer1kInput: this.config.costPer1kInput,
+            costPer1kOutput: this.config.costPer1kOutput,
+          },
+        },
+      )
 
       // 处理工具调用
       if (toolCalls && toolCalls.length > 0) {
@@ -249,50 +231,26 @@ export class Planner {
     while (iterations < maxIterations) {
       iterations++
 
-      const streamResult = await callWithRetry(async () => {
-        const result = streamText({
+      const { streamedText, toolCalls } = await callLLMWithRetry(
+        {
           model,
           system: PLAN_SYSTEM_SUFFIX,
           messages: messages as Array<{ role: 'user' | 'assistant'; content: string }>,
           tools: toolsForAI,
           maxSteps: 1,
-        })
-
-        let streamedText = ''
-        for await (const chunk of result.textStream) {
-          streamedText += chunk
-          onEvent({ type: 'llm_chunk', text: chunk })
-        }
-
-        const finalResult = await result
-        const usage = await finalResult.usage
-        const toolCalls = await finalResult.toolCalls
-        return { streamedText, usage, toolCalls }
-      }, {
-        onRetry: ({ attempt, delay, error }) => {
-          onEvent({ type: 'error', message: `流式请求重试 #${attempt}（${delay}ms 后）: ${error.message}`, recoverable: true })
         },
-      })
-
-      const { streamedText, usage, toolCalls } = streamResult
-
-      if (usage) {
-        this.config.costTracker.record({
-          role: this.config.modelRole,
-          provider: this.config.providerName,
-          model: this.config.modelName,
-          inputTokens: usage.promptTokens,
-          outputTokens: usage.completionTokens,
-          costPer1kInput: this.config.costPer1kInput,
-          costPer1kOutput: this.config.costPer1kOutput,
-        })
-        onEvent({
-          type: 'cost_update',
-          inputTokens: usage.promptTokens,
-          outputTokens: usage.completionTokens,
-          cost: this.config.costTracker.getTotalCost(),
-        })
-      }
+        {
+          onEvent,
+          costConfig: {
+            costTracker: this.config.costTracker,
+            modelRole: this.config.modelRole,
+            providerName: this.config.providerName,
+            modelName: this.config.modelName,
+            costPer1kInput: this.config.costPer1kInput,
+            costPer1kOutput: this.config.costPer1kOutput,
+          },
+        },
+      )
 
       if (toolCalls && toolCalls.length > 0) {
         messages.push({ role: 'assistant', content: streamedText || '' } as never)
@@ -375,16 +333,13 @@ export class Planner {
       }
     }
 
-    // 回退:生成简单计划
+    // 兜底：plan 阶段未能产出结构化计划（LLM 未调用 submit_plan 也未输出 JSON）
+    // 返回单步骤计划，以用户原始需求为 todo，由 Executor 自主拆解
     return {
       summary: userRequest,
-      todos: [
-        { id: '1', content: '分析需求并探索相关代码', status: 'pending' },
-        { id: '2', content: '实施修改', status: 'pending' },
-        { id: '3', content: '验证修改正确性', status: 'pending' },
-      ],
+      todos: [{ id: '1', content: userRequest, status: 'pending' }],
       filesToModify: [],
-      estimatedSteps: 3,
+      estimatedSteps: 0,
     }
   }
 }

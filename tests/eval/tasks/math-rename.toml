@@ -1,0 +1,54 @@
+[id]
+name = "重命名函数"
+category = "single-file"
+difficulty = "easy"
+description = "将 math.ts 中的 add 函数重命名为 sum，并更新所有调用处"
+
+[request]
+user_prompt = "把 add 函数重命名为 sum，并更新所有引用处"
+
+[[initial_files]]
+path = "src/math.ts"
+content = """
+export function add(a: number, b: number): number {
+  return a + b
+}
+
+export function subtract(a: number, b: number): number {
+  return a - b
+}
+
+export function multiply(a: number, b: number): number {
+  return add(a, b)
+}
+"""
+
+[[initial_files]]
+path = "src/main.ts"
+content = """
+import { add, subtract, multiply } from './math'
+
+console.log(add(1, 2))
+console.log(subtract(5, 3))
+console.log(multiply(2, 3))
+"""
+
+[[validate]]
+type = "file_not_contains"
+path = "src/math.ts"
+pattern = "function add("
+
+[[validate]]
+type = "file_contains"
+path = "src/math.ts"
+pattern = "function sum("
+
+[[validate]]
+type = "file_not_contains"
+path = "src/main.ts"
+pattern = "add("
+
+[[validate]]
+type = "file_contains"
+path = "src/main.ts"
+pattern = "sum("

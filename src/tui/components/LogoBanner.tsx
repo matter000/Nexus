@@ -1,21 +1,19 @@
 /**
  * ══════════════════════════════════════════════════════════════════════════
- *  Logo Design Specification v4 — Microchip with glowing N
+ *  Logo Design — Pixel Spider
  * ══════════════════════════════════════════════════════════════════════════
  *
- *  Microchip processor top-down view with glowing "N" core,
- *  chip pins on all four sides, circuit traces radiating outward.
- *  15×15 pixel grid compressed to 8 terminal rows via half-block chars.
+ *  16×16 pixel grid compressed to 8 terminal rows via half-block characters.
+ *  Single solid color (#0E76B0), no gradients, no shadows, no strokes.
+ *  Pure silhouette — top-down symmetrical spider.
  *
- *  Color Legend:
- *    0 = empty (transparent / dark navy background)
- *    1 = chip body border       → electric blue #0088FF
- *    2 = circuit traces         → medium blue   #0066CC
- *    3 = chip pins/legs         → steel blue    #4A90D9
- *    4 = glowing "N" letter     → neon cyan     #00FFFF
- *    5 = corner accent nodes    → bright cyan   #00E5FF
+ *  Layout:
+ *    • Small cephalothorax at top-center
+ *    • Large oval abdomen in the middle
+ *    • 8 thick legs with knee bends radiating outward
+ *    • Centered composition, sharp pixel edges
  *
- *  Grid: 15×15 pixels, rendered as 8 terminal rows via ▀/▄/█/space
+ *  Half-block chars: ▀(top only) ▄(bottom only) █(both) ' '(neither)
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -24,49 +22,31 @@ import { Box, Text } from 'ink'
 import { theme } from '../theme'
 
 /**
- * 15×15 pixel grid — microchip processor top-down view
- * Symmetric layout: pins(3) → traces(2) → body(1) → N letter(4) → nodes(5)
- * Rendered with half-block chars: ▀(top only) ▄(bottom only) █(both) ' '(neither)
+ * 16×16 pixel grid — pixel spider
+ * 1 = spider body & legs (single color #0E76B0)
+ * 0 = empty (transparent)
  */
 const LOGO_GRID: number[][] = [
-  // 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14
-  [0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0], // row 0:  top pin tips
-  [0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0], // row 1:  top pin mid
-  [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], // row 2:  top pin base
-  [0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0], // row 3:  circuit traces
-  [0, 5, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 5, 0], // row 4:  body top + side pins
-  [0, 0, 2, 1, 4, 4, 0, 0, 0, 0, 4, 1, 2, 0, 0], // row 5:  N top bar
-  [0, 0, 2, 1, 4, 0, 4, 0, 0, 0, 4, 1, 2, 0, 0], // row 6:  N diagonal step 1
-  [0, 0, 2, 1, 4, 0, 0, 4, 0, 0, 4, 1, 2, 0, 0], // row 7:  N diagonal step 2
-  [0, 0, 2, 1, 4, 0, 0, 0, 4, 0, 4, 1, 2, 0, 0], // row 8:  N diagonal step 3
-  [0, 0, 2, 1, 4, 0, 0, 0, 0, 4, 4, 1, 2, 0, 0], // row 9:  N bottom bar
-  [0, 5, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 5, 0], // row 10: body bottom + side pins
-  [0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0], // row 11: circuit traces
-  [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], // row 12: bottom pin base
-  [0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0], // row 13: bottom pin mid
-  [0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0], // row 14: bottom pin tips
+    [0,0,0,1,1,0,0,0,0,0,0,0,0,1,1,0,0,0,0],
+    [0,0,0,1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0],
+    [0,0,0,1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0],
+    [1,1,0,1,0,0,0,0,1,0,1,0,0,0,1,0,1,1,0],
+    [0,1,0,1,1,0,0,1,1,1,1,1,0,0,1,0,1,0,0],
+    [0,1,0,0,1,0,0,1,1,1,1,1,0,1,0,0,1,0,0],
+    [0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0],
+    [0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0],
+    [0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0],
+    [0,0,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,0,0],
+    [0,1,1,0,0,1,1,1,1,1,1,1,1,1,0,0,1,1,0],
+    [1,0,0,0,1,0,1,1,1,1,1,1,1,0,1,0,0,0,1],
+    [1,0,0,1,0,0,1,1,1,1,1,1,1,0,0,1,0,0,1],
+    [0,0,0,1,0,0,0,0,1,1,1,0,0,0,0,1,0,0,0],
+    [0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0],
+
 ]
 
-/** Pixel color map — references theme.logo palette */
-const COLORS: Record<number, string> = {
-  1: theme.logo.body,      // electric blue — chip body border
-  2: theme.logo.trace,     // medium blue — circuit traces
-  3: theme.logo.pin,       // steel blue — chip pins/legs
-  4: theme.logo.glow,      // neon cyan — glowing "N" core
-  5: theme.logo.node,      // bright cyan — corner accent nodes
-}
-
-/**
- * Half-block rendering: compress 15 pixel rows → 8 terminal rows
- * Pairs rows (0,1), (2,3), ..., (12,13), then row 14 alone as upper half
- * Uses ▀ (upper half), ▄ (lower half), █ (both filled), ' ' (empty)
- */
+/** Half-block rendering: compress 16 pixel rows → 8 terminal rows */
 function LogoPixelArt() {
-  const BLOCK_FULL = '█'
-  const BLOCK_UPPER = '▀'
-  const BLOCK_LOWER = '▄'
-  const EMPTY = ' '
-
   const ROWS = LOGO_GRID.length
   const terminalRows = Math.ceil(ROWS / 2)
 
@@ -84,16 +64,16 @@ function LogoPixelArt() {
               let char: string
               let color: string | undefined
               if (topFilled && botFilled) {
-                char = BLOCK_FULL
-                color = COLORS[topCell] ?? COLORS[botCell]
+                char = '█'
+                color = theme.logo.spider
               } else if (topFilled) {
-                char = BLOCK_UPPER
-                color = COLORS[topCell]
+                char = '▀'
+                color = theme.logo.spider
               } else if (botFilled) {
-                char = BLOCK_LOWER
-                color = COLORS[botCell]
+                char = '▄'
+                color = theme.logo.spider
               } else {
-                char = EMPTY
+                char = ' '
                 color = undefined
               }
               return (

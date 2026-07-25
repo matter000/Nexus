@@ -1,0 +1,44 @@
+[id]
+name = "添加导出并更新导入"
+category = "multi-file"
+difficulty = "medium"
+description = "在 utils.ts 中添加 formatDate 函数并在 index.ts 中导入使用"
+
+[request]
+user_prompt = "在 utils.ts 中添加一个 formatDate 函数（接受 Date 返回 YYYY-MM-DD 字符串），并在 index.ts 中导入使用它来格式化当前日期"
+
+[[initial_files]]
+path = "src/utils.ts"
+content = """
+export function formatName(name: string): string {
+  return name.trim().toLowerCase()
+}
+
+export function formatAge(age: number): string {
+  return `${age} years old`
+}
+"""
+
+[[initial_files]]
+path = "src/index.ts"
+content = """
+import { formatName, formatAge } from './utils'
+
+export function greet(name: string, age: number): string {
+  return `Hello, ${formatName(name)}! You are ${formatAge(age)}.`
+}
+"""
+
+[[validate]]
+type = "file_exists"
+path = "src/utils.ts"
+
+[[validate]]
+type = "file_contains"
+path = "src/utils.ts"
+pattern = "formatDate"
+
+[[validate]]
+type = "file_contains"
+path = "src/index.ts"
+pattern = "formatDate"

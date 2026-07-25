@@ -67,8 +67,8 @@ export function InputBox({ onSubmit, disabled = false, placeholder = '输入任�
       return
     }
 
-    // 忽略控制字符
-    if (key.ctrl || key.meta) return
+    // 忽略带修饰键的输入（Shift+P 留给 TodoProgress 折叠等全局快捷键）
+    if (key.shift || key.ctrl || key.meta) return
 
     if (input) {
       setValue((v) => v + input)

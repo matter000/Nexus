@@ -122,6 +122,12 @@ export class Orchestrator {
         onEvent: (e) => this.emit(e),
         permissionMode: this.cfg.permissionMode,
         requestApproval: this.cfg.requestApproval,
+        costTracker: this.costTracker,
+        modelRole: 'executor',
+        providerName: 'anthropic', // 默认 provider，子 Agent 成本计入主 provider
+        modelName: this.router.getCurrentModel('executor'),
+        costPer1kInput: 0.003,
+        costPer1kOutput: 0.015,
       })
       this.toolRegistry.setSubAgentRunner(this.subAgent)
     } else {
@@ -248,6 +254,12 @@ export class Orchestrator {
         onEvent: (e) => this.emit(e),
         permissionMode: this.cfg.permissionMode,
         requestApproval: this.cfg.requestApproval,
+        costTracker: this.costTracker,
+        modelRole: 'executor',
+        providerName: 'anthropic',
+        modelName: this.router.getCurrentModel('executor'),
+        costPer1kInput: 0.003,
+        costPer1kOutput: 0.015,
       })
       this.toolRegistry.setSubAgentRunner(this.subAgent)
     }
@@ -267,9 +279,6 @@ export class Orchestrator {
           '❌ 未检测到任何可用的 AI 模型 API Key。',
           '',
           '请至少配置一个 provider：',
-          '  • Anthropic:  export ANTHROPIC_API_KEY=sk-...',
-          '  • OpenAI:     export OPENAI_API_KEY=sk-...',
-          '  • DeepSeek:   export DEEPSEEK_API_KEY=sk-...',
         ].join('\n')
         this.emit({ type: 'error', message: errorMsg, recoverable: true })
         return errorMsg
@@ -342,7 +351,7 @@ export class Orchestrator {
       model: this.router!.getModel('planner'),
       toolRegistry: this.toolRegistry,
       toolContext: this.getToolContext(),
-      maxIterations: Math.min(this.cfg.maxIterations, 15),
+      maxIterations: Math.min(this.cfg.maxIterations, 8), // Plan 阶段限制 8 步，过长探索通常是迷路了
       onEvent: (e) => this.emit(e),
       costTracker: this.costTracker,
       modelRole: 'planner',
@@ -614,6 +623,7 @@ export class Orchestrator {
       maxReadLines: this.cfg.config.limits.maxReadLines,
       maxOutputBytes: this.cfg.config.limits.maxOutputBytes,
       bashTimeout: this.cfg.config.limits.bashTimeout,
+      todos: this.todos,
     }
   }
 

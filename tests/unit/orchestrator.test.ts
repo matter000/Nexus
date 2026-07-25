@@ -60,7 +60,6 @@ let mockDbCloseCalled = false
 ;(mock as any).module('../../src/storage/db', () => ({
   NexusDB: class MockDB {
     constructor() {}
-    getRecentSessions = () => []
     createSession = () => {}
     addMessage = () => {}
     endSession = () => {}

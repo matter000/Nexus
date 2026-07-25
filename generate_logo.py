@@ -1,54 +1,46 @@
 """
-Nexus Pixel Logo Generator v7
-Design: Microchip processor top-down view with glowing "N" core,
-circuit traces radiating outward, chip pins on all four sides.
-Style: 15x15 retro pixel art, electric blue + neon cyan, dark navy bg.
+Nexus Pixel Logo Generator v8
+Design: Pixel art spider — single blue color on transparent background.
+Style: 16x16 retro pixel art, spider blue #0D79C1.
 """
 from PIL import Image, ImageDraw, ImageFont
 import os
 
 # === CONFIGURATION ===
 PIXEL_SIZE = 48  # Size of each "pixel" block in the final image
-GRID_W = 15      # Grid width in pixels
-GRID_H = 15      # Grid height in pixels
+GRID_W = 16      # Grid width in pixels
+GRID_H = 16      # Grid height in pixels
 MARGIN = 2       # Margin in grid pixels around the design
 CANVAS_W = (GRID_W + MARGIN * 2) * PIXEL_SIZE
 CANVAS_H = (GRID_H + MARGIN * 2) * PIXEL_SIZE
 
-# Color palette — electric blue / neon cyan / dark navy
+# Color palette — spider blue
 BG_COLOR = (10, 14, 26)           # dark navy #0A0E1A
-PIN_COLOR = (74, 144, 217)        # steel blue #4A90D9
-BODY_COLOR = (0, 136, 255)        # electric blue #0088FF
-TRACE_COLOR = (0, 102, 204)       # medium blue #0066CC
-GLOW_COLOR = (0, 255, 255)        # neon cyan #00FFFF
-NODE_COLOR = (0, 229, 255)        # bright cyan #00E5FF
+SPIDER_COLOR = (13, 121, 193)     # spider blue #0D79C1
 
 COLOR_MAP = {
-    1: BODY_COLOR,     # electric blue — chip body border
-    2: TRACE_COLOR,    # medium blue — circuit traces
-    3: PIN_COLOR,      # steel blue — chip pins/legs
-    4: GLOW_COLOR,     # neon cyan — glowing "N" core
-    5: NODE_COLOR,     # bright cyan — corner accent nodes
+    1: SPIDER_COLOR,   # spider blue — spider body & legs
 }
 
-# === 15x15 PIXEL GRID — microchip with glowing N core ===
-# Symmetric design: pins(3) → traces(2) → body(1) → N letter(4) → nodes(5)
+# === 16x16 PIXEL GRID — pixel spider ===
+# Single color: spider body & legs (1)
 LOGO_GRID = [
-    [0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0],
-    [0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0],
-    [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-    [0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0],
-    [0, 5, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 5, 0],
-    [0, 0, 2, 1, 4, 4, 0, 0, 0, 4, 4, 1, 2, 0, 0],
-    [0, 0, 2, 1, 4, 0, 4, 0, 0, 0, 4, 1, 2, 0, 0],
-    [0, 0, 2, 1, 4, 0, 0, 4, 0, 0, 4, 1, 2, 0, 0],
-    [0, 0, 2, 1, 4, 0, 0, 0, 4, 0, 4, 1, 2, 0, 0],
-    [0, 0, 2, 1, 4, 0, 0, 0, 0, 4, 4, 1, 2, 0, 0],
-    [0, 5, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 5, 0],
-    [0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0],
-    [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-    [0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0],
-    [0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0],
+    [0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0],
+    [0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0],
+    [0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0],
+    [0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1],
+    [0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1],
+    [1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+    [1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+    [0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
+    [0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
+    [0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0],
+    [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 ]
 
 # === RENDER ===
@@ -90,7 +82,7 @@ try:
     draw_wm = ImageDraw.Draw(img_wm)
     text_x = CANVAS_W + PIXEL_SIZE
     text_y = (wm_h - th) // 2 - bbox[1]
-    draw_wm.text((text_x, text_y), "NEXUS", fill=GLOW_COLOR, font=font)
+    draw_wm.text((text_x, text_y), "NEXUS", fill=SPIDER_COLOR, font=font)
 
     wm_path = os.path.join(r'd:\Nexus', 'nexus-logo-wordmark.png')
     img_wm.save(wm_path, 'PNG')
