@@ -26,6 +26,11 @@ Thumbs.db
 *.nexus-tmp-*
 *.log
 
+# Logo/image assets
+*.png
+generate_logo.py
+nexus-logo-philosophy.md
+
 # Environment
 .env
 .env.local
