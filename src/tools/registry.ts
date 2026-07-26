@@ -292,10 +292,11 @@ export function createToolRegistry(): ToolRegistry {
       const results: Array<{ description: string; success: boolean; summary: string; error?: string }> = []
 
       // 只读任务并行执行（上限 3）
+      // 用 allSettled 而非 all：单个子任务 throw 时，其他已完成的结果不丢失
       const PARALLEL_LIMIT = 3
       for (let i = 0; i < readTasks.length; i += PARALLEL_LIMIT) {
         const batch = readTasks.slice(i, i + PARALLEL_LIMIT)
-        const batchResults = await Promise.all(
+        const settled = await Promise.allSettled(
           batch.map((t) => {
             const task: SubAgentTask = {
               id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -307,13 +308,24 @@ export function createToolRegistry(): ToolRegistry {
             return runner.run(task)
           })
         )
-        for (let j = 0; j < batchResults.length; j++) {
-          results.push({
-            description: batch[j].description,
-            success: batchResults[j].success,
-            summary: batchResults[j].summary,
-            error: batchResults[j].error,
-          })
+        for (let j = 0; j < settled.length; j++) {
+          const s = settled[j]
+          if (s.status === 'fulfilled') {
+            results.push({
+              description: batch[j].description,
+              success: s.value.success,
+              summary: s.value.summary,
+              error: s.value.error,
+            })
+          } else {
+            // rejected：子任务内部未捕获的 crash，记录为失败而非让整批丢失
+            results.push({
+              description: batch[j].description,
+              success: false,
+              summary: '',
+              error: s.reason instanceof Error ? s.reason.message : String(s.reason),
+            })
+          }
         }
       }
 
@@ -339,7 +351,7 @@ export function createToolRegistry(): ToolRegistry {
       const succeeded = results.filter((r) => r.success)
       const failed = results.filter((r) => !r.success)
       const summaryParts = results.map((r, i) =>
-        `${r.success ? '✅' : '❌'} 任务${i + 1}: ${r.summary || r.error}`
+        `${r.success ? '✅' : '❌'} 任务${i + 1} [${r.description}]: ${r.summary || r.error}`
       )
 
       return {

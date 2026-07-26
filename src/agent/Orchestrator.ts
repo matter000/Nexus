@@ -131,6 +131,7 @@ export class Orchestrator {
         modelName: this.router.getCurrentModel('executor'),
         costPer1kInput: 0.003,
         costPer1kOutput: 0.015,
+        getAbortSignal: () => this.abortController?.signal,
       })
       this.toolRegistry.setSubAgentRunner(this.subAgent)
     } else {
@@ -283,6 +284,7 @@ export class Orchestrator {
         modelName: this.router.getCurrentModel('executor'),
         costPer1kInput: 0.003,
         costPer1kOutput: 0.015,
+        getAbortSignal: () => this.abortController?.signal,
       })
       this.toolRegistry.setSubAgentRunner(this.subAgent)
     }
