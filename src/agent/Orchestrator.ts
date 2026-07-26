@@ -187,7 +187,7 @@ export class Orchestrator {
         onChange: (changedFiles) => {
           // 增量更新代码图谱
           if (this.codeGraph) {
-            updateCodeGraph(this.codeGraph, changedFiles).then((updated) => {
+            updateCodeGraph(this.codeGraph, changedFiles, this.cfg.projectRoot).then((updated) => {
               this.codeGraph = updated
               this.assembler?.setCodeGraph(updated)
             }).catch(() => {})

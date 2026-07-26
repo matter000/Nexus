@@ -224,7 +224,25 @@ describe('ToolRegistry 新工具注册', () => {
     expect(names).toContain('fetch_url')
   })
 
-  it('总共注册 12 个工具', () => {
-    expect(registry.getAll().length).toBe(12)
+  it('总共注册 14 个工具', () => {
+    const tools = registry.getAll()
+    expect(tools.length).toBe(14)
+    const names = tools.map((t) => t.definition.name)
+    expect(names).toEqual([
+      'read_file',
+      'edit_file',
+      'bash',
+      'grep',
+      'glob',
+      'update_todo',
+      'submit_plan',
+      'list_directory',
+      'search_symbol',
+      'fetch_url',
+      'create_file',
+      'semantic_search',
+      'dispatch_subagent',
+      'dispatch_subagents',
+    ])
   })
 })
