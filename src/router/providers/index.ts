@@ -11,8 +11,12 @@ import { isCustomProviderName } from '../../config-secrets'
 export interface ProviderAdapter {
   /** provider 名称（内置为 ProviderName，自定义条目为任意键名） */
   name: string
-  /** 检查 provider 是否可用(API key 已配置等) */
-  isAvailable(): boolean
+  /**
+   * 检查 provider 是否可用(API key 已配置等)
+   * 合并环境变量与 secrets 两个来源：env 优先，secrets 兜底。
+   * 与 ModelRouter.initProviders 中 getEffectiveApiKey 的优先级保持一致。
+   */
+  isAvailable(secrets?: SecretsConfig): boolean
   /** 获取默认模型 */
   getDefaultModel(): string
   /** 获取上下文窗口大小 */
@@ -24,7 +28,8 @@ export interface ProviderAdapter {
 /** Anthropic 适配器 */
 export const anthropicAdapter: ProviderAdapter = {
   name: 'anthropic',
-  isAvailable: () => !!process.env.ANTHROPIC_API_KEY,
+  isAvailable: (secrets) =>
+    !!process.env.ANTHROPIC_API_KEY || !!secrets?.providers.anthropic?.apiKey,
   getDefaultModel: () => 'claude-sonnet-4-20250514',
   getContextWindow: () => 200000,
   supportsTools: () => true,
@@ -33,9 +38,10 @@ export const anthropicAdapter: ProviderAdapter = {
 /** OpenAI 适配器 */
 export const openaiAdapter: ProviderAdapter = {
   name: 'openai',
-  isAvailable: () => !!process.env.OPENAI_API_KEY,
+  isAvailable: (secrets) =>
+    !!process.env.OPENAI_API_KEY || !!secrets?.providers.openai?.apiKey,
   getDefaultModel: () => 'gpt-4o',
-  getContextWindow: (model) => {
+  getContextWindow: (_model) => {
     // mini 系列上下文窗口与标准模型一致（128k）
     return 128000
   },
@@ -45,7 +51,8 @@ export const openaiAdapter: ProviderAdapter = {
 /** DeepSeek 适配器(兼容 OpenAI 接口) */
 export const deepseekAdapter: ProviderAdapter = {
   name: 'deepseek',
-  isAvailable: () => !!process.env.DEEPSEEK_API_KEY,
+  isAvailable: (secrets) =>
+    !!process.env.DEEPSEEK_API_KEY || !!secrets?.providers.deepseek?.apiKey,
   getDefaultModel: () => 'deepseek-chat',
   getContextWindow: () => 65536,
   supportsTools: (model) => model === 'deepseek-chat', // reasoner 不支持 tool calling
@@ -103,7 +110,8 @@ function collectCustomAdapters(secrets?: SecretsConfig): ProviderAdapter[] {
 export function getAvailableProviders(secrets?: SecretsConfig): ProviderAdapter[] {
   const staticAdapters = [anthropicAdapter, openaiAdapter, deepseekAdapter]
   const customAdapters = collectCustomAdapters(secrets)
-  return [...staticAdapters, ...customAdapters].filter((p) => p.isAvailable())
+  // 传递 secrets 给 isAvailable，使其能感知 secrets 文件中配置的 key
+  return [...staticAdapters, ...customAdapters].filter((p) => p.isAvailable(secrets))
 }
 
 /** 按名称获取 provider */

@@ -33,6 +33,12 @@ export interface SubAgentConfig {
   costPer1kInput: number
   /** 输出 token 单价（每 1k） */
   costPer1kOutput: number
+  /**
+   * 中断信号获取器（Orchestrator.abort() 时触发，与 Executor 行为一致）。
+   * 用 getter 而非静态 signal：因为 SubAgent 在 init() 时创建，
+   * 而 abortController 在 submit() 时才新建，getter 保证始终拿到最新的 signal。
+   */
+  getAbortSignal?: () => AbortSignal | undefined
 }
 
 export class SubAgent {
@@ -76,6 +82,17 @@ export class SubAgent {
 
     try {
       while (iterations < task.maxIterations) {
+        // 检查中断信号（与 Executor 行为一致）
+        const abortSignal = this.config.getAbortSignal?.()
+        if (abortSignal?.aborted) {
+          return {
+            id: task.id,
+            success: false,
+            summary: '',
+            filesChanged,
+            error: '子 Agent 已被中断',
+          }
+        }
         iterations++
 
         const result = await generateText({
@@ -83,6 +100,7 @@ export class SubAgent {
           messages,
           tools: toolsForAI,
           maxSteps: 1,
+          abortSignal,
         })
 
         // 记录成本
