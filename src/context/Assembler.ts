@@ -134,8 +134,8 @@ export class ContextAssembler {
     // 1. 检查 system prompt 是否超预算，超预算则裁剪
     const trimmedSystemPrompt = this.trimSystemPrompt(systemPrompt, allocation.systemPrompt)
 
-    // 2. 对历史中的工具结果做实时压缩（使用 toolResults 预算）
-    const compressedHistory = this.compressToolResultsInHistory(history, allocation.toolResults)
+    // 2. 对历史中的工具结果做实时压缩
+    const compressedHistory = this.compressToolResultsInHistory(history)
 
     // 3. 压缩历史（使用 history 预算）
     const historyBudget = allocation.history
@@ -167,7 +167,7 @@ export class ContextAssembler {
   }
 
   /** 对历史消息中的工具结果做实时压缩 */
-  private compressToolResultsInHistory(history: ChatMessage[], _toolResultsBudget: number): ChatMessage[] {
+  private compressToolResultsInHistory(history: ChatMessage[]): ChatMessage[] {
     // 对每条工具消息调用 compressSingleToolResult 做实时压缩
     return history.map((msg) => {
       if (msg.role === 'tool' && msg.name) {

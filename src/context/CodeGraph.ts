@@ -6,7 +6,7 @@
  */
 
 import ts from 'typescript'
-import { readdir, readFile, stat } from 'fs/promises'
+import { readdir, readFile } from 'fs/promises'
 import { join, relative, extname } from 'path'
 import { getParserForFile, getSupportedExtensions } from './parsers/index'
 
@@ -471,12 +471,108 @@ export function formatGraphForContext(graph: CodeGraph): string {
 }
 
 /**
- * 增量更新:只重算变化的文件(便捷函数,委托给 GraphEngine)
+ * 增量更新:只重算变化的文件
+ * 直接在传入的 graph 上操作，避免创建新引擎实例导致图谱丢失。
+ *
+ * 步骤:
+ * 1. 对每个变更文件，移除其在 graph 中的旧数据（符号索引 + 依赖图 + 文件骨架）
+ * 2. 重新解析变更文件并添加回 graph
+ * 3. 若文件已删除（读取失败），则只移除不添加
+ *
+ * @param graph 原始图谱（会被原地修改）
+ * @param changedFiles 相对于 projectRoot 的文件路径列表
+ * @param projectRoot 项目根目录（用于读取文件绝对路径）
  */
 export async function updateCodeGraph(
   graph: CodeGraph,
-  changedFiles: string[]
+  changedFiles: string[],
+  projectRoot?: string,
 ): Promise<CodeGraph> {
-  const engine = createGraphEngine()
-  return engine.updateGraph(changedFiles)
+  const root = projectRoot ?? process.cwd()
+  for (const filePath of changedFiles) {
+    // 移除旧数据
+    removeFileFromGraph(graph, filePath)
+    // 重新解析并添加（文件已删除时静默跳过）
+    await parseAndAddToGraph(graph, filePath, root)
+  }
+  return graph
+}
+
+/** 从 graph 中移除指定文件的所有数据 */
+function removeFileFromGraph(graph: CodeGraph, filePath: string): void {
+  const oldSkeleton = graph.files.get(filePath)
+  if (!oldSkeleton) return
+
+  // 从符号索引中移除该文件的符号
+  for (const symbol of oldSkeleton.symbols) {
+    const existing = graph.symbolIndex.get(symbol.name)
+    if (existing) {
+      const filtered = existing.filter((s) => s.filePath !== filePath)
+      if (filtered.length > 0) {
+        graph.symbolIndex.set(symbol.name, filtered)
+      } else {
+        graph.symbolIndex.delete(symbol.name)
+      }
+    }
+  }
+
+  graph.files.delete(filePath)
+  graph.dependencyGraph.delete(filePath)
+}
+
+/** 解析单个文件并添加到 graph（文件不存在时静默跳过） */
+async function parseAndAddToGraph(graph: CodeGraph, relPath: string, projectRoot: string): Promise<void> {
+  const absPath = join(projectRoot, relPath)
+  let content: string
+  try {
+    content = await readFile(absPath, 'utf-8')
+  } catch {
+    return // 文件不可读（可能已删除），静默跳过
+  }
+
+  try {
+    const ext = extname(relPath)
+    let symbols: CodeSymbol[]
+    let imports: string[]
+    let lineCount: number
+
+    if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts'].includes(ext)) {
+      const parsed = parseSourceFile(content, relPath)
+      symbols = parsed.symbols
+      imports = parsed.imports
+      lineCount = parsed.lineCount
+    } else {
+      const parser = getParserForFile(relPath)
+      if (!parser) return
+      const parsed = parser.parse(content, relPath)
+      symbols = parsed.symbols
+      imports = parsed.imports
+      lineCount = content.split('\n').length
+    }
+
+    const skeleton: FileSkeleton = { filePath: relPath, symbols, imports, lineCount }
+    graph.files.set(relPath, skeleton)
+
+    // 重建符号索引
+    for (const symbol of symbols) {
+      const existing = graph.symbolIndex.get(symbol.name) ?? []
+      existing.push(symbol)
+      graph.symbolIndex.set(symbol.name, existing)
+    }
+
+    // 重建依赖图
+    const resolvedDeps: string[] = []
+    for (const imp of imports) {
+      if (imp.startsWith('.')) {
+        const dir = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : ''
+        const resolved = join(dir, imp).replace(/\\/g, '/')
+        resolvedDeps.push(resolved)
+      } else {
+        resolvedDeps.push(imp)
+      }
+    }
+    graph.dependencyGraph.set(relPath, resolvedDeps)
+  } catch {
+    // 单个文件解析失败不阻塞
+  }
 }

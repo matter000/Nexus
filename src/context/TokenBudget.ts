@@ -23,7 +23,6 @@ export function estimateTokens(text: string): number {
 export interface BudgetAllocation {
   systemPrompt: number
   history: number
-  toolResults: number
   reserved: number // 留给模型输出
   total: number
 }
@@ -49,8 +48,7 @@ export class TokenBudget {
     const total = this.getInputBudget()
     return {
       systemPrompt: Math.floor(total * 0.25),  // L1: 25%
-      history: Math.floor(total * 0.45),        // L2: 45%
-      toolResults: Math.floor(total * 0.30),    // L3: 30%
+      history: Math.floor(total * 0.75),        // L2: 75%（含历史 + 工具结果压缩）
       reserved: this.outputReserve,
       total: this.contextWindow,
     }

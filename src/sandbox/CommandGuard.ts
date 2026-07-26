@@ -65,11 +65,36 @@ const CAUTION_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 ]
 
 /**
+ * 去除 shell 命令中的引号，还原实际执行的命令字符串。
+ * 处理：单引号（保留内容去引号）、双引号（处理内嵌转义）、空引号拼接。
+ * 目的是让黑名单正则匹配到被引号拆分的危险命令（如 r""m -rf / → rm -rf /）。
+ */
+export function resolveQuotes(command: string): string {
+  // 1. 处理反斜杠续行
+  let result = command.replace(/\\\n/g, '')
+
+  // 2. 处理双引号：保留内容，将 \" 还原为 "
+  //    双引号内支持转义字符，如 "file\"name" → file"name
+  result = result.replace(/"((?:[^"\\]|\\.)*)"/g, (_m, inner: string) =>
+    inner.replace(/\\"/g, '"'),
+  )
+
+  // 3. 处理单引号：保留内容去引号（内部不处理转义）
+  result = result.replace(/'[^']*'/g, (m) => m.slice(1, -1))
+
+  // 4. 去除连续空引号（连接字面量如 r""m → rm，c""url → curl）
+  result = result.replace(/""/g, '').replace(/''/g, '')
+
+  return result
+}
+
+/**
  * 检测命令是否危险
  * 返回危险等级和原因
  */
 export function isDangerousCommand(command: string): DangerAssessment {
-  const normalized = command.trim()
+  // 先解析引号，再对解析后的命令做模式匹配
+  const normalized = resolveQuotes(command).trim()
 
   // 检查危险模式
   for (const { pattern, reason } of DANGEROUS_PATTERNS) {

@@ -36,8 +36,9 @@ export function compressHistory(
   }
 
   // 分离:近期消息完整保留,早期消息压缩
-  const recentMessages = messages.slice(-recentKeep * 2) // 每轮约 2 条(user + assistant)
-  const earlyMessages = messages.slice(0, -recentKeep * 2)
+  // 按 user 消息数切分，而非假设每轮 2 条（实际可能含多条 tool 消息）
+  const recentMessages = keepRecentTurns(messages, recentKeep)
+  const earlyMessages = messages.slice(0, messages.length - recentMessages.length)
 
   if (earlyMessages.length === 0) {
     return { messages, originalTokens, compressedTokens: originalTokens, compressedCount: 0 }
@@ -55,6 +56,22 @@ export function compressHistory(
     compressedTokens,
     compressedCount: earlyMessages.length - compressedEarly.length,
   }
+}
+
+/** 从消息列表末尾保留指定轮次的完整消息（按 user 消息计数） */
+function keepRecentTurns(messages: ChatMessage[], turnsToKeep: number): ChatMessage[] {
+  let userCount = 0
+  let splitIndex = messages.length
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      userCount++
+      if (userCount > turnsToKeep) {
+        splitIndex = i + 1
+        break
+      }
+    }
+  }
+  return messages.slice(splitIndex)
 }
 
 /** 压缩早期消息为摘要，按轮次分组 */
@@ -116,14 +133,24 @@ function summarizeRound(round: ChatMessage[], roundNum: number): string | null {
   return parts.join(' | ')
 }
 
+/** 检查 bash 工具结果是否执行失败（基于 Exit code 行精确定位） */
+function isBashFailed(result: string): boolean {
+  const lines = result.split('\n')
+  return lines.some((l) => {
+    const trimmed = l.trim()
+    return /^Exit code:\s*[1-9]\d*$/.test(trimmed)
+  })
+}
+
 /** 工具结果分级压缩(用于早期消息摘要) */
 function compressToolResult(msg: ChatMessage): string | null {
   const content = msg.content
   const name = msg.name ?? 'unknown'
 
   // bash 失败输出:完整保留(错误信息对 debug 至关重要)
-  if (name === 'bash' && content.includes('Exit code:') && !content.includes('Exit code: 0')) {
-    return `[bash 失败] ${content.slice(0, 500)}`
+  if (name === 'bash') {
+    const isFailed = isBashFailed(content)
+    if (isFailed) return `[bash 失败] ${content.slice(0, 500)}`
   }
 
   // read_file 结果:只保留文件路径，丢弃内容(agent 可重新读取)
@@ -190,9 +217,8 @@ export function compressSingleToolResult(toolName: string, result: string, hasEr
     }
     case 'bash': {
       const lines = result.split('\n')
-      // 检查是否为失败
-      const isFailed = lines.some((l) => l.startsWith('Exit code:') && l !== 'Exit code: 0')
-      if (isFailed) return result // 失败完整保留
+      // 失败完整保留
+      if (isBashFailed(result)) return result
       // 成功：保留 exit code + 前 5 行摘要
       const exitLine = lines.find((l) => l.startsWith('Exit code:')) ?? 'Exit code: 0'
       const outputLines = lines.filter((l) => !l.startsWith('Exit code:') && l.trim()).slice(0, 5)
@@ -244,9 +270,9 @@ export async function llmCompressHistory(
     return { messages, originalTokens, compressedTokens: originalTokens, compressed: false }
   }
 
-  // 分离近期和早期消息
-  const recentMessages = messages.slice(-recentKeep * 2)
-  const earlyMessages = messages.slice(0, -recentKeep * 2)
+  // 分离近期和早期消息（按 user 消息计数）
+  const recentMessages = keepRecentTurns(messages, recentKeep)
+  const earlyMessages = messages.slice(0, messages.length - recentMessages.length)
 
   if (earlyMessages.length < 4) {
     return { messages, originalTokens, compressedTokens: originalTokens, compressed: false }

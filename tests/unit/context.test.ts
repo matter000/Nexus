@@ -45,10 +45,9 @@ describe('TokenBudget', () => {
       const allocation = budget.allocate()
       expect(allocation.systemPrompt).toBeGreaterThan(0)
       expect(allocation.history).toBeGreaterThan(0)
-      expect(allocation.toolResults).toBeGreaterThan(0)
       expect(allocation.reserved).toBe(4096)
       // 各层之和应接近输入预算(Math.floor 可能导致 1-2 token 误差)
-      const sum = allocation.systemPrompt + allocation.history + allocation.toolResults
+      const sum = allocation.systemPrompt + allocation.history
       expect(Math.abs(sum - budget.getInputBudget())).toBeLessThanOrEqual(2)
     })
 
