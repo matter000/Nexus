@@ -24,7 +24,7 @@ jobs:
         run: bun run lint
 
       - name: Unit tests
-        run: bun run test:unit
+        run: bun test tests/unit/ tests/integration/ --test-name-pattern '^(?:(?!Tree-sitter).)*$'
 
-      - name: Integration tests
-        run: bun run test:integration
+      - name: Tree-sitter tests (separate process to avoid WASM memory conflict)
+        run: bun test tests/unit/treesitter.test.ts

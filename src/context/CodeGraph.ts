@@ -361,19 +361,34 @@ export class TypeScriptGraphEngine implements GraphEngine {
       let imports: string[]
       let lineCount: number
 
-      // TS/JS 用精确 AST 解析，其他语言用正则 parser
+      // TS/JS 用精确 TypeScript Compiler API，其他语言优先 tree-sitter 后降级正则
       if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts'].includes(ext)) {
         const parsed = parseSourceFile(content, relPath)
         symbols = parsed.symbols
         imports = parsed.imports
         lineCount = parsed.lineCount
       } else {
-        const parser = getParserForFile(relPath)
-        if (!parser) return
-        const parsed = parser.parse(content, relPath)
-        symbols = parsed.symbols
-        imports = parsed.imports
-        lineCount = content.split('\n').length
+        // 尝试 tree-sitter（懒加载 WASM grammar，失败不阻塞）
+        let parsed: { symbols: CodeSymbol[]; imports: string[] } | null = null
+        try {
+          const { parseWithTreeSitter } = await import('./parsers/treesitter')
+          parsed = await parseWithTreeSitter(content, relPath)
+        } catch {
+          // tree-sitter 不可用（grammar 加载失败或模块不存在），降级
+        }
+        if (parsed) {
+          symbols = parsed.symbols
+          imports = parsed.imports
+          lineCount = content.split('\n').length
+        } else {
+          // 降级：回退到正则 parser
+          const parser = getParserForFile(relPath)
+          if (!parser) return
+          const regexParsed = parser.parse(content, relPath)
+          symbols = regexParsed.symbols
+          imports = regexParsed.imports
+          lineCount = content.split('\n').length
+        }
       }
 
       const skeleton: FileSkeleton = { filePath: relPath, symbols, imports, lineCount }
@@ -542,12 +557,24 @@ async function parseAndAddToGraph(graph: CodeGraph, relPath: string, projectRoot
       imports = parsed.imports
       lineCount = parsed.lineCount
     } else {
-      const parser = getParserForFile(relPath)
-      if (!parser) return
-      const parsed = parser.parse(content, relPath)
-      symbols = parsed.symbols
-      imports = parsed.imports
-      lineCount = content.split('\n').length
+      // 尝试 tree-sitter（懒加载，失败降级正则）
+      let parsed: { symbols: CodeSymbol[]; imports: string[] } | null = null
+      try {
+        const { parseWithTreeSitter } = await import('./parsers/treesitter')
+        parsed = await parseWithTreeSitter(content, relPath)
+      } catch { /* 降级 */ }
+      if (parsed) {
+        symbols = parsed.symbols
+        imports = parsed.imports
+        lineCount = content.split('\n').length
+      } else {
+        const parser = getParserForFile(relPath)
+        if (!parser) return
+        const regexParsed = parser.parse(content, relPath)
+        symbols = regexParsed.symbols
+        imports = regexParsed.imports
+        lineCount = content.split('\n').length
+      }
     }
 
     const skeleton: FileSkeleton = { filePath: relPath, symbols, imports, lineCount }
