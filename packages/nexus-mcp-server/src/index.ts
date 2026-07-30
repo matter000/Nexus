@@ -17,6 +17,7 @@ import { z } from 'zod'
 import { isDangerousCommand } from '../../../src/sandbox/CommandGuard'
 import {
   detectLineEnding,
+  isInsideProject,
   normalizeToLF,
   restoreLineEndings,
   sanitizeBinaryOutput,
@@ -32,13 +33,12 @@ const MAX_READ_LINES = 2000
 
 // ─── 安全工具 ─────────────────────────────────────────────────────────────────
 
-/** 路径越界校验: resolve 后检查是否在 PROJECT_ROOT 内 */
+/** 路径越界校验: 使用 relative() 检测是否在 PROJECT_ROOT 内，防范前缀匹配绕过 */
 function assertPathSafe(filePath: string): string {
-  const fullPath = resolve(PROJECT_ROOT, filePath)
-  if (!fullPath.startsWith(PROJECT_ROOT)) {
+  if (!isInsideProject(PROJECT_ROOT, filePath)) {
     throw new PathError(`路径越界: ${filePath} 不在项目目录内`)
   }
-  return fullPath
+  return resolve(PROJECT_ROOT, filePath)
 }
 
 class PathError extends Error {

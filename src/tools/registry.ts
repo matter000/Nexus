@@ -7,6 +7,7 @@ import { dispatchSubagentToolDefinition } from '../agent/SubAgent'
 import type { SubAgentResult, SubAgentTask, Todo, ToolDefinition, ToolResult } from '../agent/types'
 import { getSemanticSearchEngine, semanticSearchToolDefinition } from '../context/SemanticSearch'
 import { isInsideProject } from '../utils'
+import { isPrivateUrl } from '../utils/ssrf'
 import { bashTool } from './bash'
 import { createFileTool } from './createFile'
 import { editFileTool } from './editFile'
@@ -144,25 +145,13 @@ class ToolRegistry {
       }
     }
 
-    // SSRF 防护（URL 参数检查）
-    if (typeof params.url === 'string') {
-      try {
-        const u = new URL(params.url)
-        const hostname = u.hostname.toLowerCase()
-        const blocked = ['127.0.0.1', '::1', 'localhost', '169.254.169.254', '0.0.0.0']
-        if (
-          blocked.includes(hostname) ||
-          hostname.match(/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/)
-        ) {
-          return {
-            callId: context.callId,
-            tool: name,
-            result: '',
-            error: `出于安全原因，不允许访问内网或私有地址: ${params.url}`,
-          }
-        }
-      } catch {
-        /* URL 解析失败，交给工具自己处理 */
+    // SSRF 防护（URL 参数检查）：复用公共 isPrivateUrl，与 fetch_url 工具防护范围一致
+    if (typeof params.url === 'string' && isPrivateUrl(params.url)) {
+      return {
+        callId: context.callId,
+        tool: name,
+        result: '',
+        error: `出于安全原因，不允许访问内网或私有地址: ${params.url}`,
       }
     }
 
