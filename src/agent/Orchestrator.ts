@@ -115,22 +115,7 @@ export class Orchestrator {
     // 创建 SubAgent 实例并注入工具注册表
     // 如果无可用 provider，推迟到首次 submit() 时创建
     if (this.router.hasAvailableProvider()) {
-      this.subAgent = new SubAgent({
-        model: this.router.getModel('executor'),
-        toolRegistry: this.toolRegistry,
-        toolContext: this.getToolContext(),
-        maxIterations: Math.min(10, this.cfg.config.limits.maxIterations),
-        onEvent: (e) => this.emit(e),
-        permissionMode: this.cfg.permissionMode,
-        requestApproval: this.cfg.requestApproval,
-        costTracker: this.costTracker,
-        modelRole: 'executor',
-        providerName: 'anthropic', // 默认 provider，子 Agent 成本计入主 provider
-        modelName: this.router.getCurrentModel('executor'),
-        costPer1kInput: 0.003,
-        costPer1kOutput: 0.015,
-        getAbortSignal: () => this.abortController?.signal,
-      })
+      this.subAgent = this.createSubAgent()
       this.toolRegistry.setSubAgentRunner(this.subAgent)
     } else {
       this.noProviderAvailable = true
@@ -270,24 +255,34 @@ export class Orchestrator {
     // 如果之前因无 provider 推迟了 SubAgent 创建，现在补建
     if (this.noProviderAvailable && this.router?.hasAvailableProvider()) {
       this.noProviderAvailable = false
-      this.subAgent = new SubAgent({
-        model: this.router.getModel('executor'),
-        toolRegistry: this.toolRegistry,
-        toolContext: this.getToolContext(),
-        maxIterations: Math.min(10, this.cfg.config.limits.maxIterations),
-        onEvent: (e) => this.emit(e),
-        permissionMode: this.cfg.permissionMode,
-        requestApproval: this.cfg.requestApproval,
-        costTracker: this.costTracker,
-        modelRole: 'executor',
-        providerName: 'anthropic',
-        modelName: this.router.getCurrentModel('executor'),
-        costPer1kInput: 0.003,
-        costPer1kOutput: 0.015,
-        getAbortSignal: () => this.abortController?.signal,
-      })
+      this.subAgent = this.createSubAgent()
       this.toolRegistry.setSubAgentRunner(this.subAgent)
     }
+  }
+
+  /** 创建 SubAgent 实例：从 router 动态获取 provider 与成本参数，避免硬编码 */
+  private createSubAgent(): SubAgent {
+    const router = this.router
+    if (!router) {
+      throw new Error('createSubAgent 调用前 router 尚未初始化')
+    }
+    const route = router.getRouteInfo('executor')
+    return new SubAgent({
+      model: router.getModel('executor'),
+      toolRegistry: this.toolRegistry,
+      toolContext: this.getToolContext(),
+      maxIterations: Math.min(10, this.cfg.config.limits.maxIterations),
+      onEvent: (e) => this.emit(e),
+      permissionMode: this.cfg.permissionMode,
+      requestApproval: this.cfg.requestApproval,
+      costTracker: this.costTracker,
+      modelRole: 'executor',
+      providerName: route.provider,
+      modelName: route.model,
+      costPer1kInput: route.costPer1kInput,
+      costPer1kOutput: route.costPer1kOutput,
+      getAbortSignal: () => this.abortController?.signal,
+    })
   }
 
   /** 处理用户输入(主入口) */
