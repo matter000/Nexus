@@ -109,6 +109,15 @@ export class SemanticSearchEngine {
     this.initialized = true
   }
 
+  /** 关闭数据库连接，释放资源（进程退出前调用） */
+  close(): void {
+    this.db?.close()
+    this.db = null
+    this.initialized = false
+    this.tfidfIndex = null
+    this.statsCache = null
+  }
+
   /** 语义搜索: 返回 top-K 相似代码块 */
   async search(query: string, topK = 5): Promise<SearchResult[]> {
     if (!this.initialized) await this.init()
@@ -355,6 +364,12 @@ let _instance: SemanticSearchEngine | null = null
 export function getSemanticSearchEngine(projectRoot: string): SemanticSearchEngine {
   if (!_instance) _instance = new SemanticSearchEngine(projectRoot)
   return _instance
+}
+
+/** 关闭全局语义搜索引擎单例（若已创建），释放数据库连接；未创建时不做任何事 */
+export function closeSemanticSearchEngine(): void {
+  _instance?.close()
+  _instance = null
 }
 
 // ─── 文件分块 ──────────────────────────────────────────────────────────────────

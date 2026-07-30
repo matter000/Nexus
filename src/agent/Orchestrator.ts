@@ -12,6 +12,7 @@ import { buildCodeGraph, type CodeGraph, updateCodeGraph } from '../context/Code
 import { compressHistory, llmCompressHistory } from '../context/Compressor'
 import { FileWatcher } from '../context/FileWatcher'
 import { loadRules } from '../context/RulesLoader'
+import { closeSemanticSearchEngine } from '../context/SemanticSearch'
 import { TokenBudget } from '../context/TokenBudget'
 import { CostTracker } from '../router/CostTracker'
 import { ModelRouter } from '../router/ModelRouter'
@@ -637,6 +638,13 @@ export class Orchestrator {
     if (this.fileWatcher) {
       this.fileWatcher.stop()
       this.fileWatcher = null
+    }
+
+    // 关闭语义搜索引擎单例的数据库连接
+    try {
+      closeSemanticSearchEngine()
+    } catch (err) {
+      console.warn('[SemanticSearch] 关闭失败:', err)
     }
   }
 
