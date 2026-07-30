@@ -75,9 +75,7 @@ export function resolveQuotes(command: string): string {
 
   // 2. 处理双引号：保留内容，将 \" 还原为 "
   //    双引号内支持转义字符，如 "file\"name" → file"name
-  result = result.replace(/"((?:[^"\\]|\\.)*)"/g, (_m, inner: string) =>
-    inner.replace(/\\"/g, '"'),
-  )
+  result = result.replace(/"((?:[^"\\]|\\.)*)"/g, (_m, inner: string) => inner.replace(/\\"/g, '"'))
 
   // 3. 处理单引号：保留内容去引号（内部不处理转义）
   result = result.replace(/'[^']*'/g, (m) => m.slice(1, -1))

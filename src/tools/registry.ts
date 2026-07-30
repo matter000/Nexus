@@ -3,22 +3,22 @@
  * 管理所有内置工具的注册、查找和调用
  */
 
-import type { ToolDefinition, ToolResult, SubAgentTask, SubAgentResult, Todo } from '../agent/types'
-import { readFileTool } from './readFile'
-import { editFileTool } from './editFile'
-import { bashTool } from './bash'
-import { grepTool } from './grep'
-import { globTool } from './glob'
-import { updateTodoTool } from './todo'
-import { submitPlanTool } from './submitPlan'
-import { listDirectoryTool } from './listDirectory'
-import { searchSymbolTool } from './searchSymbol'
-import { fetchUrlTool } from './fetchUrl'
-import { createFileTool } from './createFile'
 import { dispatchSubagentToolDefinition } from '../agent/SubAgent'
-import { toolSchemas } from './schemas'
-import { semanticSearchToolDefinition, getSemanticSearchEngine } from '../context/SemanticSearch'
+import type { SubAgentResult, SubAgentTask, Todo, ToolDefinition, ToolResult } from '../agent/types'
+import { getSemanticSearchEngine, semanticSearchToolDefinition } from '../context/SemanticSearch'
 import { isInsideProject } from '../utils'
+import { bashTool } from './bash'
+import { createFileTool } from './createFile'
+import { editFileTool } from './editFile'
+import { fetchUrlTool } from './fetchUrl'
+import { globTool } from './glob'
+import { grepTool } from './grep'
+import { listDirectoryTool } from './listDirectory'
+import { readFileTool } from './readFile'
+import { toolSchemas } from './schemas'
+import { searchSymbolTool } from './searchSymbol'
+import { submitPlanTool } from './submitPlan'
+import { updateTodoTool } from './todo'
 
 /** SubAgent 运行器接口(解耦循环依赖) */
 export interface SubAgentRunner {
@@ -68,7 +68,7 @@ class ToolRegistry {
   /** 获取指定阶段可用的工具 */
   getForPhase(phase: 'plan' | 'execute'): ToolHandler[] {
     return this.getAll().filter(
-      (t) => t.definition.phase === phase || t.definition.phase === 'both'
+      (t) => t.definition.phase === phase || t.definition.phase === 'both',
     )
   }
 
@@ -80,7 +80,9 @@ class ToolRegistry {
   }
 
   /** 生成 Vercel AI SDK 兼容的工具定义 */
-  toAISDKTools(phase: 'plan' | 'execute'): Record<string, { description: string; parameters: unknown }> {
+  toAISDKTools(
+    phase: 'plan' | 'execute',
+  ): Record<string, { description: string; parameters: unknown }> {
     const tools: Record<string, { description: string; parameters: unknown }> = {}
     for (const handler of this.getForPhase(phase)) {
       tools[handler.definition.name] = {
@@ -97,7 +99,11 @@ class ToolRegistry {
   }
 
   /** 执行工具调用 */
-  async execute(name: string, params: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+  async execute(
+    name: string,
+    params: Record<string, unknown>,
+    context: ToolContext,
+  ): Promise<ToolResult> {
     const handler = this.get(name)
     if (!handler) {
       return {
@@ -144,7 +150,10 @@ class ToolRegistry {
         const u = new URL(params.url)
         const hostname = u.hostname.toLowerCase()
         const blocked = ['127.0.0.1', '::1', 'localhost', '169.254.169.254', '0.0.0.0']
-        if (blocked.includes(hostname) || hostname.match(/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/)) {
+        if (
+          blocked.includes(hostname) ||
+          hostname.match(/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/)
+        ) {
           return {
             callId: context.callId,
             tool: name,
@@ -152,7 +161,9 @@ class ToolRegistry {
             error: `出于安全原因，不允许访问内网或私有地址: ${params.url}`,
           }
         }
-      } catch { /* URL 解析失败，交给工具自己处理 */ }
+      } catch {
+        /* URL 解析失败，交给工具自己处理 */
+      }
     }
 
     return handler.execute(params, context)
@@ -189,14 +200,30 @@ export function createToolRegistry(): ToolRegistry {
       try {
         const results = await engine.search(query, topK)
         if (results.length === 0) {
-          return { callId: context.callId, tool: 'semantic_search', result: `未找到与 "${query}" 相关的代码块` }
+          return {
+            callId: context.callId,
+            tool: 'semantic_search',
+            result: `未找到与 "${query}" 相关的代码块`,
+          }
         }
-        const formatted = results.map((r, i) =>
-          `### [${i + 1}] ${r.filePath}:${r.startLine}-${r.endLine} (score: ${r.score.toFixed(3)})\n\`\`\`\n${r.content.slice(0, 500)}\n\`\`\``
-        ).join('\n\n')
-        return { callId: context.callId, tool: 'semantic_search', result: `找到 ${results.length} 个相关代码块:\n\n${formatted}` }
+        const formatted = results
+          .map(
+            (r, i) =>
+              `### [${i + 1}] ${r.filePath}:${r.startLine}-${r.endLine} (score: ${r.score.toFixed(3)})\n\`\`\`\n${r.content.slice(0, 500)}\n\`\`\``,
+          )
+          .join('\n\n')
+        return {
+          callId: context.callId,
+          tool: 'semantic_search',
+          result: `找到 ${results.length} 个相关代码块:\n\n${formatted}`,
+        }
       } catch (err) {
-        return { callId: context.callId, tool: 'semantic_search', result: '', error: `语义搜索失败: ${err instanceof Error ? err.message : String(err)}` }
+        return {
+          callId: context.callId,
+          tool: 'semantic_search',
+          result: '',
+          error: `语义搜索失败: ${err instanceof Error ? err.message : String(err)}`,
+        }
       }
     },
   })
@@ -234,9 +261,8 @@ export function createToolRegistry(): ToolRegistry {
         }
       }
 
-      const filesNote = result.filesChanged.length > 0
-        ? `\n\n修改的文件: ${result.filesChanged.join(', ')}`
-        : ''
+      const filesNote =
+        result.filesChanged.length > 0 ? `\n\n修改的文件: ${result.filesChanged.join(', ')}` : ''
 
       return {
         callId: context.callId,
@@ -257,7 +283,8 @@ export function createToolRegistry(): ToolRegistry {
         properties: {
           tasks: {
             type: 'array',
-            description: '子任务数组。每个元素是 {description: string, writable?: boolean, tools?: string[]} 格式的对象',
+            description:
+              '子任务数组。每个元素是 {description: string, writable?: boolean, tools?: string[]} 格式的对象',
             items: {
               type: 'object',
               description: '单个子任务: {description, writable?, tools?}',
@@ -280,16 +307,30 @@ export function createToolRegistry(): ToolRegistry {
         }
       }
 
-      const taskDefs = params.tasks as Array<{ description: string; writable?: boolean; tools?: string[] }>
+      const taskDefs = params.tasks as Array<{
+        description: string
+        writable?: boolean
+        tools?: string[]
+      }>
       if (!Array.isArray(taskDefs) || taskDefs.length === 0) {
-        return { callId: context.callId, tool: 'dispatch_subagents', result: '', error: '任务列表为空' }
+        return {
+          callId: context.callId,
+          tool: 'dispatch_subagents',
+          result: '',
+          error: '任务列表为空',
+        }
       }
 
       // 分离只读任务和写任务
       const readTasks = taskDefs.filter((t) => !t.writable)
       const writeTasks = taskDefs.filter((t) => t.writable)
 
-      const results: Array<{ description: string; success: boolean; summary: string; error?: string }> = []
+      const results: Array<{
+        description: string
+        success: boolean
+        summary: string
+        error?: string
+      }> = []
 
       // 只读任务并行执行（上限 3）
       // 用 allSettled 而非 all：单个子任务 throw 时，其他已完成的结果不丢失
@@ -306,7 +347,7 @@ export function createToolRegistry(): ToolRegistry {
               maxIterations: 10,
             }
             return runner.run(task)
-          })
+          }),
         )
         for (let j = 0; j < settled.length; j++) {
           const s = settled[j]
@@ -350,8 +391,9 @@ export function createToolRegistry(): ToolRegistry {
       // 汇总结果
       const succeeded = results.filter((r) => r.success)
       const failed = results.filter((r) => !r.success)
-      const summaryParts = results.map((r, i) =>
-        `${r.success ? '✅' : '❌'} 任务${i + 1} [${r.description}]: ${r.summary || r.error}`
+      const summaryParts = results.map(
+        (r, i) =>
+          `${r.success ? '✅' : '❌'} 任务${i + 1} [${r.description}]: ${r.summary || r.error}`,
       )
 
       return {

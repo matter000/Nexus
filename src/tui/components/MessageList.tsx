@@ -4,8 +4,8 @@
  * Claude Code 风格：紧凑、角色标记清晰
  */
 
-import React from 'react'
 import { Box, Text } from 'ink'
+import React from 'react'
 import { theme } from '../theme'
 import { Markdown } from './Markdown'
 
@@ -62,9 +62,7 @@ function MessageItem({ message }: { message: Message }) {
   if (message.role === 'system') {
     return (
       <Box>
-        <Text color={theme.colors.primary}>
-          ⚙ {message.content}
-        </Text>
+        <Text color={theme.colors.primary}>⚙ {message.content}</Text>
       </Box>
     )
   }

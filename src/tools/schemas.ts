@@ -13,7 +13,9 @@ export const readFileSchema = z.object({
 
 export const editFileSchema = z.object({
   path: z.string().describe('要编辑的文件路径(相对于项目根目录)'),
-  old_string: z.string().describe('要替换的原文,必须在文件中唯一匹配。包含足够上下文以确保唯一性。'),
+  old_string: z
+    .string()
+    .describe('要替换的原文,必须在文件中唯一匹配。包含足够上下文以确保唯一性。'),
   new_string: z.string().describe('替换后的新内容'),
 })
 
@@ -54,7 +56,10 @@ export const listDirectorySchema = z.object({
 
 export const searchSymbolSchema = z.object({
   symbol: z.string().describe('要搜索的符号名称(如 "ToolHandler", "createToolRegistry")'),
-  type: z.enum(['definition', 'reference', 'all']).optional().describe('搜索类型: definition(定义), reference(引用), all(全部,默认)'),
+  type: z
+    .enum(['definition', 'reference', 'all'])
+    .optional()
+    .describe('搜索类型: definition(定义), reference(引用), all(全部,默认)'),
 })
 
 export const fetchUrlSchema = z.object({
@@ -64,10 +69,14 @@ export const fetchUrlSchema = z.object({
 
 export const submitPlanSchema = z.object({
   summary: z.string().describe('计划摘要（一句话描述整体目标）'),
-  todos: z.array(z.object({
-    id: z.string().optional().describe('步骤 ID（如 "1", "2"）'),
-    content: z.string().describe('步骤描述'),
-  })).describe('执行步骤列表'),
+  todos: z
+    .array(
+      z.object({
+        id: z.string().optional().describe('步骤 ID（如 "1", "2"）'),
+        content: z.string().describe('步骤描述'),
+      }),
+    )
+    .describe('执行步骤列表'),
   filesToModify: z.array(z.string()).optional().describe('预计需要修改的文件路径列表'),
   estimatedSteps: z.number().optional().describe('预估总步数'),
 })

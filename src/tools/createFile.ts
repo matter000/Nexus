@@ -3,11 +3,11 @@
  * 创建新文件，支持模板。文件已存在时报错（不覆盖）
  */
 
-import { writeFile, mkdir, access } from 'fs/promises'
-import { resolve, relative, dirname } from 'path'
+import { access, mkdir, writeFile } from 'fs/promises'
+import { dirname, relative, resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
 import { isInsideProject } from '../utils'
+import type { ToolContext, ToolHandler } from './registry'
 
 const definition: ToolDefinition = {
   name: 'create_file',

@@ -121,7 +121,8 @@ function mergeConfig(raw: Record<string, unknown>): NexusConfig {
   // checkpoint
   const checkpoint = raw.checkpoint as Record<string, unknown> | undefined
   if (checkpoint) {
-    if (typeof checkpoint.auto_checkpoint === 'boolean') config.checkpoint.autoCheckpoint = checkpoint.auto_checkpoint
+    if (typeof checkpoint.auto_checkpoint === 'boolean')
+      config.checkpoint.autoCheckpoint = checkpoint.auto_checkpoint
     if (typeof checkpoint.branch === 'string') config.checkpoint.branch = checkpoint.branch
   }
 

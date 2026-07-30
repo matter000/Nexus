@@ -8,8 +8,8 @@
  * - 与现有 LanguageParser 接口兼容
  */
 
-import { Parser, Language, type Node as SyntaxNode } from 'web-tree-sitter'
 import { getWasmPath } from 'tree-sitter-wasm'
+import { Language, Parser, type Node as SyntaxNode } from 'web-tree-sitter'
 import type { CodeSymbol } from '../CodeGraph'
 
 // ─── 类型定义 ──────────────────────────────────────────────────────────────────
@@ -283,7 +283,11 @@ function walkJavaAST(root: SyntaxNode, _content: string, filePath: string): Tree
   }
 
   // class_declaration / interface_declaration / enum_declaration
-  for (const node of root.descendantsOfType(['class_declaration', 'interface_declaration', 'enum_declaration'])) {
+  for (const node of root.descendantsOfType([
+    'class_declaration',
+    'interface_declaration',
+    'enum_declaration',
+  ])) {
     const nameNode = node.childForFieldName('name')
     if (!nameNode) continue
     const isPublic = node.text.match(/^\s*public/)

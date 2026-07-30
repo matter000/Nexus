@@ -4,14 +4,14 @@
  * 组装前进行 token 预算检查,超预算按优先级裁剪
  */
 
-import { readFile } from 'fs/promises'
 import { spawn } from 'child_process'
+import { readFile } from 'fs/promises'
 import type { ChatMessage, ProjectRules, Todo } from '../agent/types'
 import type { ToolHandler } from '../tools/registry'
-import { estimateTokens, TokenBudget } from './TokenBudget'
+import { type CodeGraph, formatGraphForContext } from './CodeGraph'
 import { compressHistory, compressSingleToolResult } from './Compressor'
 import { formatRulesForPrompt, getAlwaysIncludePaths } from './RulesLoader'
-import { formatGraphForContext, type CodeGraph } from './CodeGraph'
+import { estimateTokens, type TokenBudget } from './TokenBudget'
 
 const SYSTEM_PROMPT_BASE = `你是 Nexus,一个运行在终端的 AI 编程助手。
 
@@ -103,7 +103,9 @@ export class ContextAssembler {
           // 截断到预算范围内
           const charsPerToken = 4
           const maxChars = maxGraphTokens * charsPerToken
-          parts.push(`\n${graphText.slice(0, maxChars)}\n...（代码图谱过大，已截断：${graphTokens} tokens → ${maxGraphTokens} tokens）`)
+          parts.push(
+            `\n${graphText.slice(0, maxChars)}\n...（代码图谱过大，已截断：${graphTokens} tokens → ${maxGraphTokens} tokens）`,
+          )
         } else {
           parts.push(`\n${graphText}`)
         }
@@ -123,11 +125,7 @@ export class ContextAssembler {
   }
 
   /** 组装完整消息列表(带压缩) */
-  assembleMessages(
-    systemPrompt: string,
-    history: ChatMessage[],
-    userInput: string
-  ): ChatMessage[] {
+  assembleMessages(systemPrompt: string, history: ChatMessage[], userInput: string): ChatMessage[] {
     const budget = this.config.budget
     const allocation = budget.allocate()
 
@@ -139,7 +137,11 @@ export class ContextAssembler {
 
     // 3. 压缩历史（使用 history 预算）
     const historyBudget = allocation.history
-    const compressed = compressHistory(compressedHistory, this.config.recentTurnsKeep, historyBudget)
+    const compressed = compressHistory(
+      compressedHistory,
+      this.config.recentTurnsKeep,
+      historyBudget,
+    )
 
     // 组装最终消息
     const messages: ChatMessage[] = [
@@ -239,7 +241,9 @@ export class ContextAssembler {
         ...(process.platform === 'win32' ? { windowsHide: true } : {}),
       })
       let stdout = ''
-      child.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
+      child.stdout?.on('data', (d: Buffer) => {
+        stdout += d.toString()
+      })
       child.on('close', (code) => resolve({ stdout: stdout.trim(), exitCode: code ?? 1 }))
       child.on('error', () => resolve({ stdout: '', exitCode: 1 }))
     })

@@ -219,7 +219,9 @@ const javaParser: LanguageParser = {
       }
 
       // 类/接口: public class xxx / interface xxx
-      const classMatch = line.match(/^\s*(?:public|private|protected)?\s*(?:abstract\s+)?(class|interface|enum)\s+(\w+)/)
+      const classMatch = line.match(
+        /^\s*(?:public|private|protected)?\s*(?:abstract\s+)?(class|interface|enum)\s+(\w+)/,
+      )
       if (classMatch) {
         const kind = classMatch[1] === 'interface' ? 'interface' : 'class'
         const name = classMatch[2]
@@ -237,7 +239,9 @@ const javaParser: LanguageParser = {
       }
 
       // 方法: public void xxx( / private String xxx(
-      const methodMatch = line.match(/^\s*(?:public|private|protected)\s+(?:static\s+)?(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\(/)
+      const methodMatch = line.match(
+        /^\s*(?:public|private|protected)\s+(?:static\s+)?(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\(/,
+      )
       if (methodMatch) {
         const name = methodMatch[1]
         const endLine = findBraceEnd(lines, i)
@@ -276,8 +280,13 @@ function findBraceEnd(lines: string[], startIdx: number): number {
   let started = false
   for (let i = startIdx; i < lines.length; i++) {
     for (const ch of lines[i]) {
-      if (ch === '{') { depth++; started = true }
-      if (ch === '}') { depth-- }
+      if (ch === '{') {
+        depth++
+        started = true
+      }
+      if (ch === '}') {
+        depth--
+      }
       if (started && depth === 0) return i
     }
   }

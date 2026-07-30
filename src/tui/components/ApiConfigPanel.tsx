@@ -10,11 +10,11 @@
  *   4. 输入模型名称（自由文本，Enter 确认，非 Custom 可留空跳过）
  */
 
-import React, { useState } from 'react'
 import { Box, Text, useInput } from 'ink'
-import { theme } from '../theme'
+import React, { useState } from 'react'
 import type { SecretsConfig } from '../../config-secrets'
 import { getProviderStatus, maskApiKey } from '../../config-secrets'
+import { theme } from '../theme'
 
 type ConfigStep = 'select_provider' | 'input_key' | 'input_base_url' | 'input_model' | 'done'
 
@@ -35,13 +35,42 @@ interface ProviderDef {
 }
 
 const PROVIDER_LIST: ProviderDef[] = [
-  { name: 'anthropic', label: 'Anthropic', envVar: 'ANTHROPIC_API_KEY', defaultBaseUrl: 'https://api.anthropic.com', defaultModel: 'claude-sonnet-4-20250514' },
-  { name: 'openai', label: 'OpenAI', envVar: 'OPENAI_API_KEY', defaultBaseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-4o' },
-  { name: 'deepseek', label: 'DeepSeek', envVar: 'DEEPSEEK_API_KEY', defaultBaseUrl: 'https://api.deepseek.com', defaultModel: 'deepseek-chat' },
-  { name: 'custom', label: 'Custom (OpenAI 兼容)', envVar: 'CUSTOM_API_KEY', defaultBaseUrl: '', defaultModel: '' },
+  {
+    name: 'anthropic',
+    label: 'Anthropic',
+    envVar: 'ANTHROPIC_API_KEY',
+    defaultBaseUrl: 'https://api.anthropic.com',
+    defaultModel: 'claude-sonnet-4-20250514',
+  },
+  {
+    name: 'openai',
+    label: 'OpenAI',
+    envVar: 'OPENAI_API_KEY',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    defaultModel: 'gpt-4o',
+  },
+  {
+    name: 'deepseek',
+    label: 'DeepSeek',
+    envVar: 'DEEPSEEK_API_KEY',
+    defaultBaseUrl: 'https://api.deepseek.com',
+    defaultModel: 'deepseek-chat',
+  },
+  {
+    name: 'custom',
+    label: 'Custom (OpenAI 兼容)',
+    envVar: 'CUSTOM_API_KEY',
+    defaultBaseUrl: '',
+    defaultModel: '',
+  },
 ]
 
-export function ApiConfigPanel({ secrets, onSave, onClose, isFirstRun = false }: ApiConfigPanelProps) {
+export function ApiConfigPanel({
+  secrets,
+  onSave,
+  onClose,
+  isFirstRun = false,
+}: ApiConfigPanelProps) {
   const [step, setStep] = useState<ConfigStep>('select_provider')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [inputValue, setInputValue] = useState('')
@@ -201,9 +230,7 @@ export function ApiConfigPanel({ secrets, onSave, onClose, isFirstRun = false }:
                   <Text color={isSelected ? theme.colors.primary : undefined} bold={isSelected}>
                     {isSelected ? '▶ ' : '  '}
                   </Text>
-                  <Text color={isSelected ? theme.colors.primary : undefined}>
-                    {p.label}
-                  </Text>
+                  <Text color={isSelected ? theme.colors.primary : undefined}>{p.label}</Text>
                   <Text color={status?.hasKey ? theme.colors.success : theme.colors.muted}>
                     {keyStatus}
                   </Text>
@@ -216,7 +243,9 @@ export function ApiConfigPanel({ secrets, onSave, onClose, isFirstRun = false }:
 
       {step === 'input_key' && selectedProvider && (
         <Box flexDirection="column" marginTop={1}>
-          <Text>输入 <Text bold>{selectedProvider.label}</Text> 的 API Key:</Text>
+          <Text>
+            输入 <Text bold>{selectedProvider.label}</Text> 的 API Key:
+          </Text>
           <Box marginTop={1}>
             <Text color={theme.colors.primary}>{'> '}</Text>
             <Text>{inputValue ? '•'.repeat(inputValue.length) : ''}</Text>
@@ -260,7 +289,9 @@ export function ApiConfigPanel({ secrets, onSave, onClose, isFirstRun = false }:
 
       {step === 'done' && (
         <Box flexDirection="column" marginTop={1}>
-          <Text color={theme.colors.success} bold>✓ 配置已保存到 .nexus/secrets.toml</Text>
+          <Text color={theme.colors.success} bold>
+            ✓ 配置已保存到 .nexus/secrets.toml
+          </Text>
           <Text color={theme.colors.muted}>
             Provider: {selectedProvider?.label} · Key: {maskApiKey(pendingKey)}
             {pendingBaseUrl ? ` · URL: ${pendingBaseUrl}` : ''}

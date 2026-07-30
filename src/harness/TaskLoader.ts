@@ -2,8 +2,8 @@
  * 任务加载器 — 从 .toml 文件或目录加载 EvalTask[]
  */
 
-import { readFile, readdir, stat } from 'fs/promises'
-import { join, extname } from 'path'
+import { readdir, readFile, stat } from 'fs/promises'
+import { extname, join } from 'path'
 import { parse } from 'smol-toml'
 import type { EvalTask, InitialFile, ValidateRule } from './types'
 

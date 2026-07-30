@@ -1,19 +1,20 @@
 #!/usr/bin/env bun
+
 /**
  * Nexus 入口文件
  * 解析参数 → 加载配置 → 启动 TUI 或非交互模式
  */
 
-import React from 'react'
 import { render } from 'ink'
-import { parseArgs, getHelpText } from './cli/args'
-import { loadConfig } from './config'
-import { loadSecrets, saveSecrets, hasAnyApiKey } from './config-secrets'
+import React from 'react'
 import { Orchestrator } from './agent/Orchestrator'
-import { App } from './tui/App'
-import { eventBus } from './core/eventBus'
-import type { CommandContext } from './cli/commands'
 import type { NexusConfig, NexusEvent } from './agent/types'
+import { getHelpText, parseArgs } from './cli/args'
+import type { CommandContext } from './cli/commands'
+import { loadConfig } from './config'
+import { hasAnyApiKey, loadSecrets, saveSecrets } from './config-secrets'
+import { eventBus } from './core/eventBus'
+import { App } from './tui/App'
 import { exportSession } from './utils/export'
 
 const VERSION = '0.1.0'
@@ -40,7 +41,9 @@ let planApprovalResolver: ((result: PlanApprovalResult) => void) | null = null
 /** 计划审批队列：callId → resolve */
 const planApprovalResolverMap = new Map<string, (result: PlanApprovalResult) => void>()
 
-export function setPlanApprovalResolve(resolve: ((result: PlanApprovalResult) => void) | null): void {
+export function setPlanApprovalResolve(
+  resolve: ((result: PlanApprovalResult) => void) | null,
+): void {
   planApprovalResolver = resolve
   ;(globalThis as Record<string, unknown>).__nexusPlanApprovalResolve = resolve
 }
@@ -63,7 +66,9 @@ export function getApprovalResolveByCallId(callId: string): ((approved: boolean)
 }
 
 /** 通过 callId 获取并移除 plan 审批 resolver */
-export function getPlanApprovalResolveByCallId(callId: string): ((result: PlanApprovalResult) => void) | null {
+export function getPlanApprovalResolveByCallId(
+  callId: string,
+): ((result: PlanApprovalResult) => void) | null {
   const r = planApprovalResolverMap.get(callId) ?? null
   if (r) planApprovalResolverMap.delete(callId)
   return r
@@ -138,8 +143,10 @@ async function main() {
         if (args.evalMock) return { output: '', cost: 0 }
         try {
           const orch = new Orchestrator({
-            projectRoot: workDir, config,
-            permissionMode: 'yolo', skipPlan: true,
+            projectRoot: workDir,
+            config,
+            permissionMode: 'yolo',
+            skipPlan: true,
             maxIterations: Math.min(config.limits.maxIterations, 20),
             onEvent: () => {},
             requestApproval: async () => true,
@@ -151,18 +158,33 @@ async function main() {
           await orch.shutdown()
           return { output, cost }
         } catch (err) {
-          return { output: `执行失败: ${err instanceof Error ? err.message : String(err)}`, cost: 0 }
+          return {
+            output: `执行失败: ${err instanceof Error ? err.message : String(err)}`,
+            cost: 0,
+          }
         }
       },
     })
 
-    let report
+    let report: Awaited<ReturnType<typeof engine.runAll>>
     if (args.evalTask) {
       const { loadTasks } = await import('./harness/TaskLoader')
       const tasks = await loadTasks(args.evalDir)
-      const task = tasks.find(t => t.id === args.evalTask)
-      if (!task) { console.error(`未找到任务: ${args.evalTask}`); process.exit(1) }
-      report = { mode: args.evalMock ? 'mock' as const : 'real' as const, tasksTotal: 1, tasksPassed: 0, tasksFailed: 0, totalCost: 0, totalDurationMs: 0, results: [await engine.runOne(task)], timestamp: Date.now() }
+      const task = tasks.find((t) => t.id === args.evalTask)
+      if (!task) {
+        console.error(`未找到任务: ${args.evalTask}`)
+        process.exit(1)
+      }
+      report = {
+        mode: args.evalMock ? ('mock' as const) : ('real' as const),
+        tasksTotal: 1,
+        tasksPassed: 0,
+        tasksFailed: 0,
+        totalCost: 0,
+        totalDurationMs: 0,
+        results: [await engine.runOne(task)],
+        timestamp: Date.now(),
+      }
       report.tasksPassed = report.results[0].pass ? 1 : 0
       report.tasksFailed = report.results[0].pass ? 0 : 1
       report.totalCost = report.results[0].cost
@@ -225,16 +247,18 @@ async function main() {
   if (!hasProvider) {
     // 非交互模式: 输出引导信息后正常退出
     if (args.nonInteractive) {
-      console.error([
-        '❌ 未检测到任何可用的 AI 模型 API Key。',
-        '',
-        '请至少配置一个 provider:',
-        '  • Anthropic:  export ANTHROPIC_API_KEY=sk-...',
-        '  • OpenAI:     export OPENAI_API_KEY=sk-...',
-        '  • DeepSeek:   export DEEPSEEK_API_KEY=sk-...',
-        '',
-        '或运行交互模式进行配置: nexus（不带 --non-interactive）',
-      ].join('\n'))
+      console.error(
+        [
+          '❌ 未检测到任何可用的 AI 模型 API Key。',
+          '',
+          '请至少配置一个 provider:',
+          '  • Anthropic:  export ANTHROPIC_API_KEY=sk-...',
+          '  • OpenAI:     export OPENAI_API_KEY=sk-...',
+          '  • DeepSeek:   export DEEPSEEK_API_KEY=sk-...',
+          '',
+          '或运行交互模式进行配置: nexus（不带 --non-interactive）',
+        ].join('\n'),
+      )
       await orchestrator.shutdown()
       process.exit(1)
     }
@@ -258,7 +282,9 @@ async function main() {
         exitSecrets.lastModel = currentModel
         await saveSecrets(args.cwd, exitSecrets)
       }
-    } catch { /* 静默忽略：模型持久化失败不应阻塞退出 */ }
+    } catch {
+      /* 静默忽略：模型持久化失败不应阻塞退出 */
+    }
     await orchestrator.shutdown()
   }
   process.on('SIGINT', async () => {
@@ -309,12 +335,15 @@ async function main() {
       return orchestrator.listRecentSessions(limit)
     },
     exportSession: async (outputPath?) => {
-      return exportSession({
-        history: orchestrator.getFullHistory(),
-        todos: orchestrator.getTodos(),
-        cost: orchestrator.getCostSummary(),
-        projectRoot: args.cwd,
-      }, outputPath)
+      return exportSession(
+        {
+          history: orchestrator.getFullHistory(),
+          todos: orchestrator.getTodos(),
+          cost: orchestrator.getCostSummary(),
+          projectRoot: args.cwd,
+        },
+        outputPath,
+      )
     },
     getStatus: () => {
       return orchestrator.getStatus()
@@ -363,7 +392,9 @@ async function main() {
             eventBus.emit({ type: 'error', message: String(err), recoverable: true })
           })
         },
-        onApproval: () => { /* resolve handled via module-level approvalResolver */ },
+        onApproval: () => {
+          /* resolve handled via module-level approvalResolver */
+        },
         commandContext,
         projectRoot: args.cwd,
       }),
@@ -384,15 +415,18 @@ async function main() {
   }
 
   // TUI 已渲染，后台异步完成剩余初始化（CodeGraph / DB / MCP），不阻塞用户交互
-  orchestrator.startBackgroundInit().then(async () => {
-    // 初始化完成后处理 --resume 标志
-    if (args.resume) {
-      const sessionId = typeof args.resume === 'string' ? args.resume : undefined
-      await orchestrator.restoreSession(sessionId)
-    }
-  }).catch((err) => {
-    eventBus.emit({ type: 'error', message: `后台初始化失败: ${err}`, recoverable: true })
-  })
+  orchestrator
+    .startBackgroundInit()
+    .then(async () => {
+      // 初始化完成后处理 --resume 标志
+      if (args.resume) {
+        const sessionId = typeof args.resume === 'string' ? args.resume : undefined
+        await orchestrator.restoreSession(sessionId)
+      }
+    })
+    .catch((err) => {
+      eventBus.emit({ type: 'error', message: `后台初始化失败: ${err}`, recoverable: true })
+    })
 
   // 如果有初始 prompt,自动提交
   if (args.prompt) {

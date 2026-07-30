@@ -47,8 +47,8 @@ export class TokenBudget {
   allocate(): BudgetAllocation {
     const total = this.getInputBudget()
     return {
-      systemPrompt: Math.floor(total * 0.25),  // L1: 25%
-      history: Math.floor(total * 0.75),        // L2: 75%（含历史 + 工具结果压缩）
+      systemPrompt: Math.floor(total * 0.25), // L1: 25%
+      history: Math.floor(total * 0.75), // L2: 75%（含历史 + 工具结果压缩）
       reserved: this.outputReserve,
       total: this.contextWindow,
     }

@@ -8,9 +8,9 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { createOpenAI } from '@ai-sdk/openai'
 import type { LanguageModel } from 'ai'
 import type { ModelRole, ModelRoute, NexusConfig, ProviderName } from '../agent/types'
-import { CostTracker } from './CostTracker'
 import { getEffectiveApiKey, isCustomProviderName, type SecretsConfig } from '../config-secrets'
-import { getProvider, getAvailableProviders } from './providers/index'
+import type { CostTracker } from './CostTracker'
+import { getAvailableProviders, getProvider } from './providers/index'
 
 /** 已知模型的成本与角色信息（Nexus 特有的路由逻辑） */
 const MODEL_COST_DATA: Record<string, { costPer1kInput: number; costPer1kOutput: number }> = {
@@ -53,7 +53,10 @@ export const FALLBACK_CHAIN: Record<string, string> = {
 export class ModelRouter {
   private config: NexusConfig
   private costTracker: CostTracker
-  private providers: Map<string, ReturnType<typeof createAnthropic> | ReturnType<typeof createOpenAI>>
+  private providers: Map<
+    string,
+    ReturnType<typeof createAnthropic> | ReturnType<typeof createOpenAI>
+  >
   private currentModels: Record<ModelRole, string>
   private secrets: SecretsConfig
 
@@ -73,12 +76,18 @@ export class ModelRouter {
 
     // 内置 provider（anthropic/openai/deepseek）：沿用配置中的 apiKeyEnv 与默认值
     const builtin: Array<{ name: 'anthropic' | 'openai' | 'deepseek' }> = [
-      { name: 'anthropic' }, { name: 'openai' }, { name: 'deepseek' },
+      { name: 'anthropic' },
+      { name: 'openai' },
+      { name: 'deepseek' },
     ]
     for (const { name } of builtin) {
       const providerConfig = providersConfig[name]
       if (!providerConfig) continue
-      const apiKey = getEffectiveApiKey(name, providerConfig.apiKeyEnv ?? `${name.toUpperCase()}_API_KEY`, this.secrets)
+      const apiKey = getEffectiveApiKey(
+        name,
+        providerConfig.apiKeyEnv ?? `${name.toUpperCase()}_API_KEY`,
+        this.secrets,
+      )
       if (!apiKey) continue
 
       if (name === 'anthropic') {
@@ -86,17 +95,24 @@ export class ModelRouter {
       } else if (name === 'openai') {
         this.providers.set('openai', createOpenAI({ apiKey }))
       } else if (name === 'deepseek') {
-        this.providers.set('deepseek', createOpenAI({
-          baseURL: this.secrets.providers.deepseek?.baseUrl ?? providerConfig.baseUrl ?? 'https://api.deepseek.com',
-          apiKey,
-        }))
+        this.providers.set(
+          'deepseek',
+          createOpenAI({
+            baseURL:
+              this.secrets.providers.deepseek?.baseUrl ??
+              providerConfig.baseUrl ??
+              'https://api.deepseek.com',
+            apiKey,
+          }),
+        )
       }
     }
 
     // 自定义条目（任意命名键，含旧 custom）：按 compatibility 选择 OpenAI/Anthropic 协议
     for (const [name, secret] of Object.entries(this.secrets.providers)) {
       if (!isCustomProviderName(name)) continue
-      const apiKey = secret.apiKey ?? process.env[`${name.toUpperCase().replace(/-/g, '_')}_API_KEY`]
+      const apiKey =
+        secret.apiKey ?? process.env[`${name.toUpperCase().replace(/-/g, '_')}_API_KEY`]
       const baseURL = secret.baseUrl
       if (!apiKey || !baseURL) continue
 
@@ -253,7 +269,10 @@ export class ModelRouter {
         visited.add(fallbackName)
 
         const providerName = MODEL_PROVIDER_MAP[fallbackName]
-        if (!providerName) { modelName = fallbackName; continue }
+        if (!providerName) {
+          modelName = fallbackName
+          continue
+        }
 
         const provider = this.providers.get(providerName)
         if (provider) return provider(fallbackName) as LanguageModel
@@ -299,7 +318,12 @@ export class ModelRouter {
   }
 
   /** 获取所有已知模型（含未配置 provider 的），用于 /model 命令展示 */
-  getAllKnownModels(): Array<{ name: string; provider: string; configured: boolean; current: boolean }> {
+  getAllKnownModels(): Array<{
+    name: string
+    provider: string
+    configured: boolean
+    current: boolean
+  }> {
     const currentExecutor = this.currentModels.executor
     return Object.entries(MODEL_PROVIDER_MAP).map(([name, provider]) => ({
       name,

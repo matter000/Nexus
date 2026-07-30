@@ -11,7 +11,13 @@ export type NexusEvent =
   | { type: 'llm_chunk'; text: string }
   | { type: 'llm_done'; text: string }
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; callId: string }
-  | { type: 'tool_approval_request'; callId: string; tool: string; params: Record<string, unknown>; diff?: string }
+  | {
+      type: 'tool_approval_request'
+      callId: string
+      tool: string
+      params: Record<string, unknown>
+      diff?: string
+    }
   | { type: 'plan_approval_request'; plan: Plan }
   | { type: 'tool_result'; callId: string; tool: string; result: string; error?: string }
   | { type: 'todo_update'; todos: Todo[] }
@@ -25,7 +31,14 @@ export type NexusEvent =
 
 // ─── Agent 状态 ───────────────────────────────────────────────────────────────
 
-export type AgentPhase = 'idle' | 'planning' | 'awaiting_approval' | 'executing' | 'verifying' | 'done' | 'error'
+export type AgentPhase =
+  | 'idle'
+  | 'planning'
+  | 'awaiting_approval'
+  | 'executing'
+  | 'verifying'
+  | 'done'
+  | 'error'
 
 export type PermissionMode = 'ask' | 'auto-edit' | 'auto-all' | 'yolo'
 
@@ -240,11 +253,14 @@ export interface Session {
  * 替换时只需更换注入的实现,Agent loop 零改动
  */
 export interface SandboxProvider {
-  execute(command: string, options: {
-    cwd: string
-    timeoutMs: number
-    maxOutputBytes: number
-  }): Promise<{
+  execute(
+    command: string,
+    options: {
+      cwd: string
+      timeoutMs: number
+      maxOutputBytes: number
+    },
+  ): Promise<{
     stdout: string
     stderr: string
     exitCode: number

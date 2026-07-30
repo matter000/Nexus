@@ -4,7 +4,7 @@
  * 设置 NEXUS_DEBUG=0 可关闭
  */
 
-import { writeFile, mkdir } from 'fs/promises'
+import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 
 const DEBUG_ENABLED = process.env.NEXUS_DEBUG !== '0'
@@ -18,7 +18,9 @@ async function ensureInitialized(): Promise<void> {
     initPromise = (async () => {
       const cwd = process.cwd()
       logPath = join(cwd, '.nexus', 'debug.jsonl')
-      try { await mkdir(join(cwd, '.nexus'), { recursive: true }) } catch {}
+      try {
+        await mkdir(join(cwd, '.nexus'), { recursive: true })
+      } catch {}
       // 每次启动覆盖旧日志，避免无限膨胀
       firstWrite = true
     })()
@@ -32,7 +34,7 @@ async function write(entry: Record<string, unknown>): Promise<void> {
   const line = JSON.stringify(entry) + '\n'
   if (firstWrite) {
     firstWrite = false
-    await writeFile(logPath, line, 'utf-8')  // 首次写入覆盖
+    await writeFile(logPath, line, 'utf-8') // 首次写入覆盖
   } else {
     const { appendFile } = await import('fs/promises')
     await appendFile(logPath, line, 'utf-8')
@@ -54,10 +56,13 @@ export async function logLLMRequest(
     type: 'request',
     time: new Date().toISOString(),
     model,
-    system: system.slice(0, 2000),  // 截断超长 system prompt
-    messages: messages.map(m => ({
+    system: system.slice(0, 2000), // 截断超长 system prompt
+    messages: messages.map((m) => ({
       role: m.role,
-      content: typeof m.content === 'string' ? m.content.slice(0, 500) : JSON.stringify(m.content).slice(0, 500),
+      content:
+        typeof m.content === 'string'
+          ? m.content.slice(0, 500)
+          : JSON.stringify(m.content).slice(0, 500),
     })),
     tools: Object.keys(tools),
   })
@@ -73,7 +78,10 @@ export async function logLLMResponse(
     type: 'response',
     time: new Date().toISOString(),
     text: streamedText.slice(0, 1000),
-    toolCalls: toolCalls.map(tc => ({ tool: tc.toolName, args: JSON.stringify(tc.args).slice(0, 200) })),
+    toolCalls: toolCalls.map((tc) => ({
+      tool: tc.toolName,
+      args: JSON.stringify(tc.args).slice(0, 200),
+    })),
     usage: usage ?? null,
   })
 }

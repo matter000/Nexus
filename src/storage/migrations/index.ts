@@ -107,7 +107,9 @@ export const migrations: Migration[] = [
 /** 获取当前 schema 版本 */
 export function getCurrentVersion(db: Database): number {
   try {
-    const row = db.prepare('SELECT MAX(version) as version FROM _migrations').get() as { version: number } | undefined
+    const row = db.prepare('SELECT MAX(version) as version FROM _migrations').get() as
+      | { version: number }
+      | undefined
     return row?.version ?? 0
   } catch {
     return 0
@@ -133,7 +135,7 @@ export function runMigrations(db: Database): void {
       db.prepare('INSERT INTO _migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
         migration.version,
         migration.name,
-        Date.now()
+        Date.now(),
       )
     }
   }

@@ -13,7 +13,7 @@
  */
 
 import { spawn } from 'child_process'
-import { isDangerousCommand, type DangerAssessment } from './CommandGuard'
+import { type DangerAssessment, isDangerousCommand } from './CommandGuard'
 
 // ─── 接口定义 ─────────────────────────────────────────────────────────────────
 
@@ -114,51 +114,54 @@ export class TypeScriptSandbox implements SandboxEngine {
     // 危险命令检测
     const dangerAssessment = isDangerousCommand(command)
 
-    const result = await new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>(
-      (resolvePromise) => {
-        const isWindows = process.platform === 'win32'
-        const shell = isWindows ? 'powershell.exe' : '/bin/bash'
-        const shellArgs = isWindows ? ['-NoProfile', '-Command', command] : ['-c', command]
+    const result = await new Promise<{
+      stdout: string
+      stderr: string
+      exitCode: number
+      timedOut: boolean
+    }>((resolvePromise) => {
+      const isWindows = process.platform === 'win32'
+      const shell = isWindows ? 'powershell.exe' : '/bin/bash'
+      const shellArgs = isWindows ? ['-NoProfile', '-Command', command] : ['-c', command]
 
-        const child = spawn(shell, shellArgs, {
-          cwd,
-          env: { ...process.env, TERM: 'dumb', ...options.env },
-          stdio: ['ignore', 'pipe', 'pipe'],
-          ...(isWindows ? { windowsHide: true } : { detached: true }),
-        })
+      const child = spawn(shell, shellArgs, {
+        cwd,
+        env: { ...process.env, TERM: 'dumb', ...options.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        ...(isWindows ? { windowsHide: true } : { detached: true }),
+      })
 
-        let stdout = ''
-        let stderr = ''
-        let timedOut = false
-        let settled = false
+      let stdout = ''
+      let stderr = ''
+      let timedOut = false
+      let settled = false
 
-        const timer = setTimeout(() => {
-          timedOut = true
-          this.killProcessGroup(child, isWindows)
-        }, timeoutMs)
+      const timer = setTimeout(() => {
+        timedOut = true
+        this.killProcessGroup(child, isWindows)
+      }, timeoutMs)
 
-        child.stdout?.on('data', (d: Buffer) => {
-          if (stdout.length < maxOutputBytes) stdout += d.toString()
-        })
-        child.stderr?.on('data', (d: Buffer) => {
-          if (stderr.length < maxOutputBytes) stderr += d.toString()
-        })
+      child.stdout?.on('data', (d: Buffer) => {
+        if (stdout.length < maxOutputBytes) stdout += d.toString()
+      })
+      child.stderr?.on('data', (d: Buffer) => {
+        if (stderr.length < maxOutputBytes) stderr += d.toString()
+      })
 
-        child.on('close', (code) => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          resolvePromise({ stdout, stderr, exitCode: code ?? 1, timedOut })
-        })
+      child.on('close', (code) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolvePromise({ stdout, stderr, exitCode: code ?? 1, timedOut })
+      })
 
-        child.on('error', (err) => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          resolvePromise({ stdout, stderr: err.message, exitCode: 1, timedOut: false })
-        })
-      }
-    )
+      child.on('error', (err) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolvePromise({ stdout, stderr: err.message, exitCode: 1, timedOut: false })
+      })
+    })
 
     return { ...result, dangerAssessment }
   }
@@ -181,7 +184,8 @@ export class TypeScriptSandbox implements SandboxEngine {
   private killProcessGroup(child: ReturnType<typeof spawn>, isWindows: boolean): void {
     try {
       if (isWindows) {
-        if (child.pid) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+        if (child.pid)
+          spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
       } else {
         if (child.pid) process.kill(-child.pid, 'SIGKILL')
       }

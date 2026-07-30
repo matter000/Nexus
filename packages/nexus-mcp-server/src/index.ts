@@ -10,18 +10,18 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { z } from 'zod'
-import { readFile, writeFile, rename, mkdir, readdir } from 'fs/promises'
-import { resolve, relative, dirname } from 'path'
 import { spawn } from 'child_process'
+import { mkdir, readdir, readFile, rename, writeFile } from 'fs/promises'
+import { dirname, relative, resolve } from 'path'
+import { z } from 'zod'
+import { isDangerousCommand } from '../../../src/sandbox/CommandGuard'
 import {
-  stripBom,
   detectLineEnding,
   normalizeToLF,
   restoreLineEndings,
   sanitizeBinaryOutput,
+  stripBom,
 } from '../../../src/utils/index'
-import { isDangerousCommand } from '../../../src/sandbox/CommandGuard'
 
 // ─── 配置 ─────────────────────────────────────────────────────────────────────
 
@@ -95,7 +95,12 @@ server.tool(
         const slice = allLines.slice(0, MAX_READ_LINES)
         const numbered = slice.map((l, i) => `${i + 1}│${l}`).join('\n')
         return {
-          content: [{ type: 'text', text: `${filePath} (${totalLines} 行, 已截断至前 ${MAX_READ_LINES} 行)\n${numbered}\n\n... 使用 start_line/end_line 读取更多,或用 grep 搜索 ...` }],
+          content: [
+            {
+              type: 'text',
+              text: `${filePath} (${totalLines} 行, 已截断至前 ${MAX_READ_LINES} 行)\n${numbered}\n\n... 使用 start_line/end_line 读取更多,或用 grep 搜索 ...`,
+            },
+          ],
         }
       }
 
@@ -107,7 +112,7 @@ server.tool(
       const msg = err instanceof Error ? err.message : String(err)
       return errorResult('READ_ERROR', `读取失败: ${msg}`, '检查文件路径是否正确')
     }
-  }
+  },
 )
 
 // ─── edit_file ────────────────────────────────────────────────────────────────
@@ -117,7 +122,9 @@ server.tool(
   '精准替换文件中的字符串。old_string 必须在文件中唯一匹配(0处匹配报错,>1处匹配也报错)。保留原始 BOM 和行尾风格。使用原子写入(写临时文件→rename)。',
   {
     path: z.string().describe('要编辑的文件路径(相对于项目根目录)'),
-    old_string: z.string().describe('要替换的原文,必须在文件中唯一匹配。包含足够上下文以确保唯一性。'),
+    old_string: z
+      .string()
+      .describe('要替换的原文,必须在文件中唯一匹配。包含足够上下文以确保唯一性。'),
     new_string: z.string().describe('替换后的新内容'),
   },
   async ({ path: filePath, old_string, new_string }) => {
@@ -134,7 +141,11 @@ server.tool(
           await writeFile(fullPath, new_string, 'utf-8')
           return { content: [{ type: 'text', text: `已创建新文件: ${filePath}` }] }
         }
-        return errorResult('FILE_NOT_FOUND', `文件不存在: ${filePath}`, '如果要创建新文件,请将 old_string 设为空字符串')
+        return errorResult(
+          'FILE_NOT_FOUND',
+          `文件不存在: ${filePath}`,
+          '如果要创建新文件,请将 old_string 设为空字符串',
+        )
       }
 
       // BOM + 行尾处理
@@ -147,10 +158,18 @@ server.tool(
       // 唯一匹配校验
       const count = normalizedContent.split(normalizedOld).length - 1
       if (count === 0) {
-        return errorResult('NO_MATCH', `old_string 在 ${filePath} 中未找到匹配`, '文件可能已变更,请重新 read_file 获取最新内容')
+        return errorResult(
+          'NO_MATCH',
+          `old_string 在 ${filePath} 中未找到匹配`,
+          '文件可能已变更,请重新 read_file 获取最新内容',
+        )
       }
       if (count > 1) {
-        return errorResult('MULTIPLE_MATCH', `old_string 在 ${filePath} 中出现了 ${count} 次`, '请提供更多上下文行以确保唯一匹配')
+        return errorResult(
+          'MULTIPLE_MATCH',
+          `old_string 在 ${filePath} 中出现了 ${count} 次`,
+          '请提供更多上下文行以确保唯一匹配',
+        )
       }
 
       // 应用替换 + 恢复格式
@@ -168,7 +187,7 @@ server.tool(
       const msg = err instanceof Error ? err.message : String(err)
       return errorResult('EDIT_ERROR', `编辑失败: ${msg}`)
     }
-  }
+  },
 )
 
 // ─── bash ─────────────────────────────────────────────────────────────────────
@@ -178,17 +197,30 @@ server.tool(
   '在项目目录中执行 shell 命令。有超时限制和输出大小限制。危险命令(如 rm -rf /、mkfs、curl|bash)会被拒绝执行。',
   {
     command: z.string().describe('要执行的 shell 命令'),
-    timeout: z.number().optional().default(DEFAULT_TIMEOUT_SECONDS).describe('超时时间(秒),默认 30'),
+    timeout: z
+      .number()
+      .optional()
+      .default(DEFAULT_TIMEOUT_SECONDS)
+      .describe('超时时间(秒),默认 30'),
   },
   async ({ command, timeout }) => {
     // 危险命令检测: dangerous 级别直接拒绝(使用核心 CommandGuard 统一检测)
     const assessment = isDangerousCommand(command)
     if (assessment.level === 'dangerous') {
-      return errorResult('DANGEROUS_COMMAND', `命令被拒绝: ${assessment.reason}`, '此命令被安全策略拦截,无法执行')
+      return errorResult(
+        'DANGEROUS_COMMAND',
+        `命令被拒绝: ${assessment.reason}`,
+        '此命令被安全策略拦截,无法执行',
+      )
     }
 
     try {
-      const result = await new Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }>((res) => {
+      const result = await new Promise<{
+        stdout: string
+        stderr: string
+        code: number
+        timedOut: boolean
+      }>((res) => {
         const isWin = process.platform === 'win32'
         // 使用 spawn + argv 数组,防止 shell 注入
         const shell = isWin ? 'powershell.exe' : '/bin/bash'
@@ -206,17 +238,29 @@ server.tool(
         let timedOut = false
         let settled = false
 
-        const timer = setTimeout(() => {
-          timedOut = true
-          if (isWin) {
-            if (child.pid) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
-          } else {
-            try { if (child.pid) process.kill(-child.pid, 'SIGKILL') } catch { child.kill('SIGKILL') }
-          }
-        }, (timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000)
+        const timer = setTimeout(
+          () => {
+            timedOut = true
+            if (isWin) {
+              if (child.pid)
+                spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+            } else {
+              try {
+                if (child.pid) process.kill(-child.pid, 'SIGKILL')
+              } catch {
+                child.kill('SIGKILL')
+              }
+            }
+          },
+          (timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+        )
 
-        child.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
-        child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+        child.stdout?.on('data', (d: Buffer) => {
+          stdout += d.toString()
+        })
+        child.stderr?.on('data', (d: Buffer) => {
+          stderr += d.toString()
+        })
         child.on('close', (code) => {
           if (settled) return
           settled = true
@@ -245,7 +289,7 @@ server.tool(
       const msg = err instanceof Error ? err.message : String(err)
       return errorResult('EXEC_ERROR', `执行失败: ${msg}`)
     }
-  }
+  },
 )
 
 // ─── grep ─────────────────────────────────────────────────────────────────────
@@ -277,14 +321,22 @@ server.tool(
         })
         let stdout = ''
         let stderr = ''
-        child.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
-        child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+        child.stdout?.on('data', (d: Buffer) => {
+          stdout += d.toString()
+        })
+        child.stderr?.on('data', (d: Buffer) => {
+          stderr += d.toString()
+        })
         child.on('close', (code) => res({ stdout, stderr, code: code ?? 1 }))
         child.on('error', () => res({ stdout: '', stderr: 'ripgrep (rg) 未安装', code: 127 }))
       })
 
       if (result.code === 127) {
-        return errorResult('TOOL_MISSING', 'ripgrep (rg) 未安装', '请安装: https://github.com/BurntSushi/ripgrep#installation')
+        return errorResult(
+          'TOOL_MISSING',
+          'ripgrep (rg) 未安装',
+          '请安装: https://github.com/BurntSushi/ripgrep#installation',
+        )
       }
       if (result.code === 1) {
         return { content: [{ type: 'text', text: `未找到匹配: "${pattern}"` }] }
@@ -300,7 +352,7 @@ server.tool(
       const msg = err instanceof Error ? err.message : String(err)
       return errorResult('SEARCH_ERROR', `搜索失败: ${msg}`)
     }
-  }
+  },
 )
 
 // ─── Resources ────────────────────────────────────────────────────────────────
@@ -316,9 +368,13 @@ server.resource(
       const content = await readFile(configPath, 'utf-8')
       return { contents: [{ uri: 'nexus://config', mimeType: 'text/plain', text: content }] }
     } catch {
-      return { contents: [{ uri: 'nexus://config', mimeType: 'text/plain', text: '# 配置文件不存在，使用默认配置' }] }
+      return {
+        contents: [
+          { uri: 'nexus://config', mimeType: 'text/plain', text: '# 配置文件不存在，使用默认配置' },
+        ],
+      }
     }
-  }
+  },
 )
 
 /** nexus://project-structure — 返回项目目录树 */
@@ -329,16 +385,31 @@ server.resource(
   async () => {
     try {
       const tree = await buildDirectoryTree(PROJECT_ROOT, 3)
-      return { contents: [{ uri: 'nexus://project-structure', mimeType: 'text/plain', text: tree }] }
+      return {
+        contents: [{ uri: 'nexus://project-structure', mimeType: 'text/plain', text: tree }],
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      return { contents: [{ uri: 'nexus://project-structure', mimeType: 'text/plain', text: `读取目录结构失败: ${msg}` }] }
+      return {
+        contents: [
+          {
+            uri: 'nexus://project-structure',
+            mimeType: 'text/plain',
+            text: `读取目录结构失败: ${msg}`,
+          },
+        ],
+      }
     }
-  }
+  },
 )
 
 /** 递归构建目录树 */
-async function buildDirectoryTree(dir: string, maxDepth: number, prefix = '', depth = 0): Promise<string> {
+async function buildDirectoryTree(
+  dir: string,
+  maxDepth: number,
+  prefix = '',
+  depth = 0,
+): Promise<string> {
   if (depth >= maxDepth) return prefix + '...\n'
   const entries = await readdir(dir, { withFileTypes: true })
   const filtered = entries
@@ -388,7 +459,7 @@ server.prompt(
         },
       },
     ],
-  })
+  }),
 )
 
 /** nexus://review — 代码审查模板 prompt */
@@ -409,7 +480,7 @@ server.prompt(
         },
       },
     ],
-  })
+  }),
 )
 
 // ─── 启动 + 优雅退出 ──────────────────────────────────────────────────────────

@@ -4,9 +4,9 @@
  * 优先级: 环境变量 > secrets.toml
  */
 
-import { readFile, writeFile, mkdir, rename, chmod } from 'fs/promises'
-import { join } from 'path'
+import { chmod, mkdir, readFile, rename, writeFile } from 'fs/promises'
 import { homedir } from 'os'
+import { join } from 'path'
 import { parse, stringify } from 'smol-toml'
 
 export interface ProviderSecret {
@@ -52,7 +52,9 @@ export async function loadSecrets(projectRoot: string): Promise<SecretsConfig> {
     const raw = parse(content) as Record<string, unknown>
     const secrets = parseSecretsRaw(raw)
     if (Object.keys(secrets.providers).length > 0) return secrets
-  } catch { /* 全局配置不存在,继续 */ }
+  } catch {
+    /* 全局配置不存在,继续 */
+  }
 
   // 回退到项目级配置(兼容旧版本)
   try {
@@ -140,7 +142,7 @@ function parseSecretsRaw(raw: Record<string, unknown>): SecretsConfig {
 export function getEffectiveApiKey(
   providerName: string,
   envVarName: string,
-  secrets: SecretsConfig
+  secrets: SecretsConfig,
 ): string | undefined {
   // 环境变量优先
   const envKey = process.env[envVarName]

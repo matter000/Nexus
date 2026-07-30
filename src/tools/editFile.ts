@@ -4,13 +4,18 @@
  * 这是 agent 最容易翻车的工具,可靠性设计是重中之重
  */
 
-import { readFile, writeFile, rename, mkdir } from 'fs/promises'
-import { resolve, relative, dirname } from 'path'
 import { createPatch } from 'diff'
+import { mkdir, readFile, rename, writeFile } from 'fs/promises'
+import { dirname, relative, resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
-import { isInsideProject } from '../utils'
-import { stripBom, detectLineEnding, normalizeToLF, restoreLineEndings } from '../utils'
+import {
+  detectLineEnding,
+  isInsideProject,
+  normalizeToLF,
+  restoreLineEndings,
+  stripBom,
+} from '../utils'
+import type { ToolContext, ToolHandler } from './registry'
 
 const definition: ToolDefinition = {
   name: 'edit_file',

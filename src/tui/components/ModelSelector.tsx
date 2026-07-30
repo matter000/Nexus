@@ -12,14 +12,11 @@
  *      全部保存到 secrets.providers 下的命名键，并切换到新模型
  */
 
-import React, { useState } from 'react'
 import { Box, Text, useInput } from 'ink'
+import React, { useState } from 'react'
+import type { CustomModelEntry, SecretsConfig } from '../../config-secrets'
+import { getCustomModelEntries, maskApiKey } from '../../config-secrets'
 import { theme } from '../theme'
-import type { SecretsConfig, CustomModelEntry } from '../../config-secrets'
-import {
-  getCustomModelEntries,
-  maskApiKey,
-} from '../../config-secrets'
 
 type SelectorStep =
   | 'select_model'
@@ -93,11 +90,13 @@ export function ModelSelector({
   // 构建选项列表：所有用户添加的自定义条目 + "➕ 添加新模型"
   const customEntries = getCustomModelEntries(secrets)
   const entries: ListEntry[] = [
-    ...customEntries.map((entry): CustomEntry => ({
-      type: 'custom',
-      entry,
-      current: !!entry.defaultModel && entry.defaultModel === currentModel,
-    })),
+    ...customEntries.map(
+      (entry): CustomEntry => ({
+        type: 'custom',
+        entry,
+        current: !!entry.defaultModel && entry.defaultModel === currentModel,
+      }),
+    ),
     { type: 'add_new' },
   ]
 
@@ -199,7 +198,13 @@ export function ModelSelector({
 
   function handleTextInput(
     input: string,
-    key: { return?: boolean; backspace?: boolean; delete?: boolean; ctrl?: boolean; meta?: boolean },
+    key: {
+      return?: boolean
+      backspace?: boolean
+      delete?: boolean
+      ctrl?: boolean
+      meta?: boolean
+    },
   ) {
     if (key.ctrl || key.meta) return
 
@@ -216,10 +221,7 @@ export function ModelSelector({
     }
   }
 
-  function handleConfirmDelete(
-    input: string,
-    key: { return?: boolean },
-  ) {
+  function handleConfirmDelete(input: string, key: { return?: boolean }) {
     if (key.return || input === 'y' || input === 'Y') {
       confirmDelete()
     } else if (input === 'n' || input === 'N') {
@@ -366,16 +368,16 @@ export function ModelSelector({
                   <Text color={isSelected ? theme.colors.primary : undefined} bold={isSelected}>
                     {isSelected ? '▶ ' : '  '}
                   </Text>
-                  <Text color={isSelected ? theme.colors.primary : undefined}>
-                    {e.label}
-                  </Text>
+                  <Text color={isSelected ? theme.colors.primary : undefined}>{e.label}</Text>
                   <Text color={theme.colors.muted}>
-                    {' '}— {e.defaultModel || '(未设置)'} [{e.compatibility}]
+                    {' '}
+                    — {e.defaultModel || '(未设置)'} [{e.compatibility}]
                   </Text>
-                  {entry.current ? (
-                    <Text color={theme.colors.success}> ← 当前</Text>
-                  ) : null}
-                  <Text color={theme.colors.muted} dimColor> [DEL] 可删</Text>
+                  {entry.current ? <Text color={theme.colors.success}> ← 当前</Text> : null}
+                  <Text color={theme.colors.muted} dimColor>
+                    {' '}
+                    [DEL] 可删
+                  </Text>
                 </Box>
               )
             })}
@@ -402,12 +404,11 @@ export function ModelSelector({
                     <Text color={isSelected ? theme.colors.primary : undefined} bold={isSelected}>
                       {isSelected ? '▶ ' : '  '}
                     </Text>
-                    <Text color={isSelected ? theme.colors.primary : undefined}>
-                      {opt.label}
-                    </Text>
+                    <Text color={isSelected ? theme.colors.primary : undefined}>{opt.label}</Text>
                   </Box>
                   <Text color={theme.colors.muted} dimColor>
-                    {'    '}{opt.hint}
+                    {'    '}
+                    {opt.hint}
                   </Text>
                 </Box>
               )
@@ -422,7 +423,8 @@ export function ModelSelector({
       {step === 'input_base_url' && (
         <Box flexDirection="column" marginTop={1}>
           <Text>
-            步骤 2/4 — 输入 <Text bold>Base URL</Text>（{pendingCompat === 'anthropic' ? 'Anthropic' : 'OpenAI'} 兼容端点）:
+            步骤 2/4 — 输入 <Text bold>Base URL</Text>（
+            {pendingCompat === 'anthropic' ? 'Anthropic' : 'OpenAI'} 兼容端点）:
           </Text>
           <Box marginTop={1}>
             <Text color={theme.colors.primary}>{'> '}</Text>
@@ -475,9 +477,7 @@ export function ModelSelector({
 
       {step === 'confirm_delete' && pendingDelete && (
         <Box flexDirection="column" marginTop={1}>
-          <Text color={theme.colors.warning}>
-            [!] 确认删除自定义模型？
-          </Text>
+          <Text color={theme.colors.warning}>[!] 确认删除自定义模型？</Text>
           <Box marginTop={1}>
             <Text>
               名称: <Text bold>{pendingDelete.label}</Text>
@@ -492,18 +492,19 @@ export function ModelSelector({
             </Text>
           ) : null}
           <Box marginTop={1}>
-            <Text color={theme.colors.muted}>
-              按 y/Enter 确认删除 · n/Esc 取消
-            </Text>
+            <Text color={theme.colors.muted}>按 y/Enter 确认删除 · n/Esc 取消</Text>
           </Box>
         </Box>
       )}
 
       {step === 'done' && saved && (
         <Box flexDirection="column" marginTop={1}>
-          <Text color={theme.colors.success} bold>✓ 配置已保存并切换到新模型</Text>
+          <Text color={theme.colors.success} bold>
+            ✓ 配置已保存并切换到新模型
+          </Text>
           <Text color={theme.colors.muted}>
-            模型: {pendingModel} · 兼容: {pendingCompat} · Base URL: {pendingBaseUrl} · Key: {maskApiKey(pendingKey)}
+            模型: {pendingModel} · 兼容: {pendingCompat} · Base URL: {pendingBaseUrl} · Key:{' '}
+            {maskApiKey(pendingKey)}
           </Text>
           <Box marginTop={1}>
             <Text color={theme.colors.muted}>按 Enter 继续...</Text>

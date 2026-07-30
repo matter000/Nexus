@@ -3,19 +3,19 @@
  * ReAct Loop 核心:逐步执行计划,每步可回滚
  */
 
-import { generateText } from 'ai'
 import type { LanguageModel } from 'ai'
-import type { ChatMessage, NexusEvent, PermissionMode, Plan, Todo, ModelRole } from './types'
-import type { ToolRegistry, ToolContext } from '../tools/registry'
-import { toolSchemas } from '../tools/schemas'
-import { requiresForcedApproval } from '../sandbox/CommandGuard'
-import type { CheckpointManager } from '../sandbox/Checkpoint'
-import type { CostTracker } from '../router/CostTracker'
-import { callLLMWithRetry } from './ReActLoop'
-import { callWithRetry } from '../utils'
-import { generateDiff } from '../tools/editFile'
+import { generateText } from 'ai'
 import { readFile } from 'fs/promises'
 import { resolve } from 'path'
+import type { CostTracker } from '../router/CostTracker'
+import type { CheckpointManager } from '../sandbox/Checkpoint'
+import { requiresForcedApproval } from '../sandbox/CommandGuard'
+import { generateDiff } from '../tools/editFile'
+import type { ToolContext, ToolRegistry } from '../tools/registry'
+import { toolSchemas } from '../tools/schemas'
+import { callWithRetry } from '../utils'
+import { callLLMWithRetry } from './ReActLoop'
+import type { ChatMessage, ModelRole, NexusEvent, PermissionMode, Plan, Todo } from './types'
 
 const EXECUTE_SYSTEM_SUFFIX = `
 ## 当前阶段: Execute (执行)
@@ -46,7 +46,11 @@ export interface ExecutorConfig {
   permissionMode: PermissionMode
   onEvent: (event: NexusEvent) => void
   /** 审批回调:返回 true=批准, false=拒绝 */
-  requestApproval: (tool: string, params: Record<string, unknown>, diff?: string) => Promise<boolean>
+  requestApproval: (
+    tool: string,
+    params: Record<string, unknown>,
+    diff?: string,
+  ) => Promise<boolean>
   /** 成本追踪器 */
   costTracker: CostTracker
   /** 当前模型角色（用于成本记录） */
@@ -147,8 +151,20 @@ export class Executor {
 
     type ExecMessage =
       | { role: 'user' | 'assistant'; content: string }
-      | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> }
-      | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }
+      | {
+          role: 'assistant'
+          content: string
+          toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+        }
+      | {
+          role: 'tool'
+          content: Array<{
+            type: 'tool-result'
+            toolCallId: string
+            toolName: string
+            result: string
+          }>
+        }
 
     const messages: ExecMessage[] = [
       ...contextMessages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
@@ -169,7 +185,10 @@ export class Executor {
       this.iterations++
 
       // 使用共享的 LLM 调用工具（统一 streamText + 重试 + 成本记录），支持降级模型
-      let callResult: { streamedText: string; toolCalls: Array<{ toolName: string; args: Record<string, unknown> }> }
+      let callResult: {
+        streamedText: string
+        toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>
+      }
       try {
         callResult = await callLLMWithRetry(
           {
@@ -240,8 +259,8 @@ export class Executor {
       messages.push(assistantMsg)
 
       // 分离串行和并行工具调用
-      const serialCalls = toolCalls.filter(tc => Executor.SERIAL_TOOLS.has(tc.toolName))
-      const parallelCalls = toolCalls.filter(tc => !Executor.SERIAL_TOOLS.has(tc.toolName))
+      const serialCalls = toolCalls.filter((tc) => Executor.SERIAL_TOOLS.has(tc.toolName))
+      const parallelCalls = toolCalls.filter((tc) => !Executor.SERIAL_TOOLS.has(tc.toolName))
 
       // 收集所有工具结果，最后统一推入 tool 消息
       const toolResults: Array<{ toolCallId: string; toolName: string; result: string }> = []
@@ -249,7 +268,9 @@ export class Executor {
       // 并行执行只读/非串行工具
       if (parallelCalls.length > 0) {
         const parallelSettled = await Promise.allSettled(
-          parallelCalls.map((tc, idx) => this.executeSingleToolCall(tc, messages, toolResults, idx))
+          parallelCalls.map((tc, idx) =>
+            this.executeSingleToolCall(tc, messages, toolResults, idx),
+          ),
         )
         for (let i = 0; i < parallelSettled.length; i++) {
           const r = parallelSettled[i]
@@ -265,7 +286,12 @@ export class Executor {
 
       // 串行执行写工具（edit_file / update_todo）
       for (let idx = 0; idx < serialCalls.length; idx++) {
-        await this.executeSingleToolCall(serialCalls[idx], messages, toolResults, parallelCalls.length + idx)
+        await this.executeSingleToolCall(
+          serialCalls[idx],
+          messages,
+          toolResults,
+          parallelCalls.length + idx,
+        )
       }
 
       // 将所有工具结果作为一条 tool 消息推入（AI SDK 原生格式）
@@ -333,7 +359,23 @@ export class Executor {
   private async runVerification(
     plan: Plan,
     executionResult: string,
-    messages: Array<{ role: 'user' | 'assistant'; content: string } | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> } | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }>,
+    messages: Array<
+      | { role: 'user' | 'assistant'; content: string }
+      | {
+          role: 'assistant'
+          content: string
+          toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+        }
+      | {
+          role: 'tool'
+          content: Array<{
+            type: 'tool-result'
+            toolCallId: string
+            toolName: string
+            result: string
+          }>
+        }
+    >,
     _toolsForAI: Record<string, { description: string; parameters: unknown }>,
   ): Promise<string> {
     const { model, toolRegistry, toolContext, onEvent } = this.config
@@ -375,8 +417,20 @@ ${executionResult || '(无文本输出)'}
     // 构建验证专用的消息列表（不污染主 messages）
     type VerifyMsg =
       | { role: 'user' | 'assistant'; content: string }
-      | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> }
-      | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }
+      | {
+          role: 'assistant'
+          content: string
+          toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+        }
+      | {
+          role: 'tool'
+          content: Array<{
+            type: 'tool-result'
+            toolCallId: string
+            toolName: string
+            result: string
+          }>
+        }
 
     const verifyMessages: VerifyMsg[] = [
       ...messages.map((m) => ({ ...m })),
@@ -390,21 +444,29 @@ ${executionResult || '(无文本输出)'}
         // 检查中断
         if (this.config.abortSignal?.aborted) break
 
-        const genResult = await callWithRetry(async () => {
-          return await generateText({
-            model,
-            system: '你是验证助手。只读检查执行结果（可用 read_file + grep + bash），不修改文件。每步先说明你要检查什么，然后调用工具。',
-            messages: verifyMessages as never,
-            tools: verifyToolsForAI,
-            maxSteps: 1,
-            abortSignal: this.config.abortSignal,
-          })
-        }, {
-          maxRetries: 1,
-          onRetry: ({ attempt, delay, error }) => {
-            onEvent({ type: 'error', message: `验证请求重试 #${attempt}（${delay}ms 后）: ${error.message}`, recoverable: true })
+        const genResult = await callWithRetry(
+          async () => {
+            return await generateText({
+              model,
+              system:
+                '你是验证助手。只读检查执行结果（可用 read_file + grep + bash），不修改文件。每步先说明你要检查什么，然后调用工具。',
+              messages: verifyMessages as never,
+              tools: verifyToolsForAI,
+              maxSteps: 1,
+              abortSignal: this.config.abortSignal,
+            })
           },
-        })
+          {
+            maxRetries: 1,
+            onRetry: ({ attempt, delay, error }) => {
+              onEvent({
+                type: 'error',
+                message: `验证请求重试 #${attempt}（${delay}ms 后）: ${error.message}`,
+                recoverable: true,
+              })
+            },
+          },
+        )
 
         const text = genResult.text ?? ''
         const toolCalls = genResult.toolCalls ?? []
@@ -428,7 +490,12 @@ ${executionResult || '(无文本输出)'}
         })
 
         // 执行工具并收集结果
-        const toolResults: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> = []
+        const toolResults: Array<{
+          type: 'tool-result'
+          toolCallId: string
+          toolName: string
+          result: string
+        }> = []
         for (let idx = 0; idx < toolCalls.length; idx++) {
           const tc = toolCalls[idx]
           const callId = `verify-${step}-${tc.toolName}-${idx}`
@@ -439,8 +506,19 @@ ${executionResult || '(无文本输出)'}
           const result = await toolRegistry.execute(tc.toolName, args, { ...toolContext, callId })
           const resultText = result.error ? `[错误] ${result.error}` : result.result
 
-          onEvent({ type: 'tool_result', callId, tool: tc.toolName, result: result.result, error: result.error })
-          toolResults.push({ type: 'tool-result', toolCallId: callId, toolName: tc.toolName, result: resultText })
+          onEvent({
+            type: 'tool_result',
+            callId,
+            tool: tc.toolName,
+            result: result.result,
+            error: result.error,
+          })
+          toolResults.push({
+            type: 'tool-result',
+            toolCallId: callId,
+            toolName: tc.toolName,
+            result: resultText,
+          })
         }
 
         verifyMessages.push({ role: 'tool', content: toolResults })
@@ -461,7 +539,23 @@ ${executionResult || '(无文本输出)'}
    */
   private async executeSingleToolCall(
     toolCall: { toolName: string; args: Record<string, unknown> },
-    messages: Array<{ role: 'user' | 'assistant'; content: string } | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> } | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }>,
+    messages: Array<
+      | { role: 'user' | 'assistant'; content: string }
+      | {
+          role: 'assistant'
+          content: string
+          toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+        }
+      | {
+          role: 'tool'
+          content: Array<{
+            type: 'tool-result'
+            toolCallId: string
+            toolName: string
+            result: string
+          }>
+        }
+    >,
     toolResults: Array<{ toolCallId: string; toolName: string; result: string }>,
     callIndex: number,
   ): Promise<void> {
@@ -477,8 +571,18 @@ ${executionResult || '(无文本输出)'}
       const rejectMsg = '用户拒绝了此操作。请换一种方式完成任务,或解释为什么需要这个操作。'
       // 审批拒绝用 user role（表达“用户不允许”的语义）
       messages.push({ role: 'user', content: `[工具被拒绝 ${toolCall.toolName}]: ${rejectMsg}` })
-      toolResults.push({ toolCallId: callId, toolName: toolCall.toolName, result: `[拒绝] ${rejectMsg}` })
-      onEvent({ type: 'tool_result', callId, tool: toolCall.toolName, result: '', error: rejectMsg })
+      toolResults.push({
+        toolCallId: callId,
+        toolName: toolCall.toolName,
+        result: `[拒绝] ${rejectMsg}`,
+      })
+      onEvent({
+        type: 'tool_result',
+        callId,
+        tool: toolCall.toolName,
+        result: '',
+        error: rejectMsg,
+      })
       return
     }
 
@@ -507,7 +611,7 @@ ${executionResult || '(无文本输出)'}
     if (toolCall.toolName === 'edit_file' && !toolResult.error) {
       const checkpoint = await this.config.checkpoint.create(
         `edit: ${args.path}`,
-        this.getCurrentTodoId()
+        this.getCurrentTodoId(),
       )
       if (checkpoint) {
         onEvent({ type: 'checkpoint', step: checkpoint.step, message: checkpoint.message })
@@ -614,9 +718,7 @@ ${executionResult || '(无文本输出)'}
       // 检查是否能匹配
       if (oldString !== '' && !content.includes(oldString)) return null
 
-      const newContent = oldString === ''
-        ? newString
-        : content.replace(oldString, newString)
+      const newContent = oldString === '' ? newString : content.replace(oldString, newString)
       return generateDiff(filePath, content, newContent)
     } catch {
       return null

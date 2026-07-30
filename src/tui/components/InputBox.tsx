@@ -3,10 +3,10 @@
  * 支持多行输入、斜杠命令提示与 Tab 自动补全
  */
 
-import React, { useState, useMemo } from 'react'
 import { Box, Text, useInput } from 'ink'
+import React, { useMemo, useState } from 'react'
+import { getAvailableCommands, getCommandCompletions } from '../../cli/commands'
 import { theme } from '../theme'
-import { getCommandCompletions, getAvailableCommands } from '../../cli/commands'
 
 interface InputBoxProps {
   onSubmit: (text: string) => void
@@ -14,7 +14,11 @@ interface InputBoxProps {
   placeholder?: string
 }
 
-export function InputBox({ onSubmit, disabled = false, placeholder = '输入任务...' }: InputBoxProps) {
+export function InputBox({
+  onSubmit,
+  disabled = false,
+  placeholder = '输入任务...',
+}: InputBoxProps) {
   const [value, setValue] = useState('')
   const [completionIndex, setCompletionIndex] = useState(-1)
 
@@ -83,9 +87,14 @@ export function InputBox({ onSubmit, disabled = false, placeholder = '输入任�
         <Box flexDirection="column" marginBottom={1}>
           {displayCommands.map((cmd) => (
             <Box key={cmd.name}>
-              <Text color={theme.colors.primary} bold>{cmd.name}</Text>
+              <Text color={theme.colors.primary} bold>
+                {cmd.name}
+              </Text>
               {cmd.description && (
-                <Text color={theme.colors.muted} dimColor> — {cmd.description}</Text>
+                <Text color={theme.colors.muted} dimColor>
+                  {' '}
+                  — {cmd.description}
+                </Text>
               )}
             </Box>
           ))}
@@ -97,13 +106,18 @@ export function InputBox({ onSubmit, disabled = false, placeholder = '输入任�
         </Box>
       )}
       <Box>
-        <Text color={disabled ? theme.colors.muted : theme.colors.primary} bold dimColor={disabled}>{'> '}</Text>
+        <Text color={disabled ? theme.colors.muted : theme.colors.primary} bold dimColor={disabled}>
+          {'> '}
+        </Text>
         <Text>
-          {value || <Text color={theme.colors.muted} dimColor>{disabled ? '执行中，无法输入' : placeholder}</Text>}
+          {value || (
+            <Text color={theme.colors.muted} dimColor>
+              {disabled ? '执行中，无法输入' : placeholder}
+            </Text>
+          )}
         </Text>
         {!disabled && <Text color={theme.colors.primary}>▌</Text>}
       </Box>
-
     </Box>
   )
 }

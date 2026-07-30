@@ -38,8 +38,7 @@ export const anthropicAdapter: ProviderAdapter = {
 /** OpenAI 适配器 */
 export const openaiAdapter: ProviderAdapter = {
   name: 'openai',
-  isAvailable: (secrets) =>
-    !!process.env.OPENAI_API_KEY || !!secrets?.providers.openai?.apiKey,
+  isAvailable: (secrets) => !!process.env.OPENAI_API_KEY || !!secrets?.providers.openai?.apiKey,
   getDefaultModel: () => 'gpt-4o',
   getContextWindow: (_model) => {
     // mini 系列上下文窗口与标准模型一致（128k）
@@ -51,8 +50,7 @@ export const openaiAdapter: ProviderAdapter = {
 /** DeepSeek 适配器(兼容 OpenAI 接口) */
 export const deepseekAdapter: ProviderAdapter = {
   name: 'deepseek',
-  isAvailable: (secrets) =>
-    !!process.env.DEEPSEEK_API_KEY || !!secrets?.providers.deepseek?.apiKey,
+  isAvailable: (secrets) => !!process.env.DEEPSEEK_API_KEY || !!secrets?.providers.deepseek?.apiKey,
   getDefaultModel: () => 'deepseek-chat',
   getContextWindow: () => 65536,
   supportsTools: (model) => model === 'deepseek-chat', // reasoner 不支持 tool calling
@@ -69,9 +67,7 @@ export function createCustomAdapter(secrets?: SecretsConfig): ProviderAdapter {
       return !!(apiKey && baseUrl)
     },
     getDefaultModel: () =>
-      process.env.CUSTOM_DEFAULT_MODEL
-      ?? secrets?.providers.custom?.defaultModel
-      ?? 'default',
+      process.env.CUSTOM_DEFAULT_MODEL ?? secrets?.providers.custom?.defaultModel ?? 'default',
     getContextWindow: () => 128000, // 默认假设
     supportsTools: () => true, // 大多数 OpenAI 兼容接口支持
   }

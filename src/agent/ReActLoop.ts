@@ -4,20 +4,32 @@
  * 消除 ~50 行在每个文件中的重复代码。
  */
 
-import { streamText } from 'ai'
 import type { LanguageModel } from 'ai'
-import type { NexusEvent, ModelRole } from './types'
+import { streamText } from 'ai'
+import type { CostTracker } from '../router/CostTracker'
 import { callWithRetry } from '../utils'
 import { logLLMRequest, logLLMResponse } from '../utils/debugLog'
-import type { CostTracker } from '../router/CostTracker'
+import type { ModelRole, NexusEvent } from './types'
 
 export interface LLMCallConfig {
   model: LanguageModel
   system: string
   messages: Array<
     | { role: 'user' | 'assistant'; content: string }
-    | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> }
-    | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }
+    | {
+        role: 'assistant'
+        content: string
+        toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+      }
+    | {
+        role: 'tool'
+        content: Array<{
+          type: 'tool-result'
+          toolCallId: string
+          toolName: string
+          result: string
+        }>
+      }
   >
   tools: Record<string, { description: string; parameters: unknown }>
   maxSteps: number
@@ -67,43 +79,50 @@ export async function callLLMWithRetry(
   const { onEvent, costConfig } = callbacks
 
   const doCall = (m: LanguageModel) =>
-    callWithRetry(async () => {
-      // 调试日志：记录 LLM 请求
-      logLLMRequest(m, system, messages, tools).catch(() => {})
+    callWithRetry(
+      async () => {
+        // 调试日志：记录 LLM 请求
+        logLLMRequest(m, system, messages, tools).catch(() => {})
 
-      const result = streamText({
-        model: m,
-        system,
-        messages,
-        tools,
-        maxSteps,
-        abortSignal,
-      })
-
-      // 流式消费文本
-      let streamedText = ''
-      for await (const chunk of result.textStream) {
-        streamedText += chunk
-        onEvent({ type: 'llm_chunk', text: chunk })
-      }
-
-      // 流式结束后获取完整结果（含 toolCalls、usage）
-      const finalResult = await result
-      const usage = await finalResult.usage
-      const rawToolCalls = await finalResult.toolCalls
-      return { streamedText, usage, toolCalls: rawToolCalls ?? [] }
-    }, {
-      onRetry: ({ attempt, delay, error }) => {
-        onEvent({
-          type: 'error',
-          message: `流式请求重试 #${attempt}（${delay}ms 后）: ${error.message}`,
-          recoverable: true,
+        const result = streamText({
+          model: m,
+          system,
+          messages,
+          tools,
+          maxSteps,
+          abortSignal,
         })
+
+        // 流式消费文本
+        let streamedText = ''
+        for await (const chunk of result.textStream) {
+          streamedText += chunk
+          onEvent({ type: 'llm_chunk', text: chunk })
+        }
+
+        // 流式结束后获取完整结果（含 toolCalls、usage）
+        const finalResult = await result
+        const usage = await finalResult.usage
+        const rawToolCalls = await finalResult.toolCalls
+        return { streamedText, usage, toolCalls: rawToolCalls ?? [] }
       },
-    })
+      {
+        onRetry: ({ attempt, delay, error }) => {
+          onEvent({
+            type: 'error',
+            message: `流式请求重试 #${attempt}（${delay}ms 后）: ${error.message}`,
+            recoverable: true,
+          })
+        },
+      },
+    )
 
   // 主模型调用
-  let result: { streamedText: string; usage?: { promptTokens: number; completionTokens: number }; toolCalls: unknown[] }
+  let result: {
+    streamedText: string
+    usage?: { promptTokens: number; completionTokens: number }
+    toolCalls: unknown[]
+  }
   try {
     result = await doCall(model)
   } catch (primaryError) {
@@ -118,7 +137,7 @@ export async function callLLMWithRetry(
         result = await doCall(fallbackModel)
       } catch (fallbackError) {
         throw new Error(
-          `LLM 调用失败：主模型和备用模型均不可用。\n主模型错误: ${(primaryError as Error).message}\n备用模型错误: ${(fallbackError as Error).message}`
+          `LLM 调用失败：主模型和备用模型均不可用。\n主模型错误: ${(primaryError as Error).message}\n备用模型错误: ${(fallbackError as Error).message}`,
         )
       }
     } else {

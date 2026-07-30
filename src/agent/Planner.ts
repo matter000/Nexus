@@ -4,12 +4,12 @@
  */
 
 import type { LanguageModel } from 'ai'
-import type { ChatMessage, Plan, Todo, NexusEvent, ModelRole } from './types'
-import type { ToolRegistry, ToolContext } from '../tools/registry'
+import type { CostTracker } from '../router/CostTracker'
+import type { ToolContext, ToolRegistry } from '../tools/registry'
 import { toolSchemas } from '../tools/schemas'
 import { consumePendingPlan, setPendingPlan } from '../tools/submitPlan'
-import type { CostTracker } from '../router/CostTracker'
 import { callLLMWithRetry } from './ReActLoop'
+import type { ChatMessage, ModelRole, NexusEvent, Plan, Todo } from './types'
 
 const PLAN_SYSTEM_SUFFIX = `
 ## 当前阶段: Plan (规划)
@@ -141,7 +141,7 @@ export class Planner {
           const toolResult = await toolRegistry.execute(
             toolCall.toolName,
             toolCall.args as Record<string, unknown>,
-            { ...toolContext, callId }
+            { ...toolContext, callId },
           )
 
           onEvent({
@@ -216,7 +216,10 @@ export class Planner {
     const messages = [
       ...contextMessages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
       { role: 'user' as const, content: userRequest },
-      { role: 'assistant' as const, content: `上一版计划:\n\`\`\`json\n${JSON.stringify(prevPlan, null, 2)}\n\`\`\`` },
+      {
+        role: 'assistant' as const,
+        content: `上一版计划:\n\`\`\`json\n${JSON.stringify(prevPlan, null, 2)}\n\`\`\``,
+      },
       {
         role: 'user' as const,
         content: `用户对计划的反馈：${feedback}\n\n请根据反馈调整计划。可以继续用工具探索代码，然后输出新的 JSON 计划。`,
@@ -266,7 +269,7 @@ export class Planner {
           const toolResult = await toolRegistry.execute(
             toolCall.toolName,
             toolCall.args as Record<string, unknown>,
-            { ...toolContext, callId }
+            { ...toolContext, callId },
           )
 
           onEvent({

@@ -3,6 +3,26 @@
  * 协调 Plan/Execute 双阶段、子 Agent 分派、检查点管理
  */
 
+import { readFile } from 'fs/promises'
+import { join } from 'path'
+import { parse } from 'smol-toml'
+import { loadSecrets, type SecretsConfig } from '../config-secrets'
+import { ContextAssembler } from '../context/Assembler'
+import { buildCodeGraph, type CodeGraph, updateCodeGraph } from '../context/CodeGraph'
+import { compressHistory, llmCompressHistory } from '../context/Compressor'
+import { FileWatcher } from '../context/FileWatcher'
+import { loadRules } from '../context/RulesLoader'
+import { TokenBudget } from '../context/TokenBudget'
+import { CostTracker } from '../router/CostTracker'
+import { ModelRouter } from '../router/ModelRouter'
+import { CheckpointManager } from '../sandbox/Checkpoint'
+import { NexusDB } from '../storage/db'
+import { ExternalMCPManager, type ExternalServerConfig } from '../tools/external'
+import { createToolRegistry, type ToolContext } from '../tools/registry'
+import { logError } from '../utils/debugLog'
+import { Executor } from './Executor'
+import { Planner } from './Planner'
+import { SubAgent } from './SubAgent'
 import type {
   AgentPhase,
   ChatMessage,
@@ -13,26 +33,6 @@ import type {
   ProjectRules,
   Todo,
 } from './types'
-import { Planner } from './Planner'
-import { Executor } from './Executor'
-import { SubAgent } from './SubAgent'
-import { createToolRegistry, type ToolContext } from '../tools/registry'
-import { ContextAssembler } from '../context/Assembler'
-import { TokenBudget } from '../context/TokenBudget'
-import { loadRules } from '../context/RulesLoader'
-import { ModelRouter } from '../router/ModelRouter'
-import { CostTracker } from '../router/CostTracker'
-import { CheckpointManager } from '../sandbox/Checkpoint'
-import { compressHistory, llmCompressHistory } from '../context/Compressor'
-import { loadSecrets, type SecretsConfig } from '../config-secrets'
-import { NexusDB } from '../storage/db'
-import { ExternalMCPManager, type ExternalServerConfig } from '../tools/external'
-import { buildCodeGraph, updateCodeGraph, type CodeGraph } from '../context/CodeGraph'
-import { FileWatcher } from '../context/FileWatcher'
-import { readFile } from 'fs/promises'
-import { join } from 'path'
-import { parse } from 'smol-toml'
-import { logError } from '../utils/debugLog'
 
 export interface OrchestratorConfig {
   projectRoot: string
@@ -41,7 +41,11 @@ export interface OrchestratorConfig {
   skipPlan: boolean
   maxIterations: number
   onEvent: (event: NexusEvent) => void
-  requestApproval: (tool: string, params: Record<string, unknown>, diff?: string) => Promise<boolean>
+  requestApproval: (
+    tool: string,
+    params: Record<string, unknown>,
+    diff?: string,
+  ) => Promise<boolean>
   /** 计划审批：返回 'approve' | 'reject' | 反馈文本（反馈文本触发重规划） */
   requestPlanApproval: (plan: Plan) => Promise<'approve' | 'reject' | string>
 }
@@ -75,10 +79,7 @@ export class Orchestrator {
   constructor(cfg: OrchestratorConfig) {
     this.cfg = cfg
     this.skipPlan = cfg.skipPlan
-    this.checkpoint = new CheckpointManager(
-      cfg.projectRoot,
-      cfg.config.checkpoint.branch
-    )
+    this.checkpoint = new CheckpointManager(cfg.projectRoot, cfg.config.checkpoint.branch)
     this.checkpoint.setEnabled(cfg.config.checkpoint.autoCheckpoint)
   }
 
@@ -101,10 +102,7 @@ export class Orchestrator {
 
     this.rules = await loadRules(this.cfg.projectRoot)
     const contextWindow = this.router.getContextWindow('executor')
-    const budget = new TokenBudget(
-      contextWindow,
-      this.cfg.config.context.budgetRatio
-    )
+    const budget = new TokenBudget(contextWindow, this.cfg.config.context.budgetRatio)
 
     this.assembler = new ContextAssembler({
       projectRoot: this.cfg.projectRoot,
@@ -188,10 +186,12 @@ export class Orchestrator {
         onChange: (changedFiles) => {
           // 增量更新代码图谱
           if (this.codeGraph) {
-            updateCodeGraph(this.codeGraph, changedFiles, this.cfg.projectRoot).then((updated) => {
-              this.codeGraph = updated
-              this.assembler?.setCodeGraph(updated)
-            }).catch(() => {})
+            updateCodeGraph(this.codeGraph, changedFiles, this.cfg.projectRoot)
+              .then((updated) => {
+                this.codeGraph = updated
+                this.assembler?.setCodeGraph(updated)
+              })
+              .catch(() => {})
           }
         },
       })
@@ -546,7 +546,12 @@ export class Orchestrator {
   }
 
   /** 获取所有已知模型（含未配置 provider 的） */
-  getAllKnownModels(): Array<{ name: string; provider: string; configured: boolean; current: boolean }> {
+  getAllKnownModels(): Array<{
+    name: string
+    provider: string
+    configured: boolean
+    current: boolean
+  }> {
     return this.router?.getAllKnownModels() ?? []
   }
 
@@ -613,7 +618,7 @@ export class Orchestrator {
           cost.total,
           cost.inputTokens,
           cost.outputTokens,
-          this.history.length
+          this.history.length,
         )
       } catch (err) {
         console.warn('[NexusDB] 结束会话失败:', err)
@@ -663,7 +668,10 @@ export class Orchestrator {
       : this.db.getLatestSession(this.cfg.projectRoot)
 
     if (!session) {
-      return { restored: false, message: sessionId ? `未找到会话: ${sessionId}` : '没有可恢复的历史会话' }
+      return {
+        restored: false,
+        message: sessionId ? `未找到会话: ${sessionId}` : '没有可恢复的历史会话',
+      }
     }
 
     // 加载消息历史
@@ -683,9 +691,10 @@ export class Orchestrator {
     // 设置当前会话 ID 为恢复的会话（继续在同一会话下追加消息）
     this.currentSessionId = session.id
 
-    const todoInfo = this.todos.length > 0
-      ? `，${this.todos.filter((t) => t.status !== 'complete').length} 个待办未完成`
-      : ''
+    const todoInfo =
+      this.todos.length > 0
+        ? `，${this.todos.filter((t) => t.status !== 'complete').length} 个待办未完成`
+        : ''
     const msg = `已恢复会话（${new Date(session.start_time).toLocaleString()}）：${this.history.length} 条消息${todoInfo}`
 
     this.emit({ type: 'system_info', message: msg })
@@ -697,7 +706,9 @@ export class Orchestrator {
   }
 
   /** 列出最近会话（供 /resume 命令展示） */
-  listRecentSessions(limit = 5): Array<{ id: string; startTime: number; messageCount: number; cost: number }> {
+  listRecentSessions(
+    limit = 5,
+  ): Array<{ id: string; startTime: number; messageCount: number; cost: number }> {
     if (!this.db) {
       try {
         this.db = new NexusDB(this.cfg.projectRoot)
@@ -739,9 +750,7 @@ export class Orchestrator {
 
   /** 获取历史摘要 */
   getHistory(): string[] {
-    return this.history
-      .filter((m) => m.role === 'user')
-      .map((m) => m.content.slice(0, 80))
+    return this.history.filter((m) => m.role === 'user').map((m) => m.content.slice(0, 80))
   }
 
   /** 获取完整历史（用于导出） */
@@ -750,7 +759,14 @@ export class Orchestrator {
   }
 
   /** 获取各子系统健康状态 */
-  getStatus(): { db: boolean; codeGraph: boolean; mcp: boolean; watcher: boolean; model: string; cost: number } {
+  getStatus(): {
+    db: boolean
+    codeGraph: boolean
+    mcp: boolean
+    watcher: boolean
+    model: string
+    cost: number
+  } {
     return {
       db: this.db !== null,
       codeGraph: this.codeGraph !== null && this.codeGraph.files.size > 0,

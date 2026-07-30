@@ -20,11 +20,11 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Type check
+      - name: Lint & type check
         run: bun run lint
 
-      - name: Unit tests
-        run: bun test tests/unit/ tests/integration/ --test-name-pattern '^(?:(?!Tree-sitter).)*$'
+      - name: Unit tests (with coverage)
+        run: bun test tests/unit/ tests/integration/ --coverage --test-name-pattern '^(?:(?!Tree-sitter).)*$'
 
       - name: Tree-sitter tests (separate process to avoid WASM memory conflict)
         run: bun test tests/unit/treesitter.test.ts

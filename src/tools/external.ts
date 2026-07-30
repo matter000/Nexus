@@ -7,7 +7,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
+import type { ToolContext, ToolHandler } from './registry'
 
 export interface ExternalServerConfig {
   name: string
@@ -60,19 +60,19 @@ export class ExternalMCPManager {
       const transport = new StdioClientTransport({
         command: config.command,
         args: config.args,
-        env: config.env ? { ...process.env, ...config.env } as Record<string, string> : undefined,
+        env: config.env ? ({ ...process.env, ...config.env } as Record<string, string>) : undefined,
         stderr: 'pipe',
       })
 
-      const client = new Client(
-        { name: 'nexus', version: '0.1.0' },
-        { capabilities: {} },
-      )
+      const client = new Client({ name: 'nexus', version: '0.1.0' }, { capabilities: {} })
 
       // 带超时的连接
       const connectPromise = client.connect(transport)
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error(`连接超时 (${CONNECT_TIMEOUT_MS}ms)`)), CONNECT_TIMEOUT_MS)
+        setTimeout(
+          () => reject(new Error(`连接超时 (${CONNECT_TIMEOUT_MS}ms)`)),
+          CONNECT_TIMEOUT_MS,
+        )
       })
 
       await Promise.race([connectPromise, timeoutPromise])
@@ -135,7 +135,11 @@ export class ExternalMCPManager {
   }
 
   /** 调用外部工具 */
-  async callTool(name: string, toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
+  async callTool(
+    name: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
     const conn = this.connections.get(name)
     if (!conn) {
       return {
@@ -255,10 +259,16 @@ export class ExternalMCPManager {
 
   /** 将 MCP Tool inputSchema properties 转换为 Nexus ToolProperty 格式 */
   private convertProperties(
-    properties?: Record<string, object>
-  ): Record<string, { type: 'string' | 'number' | 'boolean' | 'array' | 'object'; description?: string }> {
+    properties?: Record<string, object>,
+  ): Record<
+    string,
+    { type: 'string' | 'number' | 'boolean' | 'array' | 'object'; description?: string }
+  > {
     if (!properties) return {}
-    const result: Record<string, { type: 'string' | 'number' | 'boolean' | 'array' | 'object'; description?: string }> = {}
+    const result: Record<
+      string,
+      { type: 'string' | 'number' | 'boolean' | 'array' | 'object'; description?: string }
+    > = {}
     for (const [key, value] of Object.entries(properties)) {
       const prop = value as Record<string, unknown>
       result[key] = {

@@ -18,9 +18,19 @@ export interface CommandContext {
   /** 仅重新初始化 providers（用于删除自定义模型后回退 auto 选择） */
   reinitProviders: () => Promise<void>
   getAvailableModels: () => Array<{ name: string; provider: string; current: boolean }>
-  getAllKnownModels: () => Array<{ name: string; provider: string; configured: boolean; current: boolean }>
+  getAllKnownModels: () => Array<{
+    name: string
+    provider: string
+    configured: boolean
+    current: boolean
+  }>
   isProviderConfigured: (providerName: string) => boolean
-  getCost: () => { total: number; inputTokens: number; outputTokens: number; byModel?: Record<string, { cost: number; inputTokens: number; outputTokens: number }> }
+  getCost: () => {
+    total: number
+    inputTokens: number
+    outputTokens: number
+    byModel?: Record<string, { cost: number; inputTokens: number; outputTokens: number }>
+  }
   clearContext: () => void
   undo: () => Promise<string>
   compact: () => Promise<{ tokensUsed: number } | string>
@@ -34,11 +44,20 @@ export interface CommandContext {
   /** 恢复指定会话（或最近一次） */
   restoreSession: (sessionId?: string) => Promise<{ restored: boolean; message: string }>
   /** 列出最近会话 */
-  listRecentSessions: (limit?: number) => Array<{ id: string; startTime: number; messageCount: number; cost: number }>
+  listRecentSessions: (
+    limit?: number,
+  ) => Array<{ id: string; startTime: number; messageCount: number; cost: number }>
   /** 导出当前会话 */
   exportSession: (outputPath?: string) => Promise<string>
   /** 获取系统状态 */
-  getStatus: () => { db: boolean; codeGraph: boolean; mcp: boolean; watcher: boolean; model: string; cost: number }
+  getStatus: () => {
+    db: boolean
+    codeGraph: boolean
+    mcp: boolean
+    watcher: boolean
+    model: string
+    cost: number
+  }
 }
 
 const commands: SlashCommand[] = [
@@ -95,7 +114,9 @@ const commands: SlashCommand[] = [
       if (cost.byModel && Object.keys(cost.byModel).length > 0) {
         lines.push('\n按模型分类:')
         for (const [model, info] of Object.entries(cost.byModel)) {
-          lines.push(`  ${model}: $${info.cost.toFixed(4)} (${info.inputTokens} in / ${info.outputTokens} out)`)
+          lines.push(
+            `  ${model}: $${info.cost.toFixed(4)} (${info.inputTokens} in / ${info.outputTokens} out)`,
+          )
         }
       }
       return lines.join('\n')
@@ -143,11 +164,13 @@ const commands: SlashCommand[] = [
         if (sessions.length === 0) return '没有可恢复的历史会话'
 
         const result = await ctx.restoreSession()
-        const list = sessions.map((s, i) => {
-          const time = new Date(s.startTime).toLocaleString()
-          const marker = i === 0 ? ' ← 已恢复' : ''
-          return `  ${i + 1}. [${s.id.slice(0, 8)}] ${time} | ${s.messageCount} 条消息 | $${s.cost.toFixed(4)}${marker}`
-        }).join('\n')
+        const list = sessions
+          .map((s, i) => {
+            const time = new Date(s.startTime).toLocaleString()
+            const marker = i === 0 ? ' ← 已恢复' : ''
+            return `  ${i + 1}. [${s.id.slice(0, 8)}] ${time} | ${s.messageCount} 条消息 | $${s.cost.toFixed(4)}${marker}`
+          })
+          .join('\n')
         return `${result.message}\n\n最近会话:\n${list}\n\n提示: 使用 /resume <id> 恢复其他会话`
       }
 
@@ -187,7 +210,7 @@ const commands: SlashCommand[] = [
     description: '显示各子系统健康状态（DB/CodeGraph/MCP/Watcher）',
     handler: async (_args, ctx) => {
       const status = ctx.getStatus()
-      const icon = (ok: boolean) => ok ? '✅' : '❌'
+      const icon = (ok: boolean) => (ok ? '✅' : '❌')
       return [
         `系统状态:`,
         `  ${icon(status.db)} 数据库 (NexusDB)`,
@@ -252,7 +275,10 @@ function findMatchingCommands(name: string): SlashCommand[] {
   return commands.filter((c) => c.name.startsWith(name))
 }
 
-export async function handleSlashCommand(input: string, ctx: CommandContext): Promise<string | null> {
+export async function handleSlashCommand(
+  input: string,
+  ctx: CommandContext,
+): Promise<string | null> {
   const trimmed = input.slice(1) // 去掉 /
   const [name, ...rest] = trimmed.split(' ')
   const args = rest.join(' ')
@@ -282,7 +308,5 @@ export function getAvailableCommands(): SlashCommand[] {
  */
 export function getCommandCompletions(prefix: string): string[] {
   const p = prefix.startsWith('/') ? prefix.slice(1) : prefix
-  return commands
-    .filter((c) => c.name.startsWith(p))
-    .map((c) => `/${c.name}`)
+  return commands.filter((c) => c.name.startsWith(p)).map((c) => `/${c.name}`)
 }

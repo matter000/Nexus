@@ -15,28 +15,34 @@ const RESET = '\x1b[0m'
 /** 终端表格报告 */
 export function printReport(report: EvalReport): void {
   const modeLabel = report.mode === 'real' ? '真实' : 'Mock'
-  const passRate = report.tasksTotal > 0
-    ? ((report.tasksPassed / report.tasksTotal) * 100).toFixed(0)
-    : '0'
+  const passRate =
+    report.tasksTotal > 0 ? ((report.tasksPassed / report.tasksTotal) * 100).toFixed(0) : '0'
 
   // 头部
   console.log(`\n${CYAN}══════════════════════════════════════════════${RESET}`)
   console.log(`${BOLD}  Nexus Harness Report${RESET}`)
   console.log(`${CYAN}══════════════════════════════════════════════${RESET}`)
-  console.log(`  ${BOLD}Mode:${RESET} ${modeLabel}  |  ${BOLD}Tasks:${RESET} ${report.tasksTotal}  |  ${BOLD}Passed:${RESET} ${GREEN}${report.tasksPassed}${RESET}  |  ${BOLD}Failed:${RESET} ${RED}${report.tasksFailed}${RESET}`)
-  console.log(`  ${BOLD}Pass Rate:${RESET} ${passRate}%  |  ${BOLD}Cost:${RESET} $${report.totalCost.toFixed(4)}  |  ${BOLD}Time:${RESET} ${formatDuration(report.totalDurationMs)}`)
+  console.log(
+    `  ${BOLD}Mode:${RESET} ${modeLabel}  |  ${BOLD}Tasks:${RESET} ${report.tasksTotal}  |  ${BOLD}Passed:${RESET} ${GREEN}${report.tasksPassed}${RESET}  |  ${BOLD}Failed:${RESET} ${RED}${report.tasksFailed}${RESET}`,
+  )
+  console.log(
+    `  ${BOLD}Pass Rate:${RESET} ${passRate}%  |  ${BOLD}Cost:${RESET} $${report.totalCost.toFixed(4)}  |  ${BOLD}Time:${RESET} ${formatDuration(report.totalDurationMs)}`,
+  )
   console.log(`${CYAN}══════════════════════════════════════════════${RESET}`)
 
   // 任务结果
   for (const r of report.results) {
     const icon = r.pass ? `${GREEN}✅${RESET}` : `${RED}❌${RESET}`
     const pad = ' '.repeat(Math.max(0, 12 - r.taskName.length))
-    const costStr = report.mode === 'real' ? `$${r.cost.toFixed(3)}`.padStart(9) : '    mock'.padStart(9)
+    const costStr =
+      report.mode === 'real' ? `$${r.cost.toFixed(3)}`.padStart(9) : '    mock'.padStart(9)
     const timeStr = formatDuration(r.durationMs).padStart(6)
     const catStr = r.category.padEnd(12)
     const diffStr = r.difficulty.padEnd(6)
 
-    console.log(`  ${icon} ${r.taskId.padEnd(12)} ${r.taskName.padEnd(14)} ${MUTED}${catStr}${diffStr}${RESET} ${costStr}  ${timeStr}`)
+    console.log(
+      `  ${icon} ${r.taskId.padEnd(12)} ${r.taskName.padEnd(14)} ${MUTED}${catStr}${diffStr}${RESET} ${costStr}  ${timeStr}`,
+    )
 
     if (!r.pass && r.reason) {
       const reasonLines = r.reason.split('\n').slice(0, 3)

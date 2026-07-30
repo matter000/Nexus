@@ -4,10 +4,10 @@
  */
 
 import { readFile, stat } from 'fs/promises'
-import { resolve, relative } from 'path'
+import { relative, resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
 import { isInsideProject } from '../utils'
+import type { ToolContext, ToolHandler } from './registry'
 
 const definition: ToolDefinition = {
   name: 'read_file',
@@ -47,9 +47,7 @@ function formatWithLineNumbers(content: string, startLine: number): string {
   const lines = content.split('\n')
   const maxLineNum = startLine + lines.length - 1
   const padding = String(maxLineNum).length
-  return lines
-    .map((line, i) => `${String(startLine + i).padStart(padding)}│${line}`)
-    .join('\n')
+  return lines.map((line, i) => `${String(startLine + i).padStart(padding)}│${line}`).join('\n')
 }
 
 async function execute(params: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {

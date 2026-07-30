@@ -4,12 +4,12 @@
  * 关键约束:深度限制 1 层,写权限默认关闭
  */
 
-import { generateText } from 'ai'
 import type { LanguageModel } from 'ai'
-import type { NexusEvent, PermissionMode, SubAgentResult, SubAgentTask, ModelRole } from './types'
-import type { ToolRegistry, ToolContext } from '../tools/registry'
-import { requiresForcedApproval } from '../sandbox/CommandGuard'
+import { generateText } from 'ai'
 import type { CostTracker } from '../router/CostTracker'
+import { requiresForcedApproval } from '../sandbox/CommandGuard'
+import type { ToolContext, ToolRegistry } from '../tools/registry'
+import type { ModelRole, NexusEvent, PermissionMode, SubAgentResult, SubAgentTask } from './types'
 
 export interface SubAgentConfig {
   model: LanguageModel
@@ -20,7 +20,11 @@ export interface SubAgentConfig {
   /** 权限模式（与 Executor 一致） */
   permissionMode: PermissionMode
   /** 审批回调 */
-  requestApproval: (tool: string, params: Record<string, unknown>, diff?: string) => Promise<boolean>
+  requestApproval: (
+    tool: string,
+    params: Record<string, unknown>,
+    diff?: string,
+  ) => Promise<boolean>
   /** 成本追踪器 */
   costTracker: CostTracker
   /** 当前模型角色（用于成本记录） */
@@ -57,9 +61,10 @@ export class SubAgent {
     const availableTools = toolRegistry.getForPhase(phase)
 
     // 如果指定了工具列表,进一步过滤
-    const filteredTools = task.tools.length > 0
-      ? availableTools.filter((t) => task.tools.includes(t.definition.name))
-      : availableTools
+    const filteredTools =
+      task.tools.length > 0
+        ? availableTools.filter((t) => task.tools.includes(t.definition.name))
+        : availableTools
 
     const toolsForAI: Record<string, { description: string; parameters: unknown }> = {}
     for (const tool of filteredTools) {
@@ -148,10 +153,11 @@ export class SubAgent {
             filesChanged.push(args.path as string)
           }
 
-          const resultContent = toolResult.error
-            ? `[错误]: ${toolResult.error}`
-            : toolResult.result
-          messages.push({ role: 'user', content: `[${toolCall.toolName}]: ${resultContent}` } as never)
+          const resultContent = toolResult.error ? `[错误]: ${toolResult.error}` : toolResult.result
+          messages.push({
+            role: 'user',
+            content: `[${toolCall.toolName}]: ${resultContent}`,
+          } as never)
         }
       }
 
@@ -185,7 +191,11 @@ export class SubAgent {
     if (!handler?.definition.requiresApproval) return true
 
     // bash 危险命令始终强制审批
-    if (toolName === 'bash' && typeof args.command === 'string' && requiresForcedApproval(args.command)) {
+    if (
+      toolName === 'bash' &&
+      typeof args.command === 'string' &&
+      requiresForcedApproval(args.command)
+    ) {
       return requestApproval(toolName, args)
     }
 

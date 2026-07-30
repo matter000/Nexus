@@ -3,11 +3,11 @@
  * 文件模式搜索，基于 Bun 内置 Glob 或回退到目录遍历
  */
 
-import { resolve, relative } from 'path'
 import { readdir } from 'fs/promises'
+import { relative, resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
 import { isInsideProject } from '../utils'
+import type { ToolContext, ToolHandler } from './registry'
 
 const MAX_RESULTS = 100
 
@@ -43,11 +43,11 @@ function matchGlob(pattern: string, filePath: string): boolean {
   // *  → 匹配单层文件名（不含 / ）
   // ?  → 匹配单个非 / 字符
   const regexStr = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // 转义正则特殊字符（除了 * 和 ?）
-    .replace(/\*\*/g, '{{DOUBLE_STAR}}')     // 临时占位
-    .replace(/\*/g, '[^/]*')                 // * → 非 / 字符
-    .replace(/\?/g, '[^/]')                  // ? → 单个非 / 字符
-    .replace(/\{\{DOUBLE_STAR\}\}/g, '.*')   // ** → 任意字符（含 /）
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&') // 转义正则特殊字符（除了 * 和 ?）
+    .replace(/\*\*/g, '{{DOUBLE_STAR}}') // 临时占位
+    .replace(/\*/g, '[^/]*') // * → 非 / 字符
+    .replace(/\?/g, '[^/]') // ? → 单个非 / 字符
+    .replace(/\{\{DOUBLE_STAR\}\}/g, '.*') // ** → 任意字符（含 /）
 
   const regex = new RegExp(`^${regexStr}$`)
   return regex.test(filePath)
@@ -124,9 +124,7 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
 
     const truncated = results.length >= MAX_RESULTS
     const output = results.join('\n')
-    const suffix = truncated
-      ? `\n\n... 已达最大结果数 (${MAX_RESULTS})，请缩小搜索范围 ...`
-      : ''
+    const suffix = truncated ? `\n\n... 已达最大结果数 (${MAX_RESULTS})，请缩小搜索范围 ...` : ''
 
     return {
       callId,

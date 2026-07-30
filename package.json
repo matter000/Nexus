@@ -17,7 +17,9 @@
     "test": "bun test",
     "test:unit": "bun test tests/unit/",
     "test:integration": "bun test tests/integration/",
-    "lint": "bunx tsc --noEmit"
+    "test:coverage": "bun test --coverage",
+    "lint": "bunx biome check src/ packages/ && bunx tsc --noEmit",
+    "format": "bunx biome check --write src/ packages/"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^1.2.0",
@@ -35,10 +37,11 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
-    "bun-types": "latest",
+    "@biomejs/biome": "^2.5.6",
     "@types/diff": "^7.0.0",
     "@types/node": "^26.1.1",
     "@types/react": "^18.3.18",
+    "bun-types": "latest",
     "typescript": "^5.7.0"
   },
   "engines": {

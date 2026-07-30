@@ -3,8 +3,8 @@
  * 内联展示 git diff 格式，绿增红删，支持截断和统计
  */
 
-import React from 'react'
 import { Box, Text } from 'ink'
+import React from 'react'
 
 interface DiffViewProps {
   diff: string
@@ -30,10 +30,10 @@ export function DiffView({ diff, fileName, maxLines = 30 }: DiffViewProps) {
     <Box flexDirection="column">
       {fileName && (
         <Box>
-          <Text bold color="white">{fileName}</Text>
-          {(added > 0 || removed > 0) && (
-            <Text color="gray"> </Text>
-          )}
+          <Text bold color="white">
+            {fileName}
+          </Text>
+          {(added > 0 || removed > 0) && <Text color="gray"> </Text>}
           {added > 0 && <Text color="green">+{added}</Text>}
           {added > 0 && removed > 0 && <Text color="gray"> </Text>}
           {removed > 0 && <Text color="red">-{removed}</Text>}
@@ -43,7 +43,10 @@ export function DiffView({ diff, fileName, maxLines = 30 }: DiffViewProps) {
         <DiffLine key={i} line={line} />
       ))}
       {truncated && (
-        <Text color="gray" dimColor>  ... 还有 {lines.length - maxLines} 行</Text>
+        <Text color="gray" dimColor>
+          {' '}
+          ... 还有 {lines.length - maxLines} 行
+        </Text>
       )}
     </Box>
   )
@@ -57,10 +60,18 @@ function DiffLine({ line }: { line: string }) {
     return <Text color="red">{line}</Text>
   }
   if (line.startsWith('@@')) {
-    return <Text color="cyan" dimColor>{line}</Text>
+    return (
+      <Text color="cyan" dimColor>
+        {line}
+      </Text>
+    )
   }
   if (line.startsWith('+++') || line.startsWith('---')) {
-    return <Text color="gray" bold>{line}</Text>
+    return (
+      <Text color="gray" bold>
+        {line}
+      </Text>
+    )
   }
   return <Text color="gray">{line}</Text>
 }

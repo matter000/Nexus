@@ -4,8 +4,8 @@
  * 流式安全：未闭合的代码块暂时渲染为普通文本（避免闪烁）
  */
 
-import React from 'react'
 import { Box, Text } from 'ink'
+import type React from 'react'
 
 interface MarkdownProps {
   content: string
@@ -93,7 +93,14 @@ function parseBlocks(content: string, streaming: boolean): Block[] {
 
     // 普通段落（连续非空行合并）
     const paraLines: string[] = []
-    while (i < lines.length && lines[i].trim() !== '' && !lines[i].trimStart().startsWith('```') && !lines[i].match(/^#{1,4}\s/) && !lines[i].match(/^\s*[-*]\s+/) && !lines[i].match(/^\s*\d+\.\s+/)) {
+    while (
+      i < lines.length &&
+      lines[i].trim() !== '' &&
+      !lines[i].trimStart().startsWith('```') &&
+      !lines[i].match(/^#{1,4}\s/) &&
+      !lines[i].match(/^\s*[-*]\s+/) &&
+      !lines[i].match(/^\s*\d+\.\s+/)
+    ) {
       paraLines.push(lines[i])
       i++
     }
@@ -122,10 +129,18 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
 
     if (match[2]) {
       // 粗体
-      parts.push(<Text key={`${keyPrefix}-${key++}`} bold>{match[2]}</Text>)
+      parts.push(
+        <Text key={`${keyPrefix}-${key++}`} bold>
+          {match[2]}
+        </Text>,
+      )
     } else if (match[4]) {
       // 内联代码
-      parts.push(<Text key={`${keyPrefix}-${key++}`} color="yellow" backgroundColor="#1a1a2e">{match[4]}</Text>)
+      parts.push(
+        <Text key={`${keyPrefix}-${key++}`} color="yellow" backgroundColor="#1a1a2e">
+          {match[4]}
+        </Text>,
+      )
     }
 
     lastIndex = match.index + match[0].length
@@ -155,7 +170,9 @@ export function Markdown({ content, streaming = false }: MarkdownProps) {
                 <Box borderStyle="single" borderColor="gray" paddingLeft={1} paddingRight={1}>
                   <Box flexDirection="column">
                     {block.lines.map((line, j) => (
-                      <Text key={j} color="green">{line || ' '}</Text>
+                      <Text key={j} color="green">
+                        {line || ' '}
+                      </Text>
                     ))}
                   </Box>
                 </Box>

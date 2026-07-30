@@ -1,10 +1,11 @@
 /**
  * 计划审批面板组件 — 纯展示，输入由 App.tsx 的 useInput 统一处理
  */
-import React from 'react'
+
 import { Box, Text } from 'ink'
-import { theme } from '../theme'
+import React from 'react'
 import type { Plan, Todo } from '../../agent/types'
+import { theme } from '../theme'
 
 interface PlanApprovalPanelProps {
   plan: Plan
@@ -14,7 +15,9 @@ export function PlanApprovalPanel({ plan }: PlanApprovalPanelProps) {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.colors.warning} paddingX={1}>
       <Box>
-        <Text color={theme.colors.warning} bold>📋 计划审批</Text>
+        <Text color={theme.colors.warning} bold>
+          📋 计划审批
+        </Text>
       </Box>
       <Box marginTop={1}>
         <Text bold>摘要: </Text>
@@ -30,7 +33,10 @@ export function PlanApprovalPanel({ plan }: PlanApprovalPanelProps) {
             </Box>
           ))
         ) : (
-          <Text color={theme.colors.muted} dimColor>  (无步骤，将在执行中自主拆解)</Text>
+          <Text color={theme.colors.muted} dimColor>
+            {' '}
+            (无步骤，将在执行中自主拆解)
+          </Text>
         )}
       </Box>
       {plan.filesToModify.length > 0 && (
@@ -46,15 +52,23 @@ export function PlanApprovalPanel({ plan }: PlanApprovalPanelProps) {
       )}
       {plan.estimatedSteps > 0 && (
         <Box marginTop={1}>
-          <Text color={theme.colors.muted} dimColor>预估 {plan.estimatedSteps} 步</Text>
+          <Text color={theme.colors.muted} dimColor>
+            预估 {plan.estimatedSteps} 步
+          </Text>
         </Box>
       )}
       <Box marginTop={1}>
-        <Text color={theme.colors.success} bold>[Enter] 批准</Text>
+        <Text color={theme.colors.success} bold>
+          [Enter] 批准
+        </Text>
         <Text color={theme.colors.muted}> · </Text>
-        <Text color={theme.colors.error} bold>[N] 拒绝</Text>
+        <Text color={theme.colors.error} bold>
+          [N] 拒绝
+        </Text>
         <Text color={theme.colors.muted}> · </Text>
-        <Text color={theme.colors.accent} bold>[F] 反馈重规划</Text>
+        <Text color={theme.colors.accent} bold>
+          [F] 反馈重规划
+        </Text>
       </Box>
     </Box>
   )

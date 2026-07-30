@@ -5,7 +5,7 @@
  */
 
 import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
+import type { ToolContext, ToolHandler } from './registry'
 
 const definition: ToolDefinition = {
   name: 'fetch_url',
@@ -77,7 +77,12 @@ function isPrivateUrl(urlStr: string): boolean {
     const hostname = parsed.hostname.toLowerCase()
 
     // localhost / 短主机名
-    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]') {
+    if (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '::1' ||
+      hostname === '[::1]'
+    ) {
       return true
     }
 
@@ -149,7 +154,7 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
       redirect: 'manual', // 不自动跟随重定向，防止 302 到内网
       headers: {
         'User-Agent': 'Nexus-Coding-Agent/1.0',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8',
       },
     })
 

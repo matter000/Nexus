@@ -3,7 +3,7 @@
  * 将当前会话导出为 Markdown 格式，包含需求、计划、操作和结果
  */
 
-import { writeFile, mkdir } from 'fs/promises'
+import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { ChatMessage, Todo } from '../agent/types'
 
@@ -30,7 +30,12 @@ export async function exportSession(data: ExportData, outputPath?: string): Prom
   const filePath = outputPath ?? defaultPath
 
   // 确保目录存在
-  const dir = filePath.substring(0, filePath.lastIndexOf('\\') > filePath.lastIndexOf('/') ? filePath.lastIndexOf('\\') : filePath.lastIndexOf('/'))
+  const dir = filePath.substring(
+    0,
+    filePath.lastIndexOf('\\') > filePath.lastIndexOf('/')
+      ? filePath.lastIndexOf('\\')
+      : filePath.lastIndexOf('/'),
+  )
   await mkdir(dir, { recursive: true })
 
   const md = buildMarkdown(history, todos, cost)
@@ -40,20 +45,33 @@ export async function exportSession(data: ExportData, outputPath?: string): Prom
 }
 
 /** 构建 Markdown 内容 */
-function buildMarkdown(history: ChatMessage[], todos: Todo[], cost: { total: number; inputTokens: number; outputTokens: number }): string {
+function buildMarkdown(
+  history: ChatMessage[],
+  todos: Todo[],
+  cost: { total: number; inputTokens: number; outputTokens: number },
+): string {
   const parts: string[] = []
 
   // 头部
   parts.push(`# Nexus 会话记录`)
   parts.push(`> 导出时间: ${new Date().toLocaleString()}`)
-  parts.push(`> 花费: $${cost.total.toFixed(4)} (${cost.inputTokens} in / ${cost.outputTokens} out)`)
+  parts.push(
+    `> 花费: $${cost.total.toFixed(4)} (${cost.inputTokens} in / ${cost.outputTokens} out)`,
+  )
   parts.push('')
 
   // Todos
   if (todos.length > 0) {
     parts.push('## 任务清单')
     for (const todo of todos) {
-      const icon = todo.status === 'complete' ? '✅' : todo.status === 'in_progress' ? '🔄' : todo.status === 'cancelled' ? '❌' : '⬜'
+      const icon =
+        todo.status === 'complete'
+          ? '✅'
+          : todo.status === 'in_progress'
+            ? '🔄'
+            : todo.status === 'cancelled'
+              ? '❌'
+              : '⬜'
       parts.push(`${icon} ${todo.content}`)
     }
     parts.push('')
@@ -71,9 +89,8 @@ function buildMarkdown(history: ChatMessage[], todos: Todo[], cost: { total: num
     } else if (msg.role === 'assistant') {
       parts.push(`### 🤖 Nexus`)
       // 截断过长的 assistant 消息
-      const content = msg.content.length > 3000
-        ? msg.content.slice(0, 3000) + '\n\n...(已截断)'
-        : msg.content
+      const content =
+        msg.content.length > 3000 ? msg.content.slice(0, 3000) + '\n\n...(已截断)' : msg.content
       parts.push(content)
       parts.push('')
     }

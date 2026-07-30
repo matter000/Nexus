@@ -78,7 +78,14 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
   const totalLines = lines.length
 
   if (totalLines <= maxLines && totalBytes <= maxBytes) {
-    return { content, truncated: false, truncatedBy: null, totalLines, totalBytes, outputLines: totalLines }
+    return {
+      content,
+      truncated: false,
+      truncatedBy: null,
+      totalLines,
+      totalBytes,
+      outputLines: totalLines,
+    }
   }
 
   const outputLinesArr: string[] = []
@@ -122,7 +129,14 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
   const totalLines = lines.length
 
   if (totalLines <= maxLines && totalBytes <= maxBytes) {
-    return { content, truncated: false, truncatedBy: null, totalLines, totalBytes, outputLines: totalLines }
+    return {
+      content,
+      truncated: false,
+      truncatedBy: null,
+      totalLines,
+      totalBytes,
+      outputLines: totalLines,
+    }
   }
 
   const outputLinesArr: string[] = []
@@ -259,7 +273,7 @@ export async function callWithRetry<T>(
       lastError = error instanceof Error ? error : new Error(String(error))
       if (!isRetryable(error) || attempt === maxRetries) break
 
-      const delay = baseDelay * Math.pow(2, attempt)
+      const delay = baseDelay * 2 ** attempt
       onRetry?.({ attempt: attempt + 1, delay, error: lastError })
       await new Promise((resolve) => setTimeout(resolve, delay))
     }
@@ -269,7 +283,7 @@ export async function callWithRetry<T>(
 
 // ─── 路径安全 ──────────────────────────────────────────────────────────────
 
-import { resolve, relative, isAbsolute } from 'path'
+import { isAbsolute, relative, resolve } from 'path'
 
 /**
  * 检查目标路径是否在项目根目录内（防止路径遍历攻击）。

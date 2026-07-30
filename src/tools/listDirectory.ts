@@ -4,10 +4,10 @@
  */
 
 import { readdir, stat } from 'fs/promises'
-import { resolve, relative, join } from 'path'
+import { join, relative, resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
 import { isInsideProject } from '../utils'
+import type { ToolContext, ToolHandler } from './registry'
 
 const definition: ToolDefinition = {
   name: 'list_directory',
@@ -37,8 +37,17 @@ const definition: ToolDefinition = {
 
 /** 自动忽略的目录 */
 const IGNORED_DIRS = new Set([
-  'node_modules', '.git', 'dist', 'build', '.next', '.nuxt',
-  'coverage', '__pycache__', '.cache', '.svelte-kit', '.output',
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  '.next',
+  '.nuxt',
+  'coverage',
+  '__pycache__',
+  '.cache',
+  '.svelte-kit',
+  '.output',
 ])
 
 /** 格式化文件大小 */
@@ -67,7 +76,14 @@ interface DirEntry {
 }
 
 /** 读取目录内容 */
-async function listDir(dir: string, rootDir: string, recursive: boolean, pattern: string | undefined, results: DirEntry[], depth: number): Promise<void> {
+async function listDir(
+  dir: string,
+  rootDir: string,
+  recursive: boolean,
+  pattern: string | undefined,
+  results: DirEntry[],
+  depth: number,
+): Promise<void> {
   if (depth > 10) return // 递归深度保护
 
   let entries: import('fs').Dirent[]
@@ -114,7 +130,13 @@ async function listDir(dir: string, rootDir: string, recursive: boolean, pattern
 
       try {
         const st = await stat(fullPath)
-        results.push({ type: 'file', name: entry.name, path: relPath, size: st.size, modified: st.mtime })
+        results.push({
+          type: 'file',
+          name: entry.name,
+          path: relPath,
+          size: st.size,
+          modified: st.mtime,
+        })
       } catch {
         results.push({ type: 'file', name: entry.name, path: relPath })
       }
@@ -129,7 +151,8 @@ function formatOutput(entries: DirEntry[], rootDir: string, targetPath: string):
 
   for (const entry of entries) {
     const icon = entry.type === 'directory' ? '📁' : '📄'
-    const sizeStr = entry.type === 'file' && entry.size !== undefined ? ` (${formatFileSize(entry.size)})` : ''
+    const sizeStr =
+      entry.type === 'file' && entry.size !== undefined ? ` (${formatFileSize(entry.size)})` : ''
     const timeStr = entry.modified ? ` ${formatTime(entry.modified)}` : ''
     const depth = (entry.path.match(/\//g) ?? []).length
     const indent = '  '.repeat(depth + 1)
@@ -185,7 +208,7 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
     return {
       callId,
       tool: 'list_directory',
-      result: `${output}\n\n共 ${results.length} 项 (${results.filter(r => r.type === 'directory').length} 个目录, ${results.filter(r => r.type === 'file').length} 个文件)`,
+      result: `${output}\n\n共 ${results.length} 项 (${results.filter((r) => r.type === 'directory').length} 个目录, ${results.filter((r) => r.type === 'file').length} 个文件)`,
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
