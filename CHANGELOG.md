@@ -7,6 +7,33 @@
 
 ## [Unreleased]
 
+### Added
+- 引入 Biome 代码规范工具（格式化 + lint），`lint` 脚本集成 `biome check`，新增 `format` 脚本
+- 测试覆盖率：新增 `test:coverage` 脚本，CI 启用 `--coverage` 记录基线
+- 新增 `.env.example` 环境变量示例文件
+- 提取 `src/utils/ssrf.ts` 公共 SSRF 防护模块，新增 `ssrf.test.ts`（10 用例）
+- 提取 `src/core/approvalRegistry.ts` 审批 resolver 注册表（按 callId 索引）
+- 模型成本支持配置外置：`[models.cost_overrides]` 可声明新增/自定义模型成本
+- 新增 `docs/ROADMAP.md` 路线图（v2 Go 引擎规划及待办改进项）
+- 引入 `ink-testing-library`，新增 TodoProgress 组件测试（4 渲染分支）
+
+### Changed
+- SubAgent 成本参数从 router 动态获取，提取 `createSubAgent()` 工厂方法消除硬编码与重复代码
+- MCP Server 路径校验改用 `isInsideProject`；registry 的 SSRF 检查对齐 fetchUrl 的完整防护范围
+- `plan_approval_request` 事件携带 callId，工具与计划审批统一改用 callId 队列
+- `saveSecrets` 移除未使用的 `projectRoot` 参数（写入全局路径）
+- README 合并去重，将简略版独特的技术栈表并入详尽版
+- SemanticSearch 补充 `close()`，Orchestrator shutdown 时释放数据库连接
+
+### Removed
+- 移除入口与 TUI 中的 globalThis 审批反模式及死代码 set/get 函数
+- 移除 npm 遗留的 `package-lock.json`
+- 移除 Orchestrator 中多余的 `as any` 断言
+
+### Security
+- 加固 MCP Server 路径遍历防护：从 `startsWith` 前缀匹配改为 `relative()` 检测，防范同前缀路径绕过
+- 统一并补全 SSRF 防护范围：新增 `metadata.google.internal`、`.local`/`.internal` 后缀及完整私有网段（127/169.254/0）
+
 ### Fixed
 - Provider 适配器 `isAvailable()` 现在正确合并环境变量与 `~/.nexus/secrets.toml` 配置（原先仅查 `process.env`，用户只在 secrets 文件配置 key 时误判为不可用）
 - SubAgent 现在响应 `abortSignal`，Ctrl+C 可中断已分派的子 Agent（原先 SubAgent 的 `generateText` 调用未传递 abortSignal）
