@@ -172,6 +172,8 @@ export interface NexusConfig {
     summarizer: string
     verifier: string
     providers: Record<string, ProviderConfig>
+    /** 模型成本覆盖：模型名 → 每千 token 成本。用于新增/自定义模型，优先于内置成本表 */
+    costOverrides?: Record<string, { costPer1kInput: number; costPer1kOutput: number }>
   }
   permissions: {
     mode: PermissionMode

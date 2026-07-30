@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtemp, writeFile, rm } from 'fs/promises'
-import { join } from 'path'
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
+import { join } from 'path'
 import { loadConfig } from '../../src/config'
 
 describe('Config Loader', () => {
@@ -155,5 +155,31 @@ default_model = "gpt-4-turbo"
 
     expect(config.models.providers.openai.apiKeyEnv).toBe('MY_OPENAI_KEY')
     expect(config.models.providers.openai.defaultModel).toBe('gpt-4-turbo')
+  })
+
+  it('cost_overrides 解析为模型成本覆盖', async () => {
+    await writeConfigToml(`
+[models.cost_overrides."my-custom-model"]
+cost_per_1k_input = 0.001
+cost_per_1k_output = 0.005
+`)
+    const config = await loadConfig(tempDir)
+
+    expect(config.models.costOverrides).toBeDefined()
+    expect(config.models.costOverrides?.['my-custom-model']).toEqual({
+      costPer1kInput: 0.001,
+      costPer1kOutput: 0.005,
+    })
+  })
+
+  it('cost_overrides 忽略字段不完整的条目', async () => {
+    await writeConfigToml(`
+[models.cost_overrides."bad-model"]
+cost_per_1k_input = 0.001
+`)
+    const config = await loadConfig(tempDir)
+
+    // 缺少 cost_per_1k_output，该条目应被忽略
+    expect(config.models.costOverrides?.['bad-model']).toBeUndefined()
   })
 })

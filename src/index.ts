@@ -225,7 +225,7 @@ async function main() {
       if (currentModel && currentModel !== 'not-initialized' && !currentModel.includes('未配置')) {
         const exitSecrets = await loadSecrets(args.cwd)
         exitSecrets.lastModel = currentModel
-        await saveSecrets(args.cwd, exitSecrets)
+        await saveSecrets(exitSecrets)
       }
     } catch {
       /* 静默忽略：模型持久化失败不应阻塞退出 */
@@ -251,7 +251,7 @@ async function main() {
       // 同时持久化最后使用的模型
       const currentSecrets = await loadSecrets(args.cwd)
       currentSecrets.lastModel = model
-      await saveSecrets(args.cwd, currentSecrets)
+      await saveSecrets(currentSecrets)
     },
     reinitProviders: async () => {
       await orchestrator.reinitProviders()
@@ -271,7 +271,7 @@ async function main() {
     saveLastModel: async (model) => {
       const currentSecrets = await loadSecrets(args.cwd)
       currentSecrets.lastModel = model
-      await saveSecrets(args.cwd, currentSecrets)
+      await saveSecrets(currentSecrets)
     },
     restoreSession: async (sessionId?) => {
       return orchestrator.restoreSession(sessionId)

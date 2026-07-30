@@ -181,7 +181,8 @@ export class ModelRouter {
     const adapter = getProvider(providerName, this.secrets)
     if (!adapter) return null
 
-    const costData = MODEL_COST_DATA[modelName] ?? { costPer1kInput: 0.003, costPer1kOutput: 0.015 }
+    const costData = this.config.models.costOverrides?.[modelName] ??
+      MODEL_COST_DATA[modelName] ?? { costPer1kInput: 0.003, costPer1kOutput: 0.015 }
 
     return {
       provider: providerName,

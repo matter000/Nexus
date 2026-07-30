@@ -67,7 +67,7 @@ export async function loadSecrets(projectRoot: string): Promise<SecretsConfig> {
 }
 
 /** 保存 secrets 配置(写入全局路径 ~/.nexus/secrets.toml) */
-export async function saveSecrets(_projectRoot: string, secrets: SecretsConfig): Promise<void> {
+export async function saveSecrets(secrets: SecretsConfig): Promise<void> {
   const globalPath = getGlobalSecretsPath()
   const nexusDir = join(homedir(), '.nexus')
   await mkdir(nexusDir, { recursive: true })

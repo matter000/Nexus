@@ -93,6 +93,25 @@ function mergeConfig(raw: Record<string, unknown>): NexusConfig {
         }
       }
     }
+
+    // 模型成本覆盖（新增/自定义模型的成本声明，优先于内置成本表）
+    const costOverrides = models.cost_overrides as
+      | Record<string, Record<string, number>>
+      | undefined
+    if (costOverrides) {
+      config.models.costOverrides = {}
+      for (const [modelName, cost] of Object.entries(costOverrides)) {
+        if (
+          typeof cost.cost_per_1k_input === 'number' &&
+          typeof cost.cost_per_1k_output === 'number'
+        ) {
+          config.models.costOverrides[modelName] = {
+            costPer1kInput: cost.cost_per_1k_input,
+            costPer1kOutput: cost.cost_per_1k_output,
+          }
+        }
+      }
+    }
   }
 
   // permissions

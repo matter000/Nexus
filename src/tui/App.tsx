@@ -361,7 +361,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
             secrets={secrets}
             isFirstRun={isFirstRun}
             onSave={async (newSecrets) => {
-              await saveSecrets(projectRoot, newSecrets)
+              await saveSecrets(newSecrets)
               setSecrets(newSecrets)
               // 通知 Orchestrator 重新初始化 providers
               eventBus.emit({ type: 'config_updated' })
@@ -387,7 +387,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
               setShowModelSelector(false)
             }}
             onSaveSecrets={async (newSecrets, selectModel) => {
-              await saveSecrets(projectRoot, newSecrets)
+              await saveSecrets(newSecrets)
               setSecrets(newSecrets)
               // 通知 Orchestrator 重新初始化 providers
               eventBus.emit({ type: 'config_updated' })
@@ -396,7 +396,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
               setRenderTick((n) => n + 1)
             }}
             onDeleteSecrets={async (newSecrets) => {
-              await saveSecrets(projectRoot, newSecrets)
+              await saveSecrets(newSecrets)
               setSecrets(newSecrets)
               // 通知 Orchestrator 重新初始化 providers（删除当前模型时自动回退 auto）
               eventBus.emit({ type: 'config_updated' })
