@@ -9,6 +9,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentPhase, NexusEvent, Plan, Todo } from '../agent/types'
 import { type CommandContext, handleSlashCommand, isSlashCommand } from '../cli/commands'
 import { hasAnyApiKey, loadSecrets, type SecretsConfig, saveSecrets } from '../config-secrets'
+import { takePlanApprovalResolve, takeToolApprovalResolve } from '../core/approvalRegistry'
 import { eventBus } from '../core/eventBus'
 import { requiresForcedApproval } from '../sandbox/CommandGuard'
 import { ApiConfigPanel } from './components/ApiConfigPanel'
@@ -115,14 +116,12 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
       if (input === 'y' || key.return) {
         aprv.resolve(true)
         setApproval(null)
-        delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
         onApproval?.(aprv.resolve)
         return
       }
       if (input === 'n' || key.escape) {
         aprv.resolve(false)
         setApproval(null)
-        delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
         onApproval?.(aprv.resolve)
         return
       }
@@ -130,7 +129,6 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         setAutoApproveTools((prev) => new Set([...prev, aprv.tool]))
         aprv.resolve(true)
         setApproval(null)
-        delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
         onApproval?.(aprv.resolve)
         return
       }
@@ -143,13 +141,11 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
       if (key.return) {
         pAprv.resolve('approve')
         setPlanApproval(null)
-        delete (globalThis as Record<string, unknown>).__nexusPlanApprovalResolve
         return
       }
       if (input === 'n' || input === 'N' || key.escape) {
         pAprv.resolve('reject')
         setPlanApproval(null)
-        delete (globalThis as Record<string, unknown>).__nexusPlanApprovalResolve
         return
       }
       return // 计划审批激活时，不处理其他按键
@@ -235,11 +231,9 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         break
 
       case 'tool_approval_request': {
-        // 优先用事件的 callId 从队列查找 resolve；回退到单槽 globalThis
-        const callId = event.callId || `approval-${Date.now()}`
-        const resolve = (globalThis as Record<string, unknown>).__nexusApprovalResolve as
-          | ((approved: boolean) => void)
-          | null
+        // 通过 callId 从审批注册表取回 resolver
+        const callId = event.callId
+        const resolve = takeToolApprovalResolve(callId)
         if (resolve) {
           // 检查是否在自动批准白名单中（危险命令除外）
           const isDangerous =
@@ -248,7 +242,6 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
             requiresForcedApproval(event.params.command)
           if (autoApproveRef.current.has(event.tool) && !isDangerous) {
             resolve(true)
-            delete (globalThis as Record<string, unknown>).__nexusApprovalResolve
             break
           }
           setApproval({
@@ -264,9 +257,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
       }
 
       case 'plan_approval_request': {
-        const planResolve = (globalThis as Record<string, unknown>).__nexusPlanApprovalResolve as
-          | ((result: 'approve' | 'reject' | string) => void)
-          | null
+        const planResolve = takePlanApprovalResolve(event.callId)
         if (planResolve) {
           setPlanApproval({ plan: event.plan, resolve: planResolve })
           setPhase('awaiting_approval')

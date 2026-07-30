@@ -553,7 +553,7 @@ export class Orchestrator {
 
   /** 检查指定 provider 是否已配置 API Key */
   isProviderConfigured(providerName: string): boolean {
-    return this.router?.isProviderConfigured(providerName as any) ?? false
+    return this.router?.isProviderConfigured(providerName) ?? false
   }
 
   /** 获取可用模型列表 */

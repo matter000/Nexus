@@ -15,7 +15,15 @@ import type { ToolContext, ToolRegistry } from '../tools/registry'
 import { toolSchemas } from '../tools/schemas'
 import { callWithRetry } from '../utils'
 import { callLLMWithRetry } from './ReActLoop'
-import type { ChatMessage, ModelRole, NexusEvent, PermissionMode, Plan, Todo } from './types'
+import type {
+  ChatMessage,
+  ExecMessage,
+  ModelRole,
+  NexusEvent,
+  PermissionMode,
+  Plan,
+  Todo,
+} from './types'
 
 const EXECUTE_SYSTEM_SUFFIX = `
 ## 当前阶段: Execute (执行)
@@ -148,23 +156,6 @@ export class Executor {
 
     // 构建初始消息
     const planSummary = `## 已批准的计划\n${plan.summary}\n\n步骤:\n${plan.todos.map((t, i) => `${i + 1}. ${t.content}`).join('\n')}`
-
-    type ExecMessage =
-      | { role: 'user' | 'assistant'; content: string }
-      | {
-          role: 'assistant'
-          content: string
-          toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
-        }
-      | {
-          role: 'tool'
-          content: Array<{
-            type: 'tool-result'
-            toolCallId: string
-            toolName: string
-            result: string
-          }>
-        }
 
     const messages: ExecMessage[] = [
       ...contextMessages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),

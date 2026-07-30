@@ -13,66 +13,19 @@ import { getHelpText, parseArgs } from './cli/args'
 import type { CommandContext } from './cli/commands'
 import { loadConfig } from './config'
 import { hasAnyApiKey, loadSecrets, saveSecrets } from './config-secrets'
+import {
+  nextApprovalCallId,
+  registerPlanApproval,
+  registerToolApproval,
+} from './core/approvalRegistry'
 import { eventBus } from './core/eventBus'
 import { App } from './tui/App'
 import { exportSession } from './utils/export'
 
 const VERSION = '0.1.0'
 
-/** 当前待处理的审批 resolve 函数，由 requestApproval 设置，App 通过 globalThis 获取 */
-let approvalResolver: ((approved: boolean) => void) | null = null
-
-/** 审批队列：callId → resolve，防止快速连续审批时互相覆盖 */
-const approvalResolverMap = new Map<string, (approved: boolean) => void>()
-
-export function setApprovalResolve(resolve: ((approved: boolean) => void) | null): void {
-  approvalResolver = resolve
-  ;(globalThis as Record<string, unknown>).__nexusApprovalResolve = resolve
-}
-
-export function getApprovalResolve(): ((approved: boolean) => void) | null {
-  return approvalResolver
-}
-
-/** 计划审批 resolve 函数：返回 'approve' | 'reject' | 反馈文本 */
-type PlanApprovalResult = 'approve' | 'reject' | string
-let planApprovalResolver: ((result: PlanApprovalResult) => void) | null = null
-
-/** 计划审批队列：callId → resolve */
-const planApprovalResolverMap = new Map<string, (result: PlanApprovalResult) => void>()
-
-export function setPlanApprovalResolve(
-  resolve: ((result: PlanApprovalResult) => void) | null,
-): void {
-  planApprovalResolver = resolve
-  ;(globalThis as Record<string, unknown>).__nexusPlanApprovalResolve = resolve
-}
-
-export function getPlanApprovalResolve(): ((result: PlanApprovalResult) => void) | null {
-  return planApprovalResolver
-}
-
-/** 生成唯一 callId */
-let approvalCounter = 0
-function nextApprovalCallId(): string {
-  return `approval-${Date.now()}-${++approvalCounter}`
-}
-
-/** 通过 callId 获取并移除 tool 审批 resolver */
-export function getApprovalResolveByCallId(callId: string): ((approved: boolean) => void) | null {
-  const r = approvalResolverMap.get(callId) ?? null
-  if (r) approvalResolverMap.delete(callId)
-  return r
-}
-
-/** 通过 callId 获取并移除 plan 审批 resolver */
-export function getPlanApprovalResolveByCallId(
-  callId: string,
-): ((result: PlanApprovalResult) => void) | null {
-  const r = planApprovalResolverMap.get(callId) ?? null
-  if (r) planApprovalResolverMap.delete(callId)
-  return r
-}
+// 审批 resolver 由 core/approvalRegistry 统一管理（按 callId 索引）。
+// 入口与 TUI 均通过该模块交互，避免 globalThis 单槽与循环依赖。
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
@@ -216,12 +169,7 @@ async function main() {
       if (args.nonInteractive) return true
       const callId = nextApprovalCallId()
       return new Promise<boolean>((resolve) => {
-        // 存入队列 Map，支持并发审批
-        approvalResolverMap.set(callId, resolve)
-        // 兼容旧的单槽 globalThis（TUI 的自动批准路径仍用此）
-        approvalResolver = resolve
-        ;(globalThis as Record<string, unknown>).__nexusApprovalResolve = resolve
-        ;(globalThis as Record<string, unknown>).__nexusApprovalCallId = callId
+        registerToolApproval(callId, resolve)
         eventBus.emit({ type: 'tool_approval_request', callId, tool, params, diff })
       })
     },
@@ -230,11 +178,8 @@ async function main() {
       if (args.nonInteractive) return 'approve'
       const callId = nextApprovalCallId()
       return new Promise<'approve' | 'reject' | string>((resolve) => {
-        planApprovalResolverMap.set(callId, resolve)
-        planApprovalResolver = resolve
-        ;(globalThis as Record<string, unknown>).__nexusPlanApprovalResolve = resolve
-        ;(globalThis as Record<string, unknown>).__nexusPlanApprovalCallId = callId
-        eventBus.emit({ type: 'plan_approval_request', plan })
+        registerPlanApproval(callId, resolve)
+        eventBus.emit({ type: 'plan_approval_request', callId, plan })
       })
     },
   })

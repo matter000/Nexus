@@ -18,7 +18,7 @@ export type NexusEvent =
       params: Record<string, unknown>
       diff?: string
     }
-  | { type: 'plan_approval_request'; plan: Plan }
+  | { type: 'plan_approval_request'; callId: string; plan: Plan }
   | { type: 'tool_result'; callId: string; tool: string; result: string; error?: string }
   | { type: 'todo_update'; todos: Todo[] }
   | { type: 'checkpoint'; step: number; message: string }
@@ -144,6 +144,24 @@ export interface ChatMessage {
   toolCallId?: string
   name?: string
 }
+
+/** Executor ReAct 循环内部使用的消息类型（含工具调用与工具结果） */
+export type ExecMessage =
+  | { role: 'user' | 'assistant'; content: string }
+  | {
+      role: 'assistant'
+      content: string
+      toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+    }
+  | {
+      role: 'tool'
+      content: Array<{
+        type: 'tool-result'
+        toolCallId: string
+        toolName: string
+        result: string
+      }>
+    }
 
 // ─── 配置类型 ─────────────────────────────────────────────────────────────────
 
