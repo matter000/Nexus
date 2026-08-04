@@ -4,12 +4,12 @@
  */
 
 import type { LanguageModel } from 'ai'
-import type { ChatMessage, Plan, Todo, NexusEvent, ModelRole } from './types'
-import type { ToolRegistry, ToolContext } from '../tools/registry'
+import type { CostTracker } from '../router/CostTracker'
+import type { ToolContext, ToolRegistry } from '../tools/registry'
 import { toolSchemas } from '../tools/schemas'
 import { consumePendingPlan, setPendingPlan } from '../tools/submitPlan'
-import type { CostTracker } from '../router/CostTracker'
 import { callLLMWithRetry } from './ReActLoop'
+import type { ChatMessage, ModelRole, NexusEvent, Plan, Todo } from './types'
 
 const PLAN_SYSTEM_SUFFIX = `
 ## 当前阶段: Plan (规划)
@@ -61,6 +61,13 @@ export interface PlannerConfig {
   costPer1kInput: number
   /** 输出 token 单价（每 1k） */
   costPer1kOutput: number
+  /** 缓存命中输入单价（每 1k），DeepSeek 分级计费用 */
+  costPer1kInputCached?: number
+  /**
+   * Provider 特定的模型参数
+   * 由 ProviderAdapter.getModelParameters() 生成，用于优化 DeepSeek 等模型的调用参数
+   */
+  modelParameters?: Record<string, unknown>
 }
 
 export class Planner {
@@ -109,6 +116,7 @@ export class Planner {
           messages: messages as Array<{ role: 'user' | 'assistant'; content: string }>,
           tools: toolsForAI,
           maxSteps: 1,
+          modelParameters: this.config.modelParameters,
         },
         {
           onEvent,
@@ -119,6 +127,7 @@ export class Planner {
             modelName: this.config.modelName,
             costPer1kInput: this.config.costPer1kInput,
             costPer1kOutput: this.config.costPer1kOutput,
+            costPer1kInputCached: this.config.costPer1kInputCached,
           },
         },
       )
@@ -141,7 +150,7 @@ export class Planner {
           const toolResult = await toolRegistry.execute(
             toolCall.toolName,
             toolCall.args as Record<string, unknown>,
-            { ...toolContext, callId }
+            { ...toolContext, callId },
           )
 
           onEvent({
@@ -216,7 +225,10 @@ export class Planner {
     const messages = [
       ...contextMessages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
       { role: 'user' as const, content: userRequest },
-      { role: 'assistant' as const, content: `上一版计划:\n\`\`\`json\n${JSON.stringify(prevPlan, null, 2)}\n\`\`\`` },
+      {
+        role: 'assistant' as const,
+        content: `上一版计划:\n\`\`\`json\n${JSON.stringify(prevPlan, null, 2)}\n\`\`\``,
+      },
       {
         role: 'user' as const,
         content: `用户对计划的反馈：${feedback}\n\n请根据反馈调整计划。可以继续用工具探索代码，然后输出新的 JSON 计划。`,
@@ -236,6 +248,7 @@ export class Planner {
           messages: messages as Array<{ role: 'user' | 'assistant'; content: string }>,
           tools: toolsForAI,
           maxSteps: 1,
+          modelParameters: this.config.modelParameters,
         },
         {
           onEvent,
@@ -246,6 +259,7 @@ export class Planner {
             modelName: this.config.modelName,
             costPer1kInput: this.config.costPer1kInput,
             costPer1kOutput: this.config.costPer1kOutput,
+            costPer1kInputCached: this.config.costPer1kInputCached,
           },
         },
       )
@@ -266,7 +280,7 @@ export class Planner {
           const toolResult = await toolRegistry.execute(
             toolCall.toolName,
             toolCall.args as Record<string, unknown>,
-            { ...toolContext, callId }
+            { ...toolContext, callId },
           )
 
           onEvent({

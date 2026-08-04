@@ -6,9 +6,9 @@
  * 回退策略: 如果 embedding 模型加载失败, 自动降级为 TF-IDF 关键词匹配
  */
 
-import { join, relative } from 'path'
-import { readdirSync, readFileSync, statSync } from 'fs'
 import { Database } from 'bun:sqlite'
+import { readdirSync, readFileSync, statSync } from 'fs'
+import { join, relative } from 'path'
 
 // ─── 类型定义 ──────────────────────────────────────────────────────────────────
 
@@ -36,13 +36,24 @@ const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2'
 const MAX_CHUNK_CHARS = 1500
 const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx'])
 const IGNORED_DIRS = new Set([
-  'node_modules', '.git', 'dist', '.nexus', '.qoder',
-  'build', 'coverage', '.cache', '.next', '.output',
+  'node_modules',
+  '.git',
+  'dist',
+  '.nexus',
+  '.qoder',
+  'build',
+  'coverage',
+  '.cache',
+  '.next',
+  '.output',
 ])
 
 // ─── Embedding Pipeline 类型 ──────────────────────────────────────────────────
 
-type EmbeddingPipeline = (text: string, opts?: Record<string, unknown>) => Promise<{ data: Float32Array; dims: number[] }>
+type EmbeddingPipeline = (
+  text: string,
+  opts?: Record<string, unknown>,
+) => Promise<{ data: Float32Array; dims: number[] }>
 
 // ─── 语义搜索引擎 ──────────────────────────────────────────────────────────────
 
@@ -98,6 +109,15 @@ export class SemanticSearchEngine {
     this.initialized = true
   }
 
+  /** 关闭数据库连接，释放资源（进程退出前调用） */
+  close(): void {
+    this.db?.close()
+    this.db = null
+    this.initialized = false
+    this.tfidfIndex = null
+    this.statsCache = null
+  }
+
   /** 语义搜索: 返回 top-K 相似代码块 */
   async search(query: string, topK = 5): Promise<SearchResult[]> {
     if (!this.initialized) await this.init()
@@ -120,7 +140,9 @@ export class SemanticSearchEngine {
         try {
           const content = readFileSync(fullPath, 'utf-8')
           await this.indexFile(file, content)
-        } catch { /* file may have been deleted */ }
+        } catch {
+          /* file may have been deleted */
+        }
       }
     }
     this.statsCache = null
@@ -131,8 +153,12 @@ export class SemanticSearchEngine {
     if (this.statsCache) return this.statsCache
     if (!this.db) return { totalChunks: 0, totalFiles: 0 }
 
-    const totalRow = this.db.prepare('SELECT COUNT(*) as count FROM embeddings').get() as { count: number }
-    const fileRow = this.db.prepare('SELECT COUNT(DISTINCT file_path) as count FROM embeddings').get() as { count: number }
+    const totalRow = this.db.prepare('SELECT COUNT(*) as count FROM embeddings').get() as {
+      count: number
+    }
+    const fileRow = this.db
+      .prepare('SELECT COUNT(DISTINCT file_path) as count FROM embeddings')
+      .get() as { count: number }
 
     this.statsCache = { totalChunks: totalRow.count, totalFiles: fileRow.count }
     return this.statsCache
@@ -166,7 +192,9 @@ export class SemanticSearchEngine {
   private async buildIndex(): Promise<void> {
     if (!this.db) return
 
-    const existingCount = this.db.prepare('SELECT COUNT(*) as count FROM embeddings').get() as { count: number }
+    const existingCount = this.db.prepare('SELECT COUNT(*) as count FROM embeddings').get() as {
+      count: number
+    }
     if (existingCount.count > 0) return // 已有索引, 跳过
 
     const files = this.scanProject()
@@ -176,7 +204,9 @@ export class SemanticSearchEngine {
         const fullPath = join(this.projectRoot, relPath)
         const content = readFileSync(fullPath, 'utf-8')
         await this.indexFile(relPath, content)
-      } catch { /* skip unreadable files */ }
+      } catch {
+        /* skip unreadable files */
+      }
     }
 
     this.statsCache = null
@@ -188,7 +218,7 @@ export class SemanticSearchEngine {
     const chunks = chunkCode(content)
     const insertStmt = this.db.prepare(
       `INSERT OR REPLACE INTO embeddings (id, file_path, start_line, end_line, content, embedding, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
 
     const now = Date.now()
@@ -201,10 +231,21 @@ export class SemanticSearchEngine {
         try {
           const embedding = await this.getEmbedding(chunk.content)
           embeddingBlob = float32ToBuffer(embedding)
-        } catch { /* skip embedding for this chunk */ }
+        } catch {
+          /* skip embedding for this chunk */
+        }
       }
 
-      insertStmt.run(id, relPath, chunk.startLine, chunk.endLine, chunk.content, embeddingBlob, now, now)
+      insertStmt.run(
+        id,
+        relPath,
+        chunk.startLine,
+        chunk.endLine,
+        chunk.content,
+        embeddingBlob,
+        now,
+        now,
+      )
     }
 
     // 如果 embedding 不可用, 构建 TF-IDF 索引
@@ -259,15 +300,25 @@ export class SemanticSearchEngine {
   }
 
   private getAllChunks(): Array<{
-    file_path: string; start_line: number; end_line: number; content: string; embedding: Float32Array
+    file_path: string
+    start_line: number
+    end_line: number
+    content: string
+    embedding: Float32Array
   }> {
     if (!this.db) return []
-    const rows = this.db.prepare('SELECT file_path, start_line, end_line, content, embedding FROM embeddings').all() as Array<{
-      file_path: string; start_line: number; end_line: number; content: string; embedding: Buffer | null
+    const rows = this.db
+      .prepare('SELECT file_path, start_line, end_line, content, embedding FROM embeddings')
+      .all() as Array<{
+      file_path: string
+      start_line: number
+      end_line: number
+      content: string
+      embedding: Buffer | null
     }>
     return rows
-      .filter(r => r.embedding != null)
-      .map(r => ({
+      .filter((r) => r.embedding != null)
+      .map((r) => ({
         file_path: r.file_path,
         start_line: r.start_line,
         end_line: r.end_line,
@@ -282,7 +333,11 @@ export class SemanticSearchEngine {
     const files: string[] = []
     const scan = (dir: string): void => {
       let entries: import('fs').Dirent[]
-      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+      try {
+        entries = readdirSync(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
       for (const entry of entries) {
         const fullPath = join(dir, entry.name)
         if (entry.isDirectory()) {
@@ -309,6 +364,12 @@ let _instance: SemanticSearchEngine | null = null
 export function getSemanticSearchEngine(projectRoot: string): SemanticSearchEngine {
   if (!_instance) _instance = new SemanticSearchEngine(projectRoot)
   return _instance
+}
+
+/** 关闭全局语义搜索引擎单例（若已创建），释放数据库连接；未创建时不做任何事 */
+export function closeSemanticSearchEngine(): void {
+  _instance?.close()
+  _instance = null
 }
 
 // ─── 文件分块 ──────────────────────────────────────────────────────────────────
@@ -340,12 +401,21 @@ function chunkCode(source: string): CodeChunk[] {
           const mid = Math.floor(currentLines.length / 2)
           let splitAt = mid
           for (let j = mid; j >= 0 && j < currentLines.length; j++) {
-            if (currentLines[j].trim() === '') { splitAt = j; break }
+            if (currentLines[j].trim() === '') {
+              splitAt = j
+              break
+            }
           }
           const first = currentLines.slice(0, splitAt).join('\n').trim()
           const second = currentLines.slice(splitAt).join('\n').trim()
-          if (first) chunks.push({ startLine: currentStart + 1, endLine: currentStart + splitAt, content: first })
-          if (second) chunks.push({ startLine: currentStart + splitAt + 1, endLine: i + 1, content: second })
+          if (first)
+            chunks.push({
+              startLine: currentStart + 1,
+              endLine: currentStart + splitAt,
+              content: first,
+            })
+          if (second)
+            chunks.push({ startLine: currentStart + splitAt + 1, endLine: i + 1, content: second })
         } else {
           chunks.push({ startLine: currentStart + 1, endLine: i + 1, content: blockContent })
         }
@@ -382,7 +452,9 @@ function chunkCode(source: string): CodeChunk[] {
 
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length) return 0
-  let dot = 0, normA = 0, normB = 0
+  let dot = 0,
+    normA = 0,
+    normB = 0
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i]
     normA += a[i] * a[i]
@@ -424,7 +496,7 @@ function tokenize(text: string): string[] {
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter(w => w.length >= 2)
+    .filter((w) => w.length >= 2)
 }
 
 function buildTfidfIndex(projectRoot: string): TfidfIndex {
@@ -450,7 +522,13 @@ function buildTfidfIndex(projectRoot: string): TfidfIndex {
       for (const term of uniqueTerms) {
         df.set(term, (df.get(term) ?? 0) + 1)
       }
-      chunks.push({ filePath: relPath, startLine: chunk.startLine, endLine: chunk.endLine, content: chunk.content, terms })
+      chunks.push({
+        filePath: relPath,
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+        content: chunk.content,
+        terms,
+      })
     }
   }
 
@@ -492,17 +570,26 @@ function scanProjectFiles(projectRoot: string): Array<{ relPath: string; content
 
   const scan = (dir: string): void => {
     let entries: import('fs').Dirent[]
-    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
     for (const entry of entries) {
       const fullPath = join(dir, entry.name)
       if (entry.isDirectory()) {
         if (!IGNORED_DIRS.has(entry.name)) scan(fullPath)
-      } else if (entry.isFile() && CODE_EXTENSIONS.has(entry.name.substring(entry.name.lastIndexOf('.')))) {
+      } else if (
+        entry.isFile() &&
+        CODE_EXTENSIONS.has(entry.name.substring(entry.name.lastIndexOf('.')))
+      ) {
         try {
           const content = readFileSync(fullPath, 'utf-8')
           const relPath = relative(projectRoot, fullPath).replace(/\\/g, '/')
           results.push({ relPath, content })
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
       }
     }
   }

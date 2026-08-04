@@ -3,7 +3,13 @@
  */
 
 /** 任务类别 */
-export type TaskCategory = 'single-file' | 'multi-file' | 'bug-fix' | 'add-test' | 'refactor' | 'create-file'
+export type TaskCategory =
+  | 'single-file'
+  | 'multi-file'
+  | 'bug-fix'
+  | 'add-test'
+  | 'refactor'
+  | 'create-file'
 
 /** 任务难度 */
 export type TaskDifficulty = 'easy' | 'medium' | 'hard'

@@ -78,7 +78,14 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
   const totalLines = lines.length
 
   if (totalLines <= maxLines && totalBytes <= maxBytes) {
-    return { content, truncated: false, truncatedBy: null, totalLines, totalBytes, outputLines: totalLines }
+    return {
+      content,
+      truncated: false,
+      truncatedBy: null,
+      totalLines,
+      totalBytes,
+      outputLines: totalLines,
+    }
   }
 
   const outputLinesArr: string[] = []
@@ -122,7 +129,14 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
   const totalLines = lines.length
 
   if (totalLines <= maxLines && totalBytes <= maxBytes) {
-    return { content, truncated: false, truncatedBy: null, totalLines, totalBytes, outputLines: totalLines }
+    return {
+      content,
+      truncated: false,
+      truncatedBy: null,
+      totalLines,
+      totalBytes,
+      outputLines: totalLines,
+    }
   }
 
   const outputLinesArr: string[] = []
@@ -238,18 +252,23 @@ export interface CallWithRetryOptions {
   baseDelay?: number
   /** 每次重试前的回调，参数为 { attempt, delay, error } */
   onRetry?: (info: { attempt: number; delay: number; error: Error }) => void
+  /**
+   * 自定义退避延迟计算（DeepSeek 深度适配：解析 Retry-After 响应头）。
+   * 返回 undefined 时使用默认指数退避 baseDelay * 2^attempt。
+   */
+  getDelay?: (error: Error, attempt: number, baseDelay: number) => number | undefined
 }
 
 /**
  * 带指数退避的异步调用封装
- * 默认最多 3 次重试，退避间隔 1s → 2s → 4s
+ * 默认最多 3 次重试，退避间隔 1s → 2s → 4s（可被 getDelay 覆盖，如 Retry-After）
  * 仅对可重试错误（429/5xx/网络错误）进行重试
  */
 export async function callWithRetry<T>(
   fn: () => Promise<T>,
   options: CallWithRetryOptions = {},
 ): Promise<T> {
-  const { maxRetries = 3, baseDelay = 1000, onRetry } = options
+  const { maxRetries = 3, baseDelay = 1000, onRetry, getDelay } = options
   let lastError: Error | null = null
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -259,7 +278,8 @@ export async function callWithRetry<T>(
       lastError = error instanceof Error ? error : new Error(String(error))
       if (!isRetryable(error) || attempt === maxRetries) break
 
-      const delay = baseDelay * Math.pow(2, attempt)
+      const customDelay = getDelay?.(lastError, attempt, baseDelay)
+      const delay = customDelay ?? baseDelay * 2 ** attempt
       onRetry?.({ attempt: attempt + 1, delay, error: lastError })
       await new Promise((resolve) => setTimeout(resolve, delay))
     }
@@ -269,7 +289,7 @@ export async function callWithRetry<T>(
 
 // ─── 路径安全 ──────────────────────────────────────────────────────────────
 
-import { resolve, relative, isAbsolute } from 'path'
+import { isAbsolute, relative, resolve } from 'path'
 
 /**
  * 检查目标路径是否在项目根目录内（防止路径遍历攻击）。

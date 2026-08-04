@@ -6,9 +6,9 @@
 
 import { resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
 import { createSandboxEngine } from '../sandbox/SandboxEngine'
-import { truncateTail, sanitizeBinaryOutput, formatSize } from '../utils'
+import { formatSize, sanitizeBinaryOutput, truncateTail } from '../utils'
+import type { ToolContext, ToolHandler } from './registry'
 
 const definition: ToolDefinition = {
   name: 'bash',

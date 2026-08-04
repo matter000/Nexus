@@ -4,7 +4,7 @@
  * debounce 后触发 CodeGraph 和 SemanticSearch 的增量更新
  */
 
-import { watch, type FSWatcher } from 'fs'
+import { type FSWatcher, watch } from 'fs'
 import { relative } from 'path'
 
 export interface FileWatcherConfig {
@@ -16,13 +16,30 @@ export interface FileWatcherConfig {
 }
 
 const IGNORED_DIRS = new Set([
-  'node_modules', '.git', '.nexus', '.qoder', 'dist', 'build',
-  'coverage', '__pycache__', '.cache', '.next', '.output',
+  'node_modules',
+  '.git',
+  '.nexus',
+  '.qoder',
+  'dist',
+  'build',
+  'coverage',
+  '__pycache__',
+  '.cache',
+  '.next',
+  '.output',
 ])
 
 const WATCHED_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mts', '.cts',
-  '.py', '.go', '.rs', '.java',
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mts',
+  '.cts',
+  '.py',
+  '.go',
+  '.rs',
+  '.java',
 ])
 
 export class FileWatcher {
@@ -46,14 +63,10 @@ export class FileWatcher {
     this.running = true
 
     try {
-      this.watcher = watch(
-        this.config.projectRoot,
-        { recursive: true },
-        (eventType, filename) => {
-          if (!filename) return
-          this.handleFileChange(filename)
-        }
-      )
+      this.watcher = watch(this.config.projectRoot, { recursive: true }, (eventType, filename) => {
+        if (!filename) return
+        this.handleFileChange(filename)
+      })
 
       this.watcher.on('error', () => {
         // 监听错误时静默降级（不影响主流程）

@@ -3,19 +3,28 @@
  * ReAct Loop 核心:逐步执行计划,每步可回滚
  */
 
-import { generateText } from 'ai'
 import type { LanguageModel } from 'ai'
-import type { ChatMessage, NexusEvent, PermissionMode, Plan, Todo, ModelRole } from './types'
-import type { ToolRegistry, ToolContext } from '../tools/registry'
-import { toolSchemas } from '../tools/schemas'
-import { requiresForcedApproval } from '../sandbox/CommandGuard'
-import type { CheckpointManager } from '../sandbox/Checkpoint'
-import type { CostTracker } from '../router/CostTracker'
-import { callLLMWithRetry } from './ReActLoop'
-import { callWithRetry } from '../utils'
-import { generateDiff } from '../tools/editFile'
+import { generateText } from 'ai'
 import { readFile } from 'fs/promises'
 import { resolve } from 'path'
+import type { CostTracker } from '../router/CostTracker'
+import { withDeepSeekThinking } from '../router/providers/deepseekFetch'
+import type { CheckpointManager } from '../sandbox/Checkpoint'
+import { requiresForcedApproval } from '../sandbox/CommandGuard'
+import { generateDiff } from '../tools/editFile'
+import type { ToolContext, ToolRegistry } from '../tools/registry'
+import { toolSchemas } from '../tools/schemas'
+import { callWithRetry } from '../utils'
+import { callLLMWithRetry, splitModelParameters } from './ReActLoop'
+import type {
+  ChatMessage,
+  ExecMessage,
+  ModelRole,
+  NexusEvent,
+  PermissionMode,
+  Plan,
+  Todo,
+} from './types'
 
 const EXECUTE_SYSTEM_SUFFIX = `
 ## 当前阶段: Execute (执行)
@@ -46,7 +55,11 @@ export interface ExecutorConfig {
   permissionMode: PermissionMode
   onEvent: (event: NexusEvent) => void
   /** 审批回调:返回 true=批准, false=拒绝 */
-  requestApproval: (tool: string, params: Record<string, unknown>, diff?: string) => Promise<boolean>
+  requestApproval: (
+    tool: string,
+    params: Record<string, unknown>,
+    diff?: string,
+  ) => Promise<boolean>
   /** 成本追踪器 */
   costTracker: CostTracker
   /** 当前模型角色（用于成本记录） */
@@ -59,6 +72,8 @@ export interface ExecutorConfig {
   costPer1kInput: number
   /** 输出 token 单价（每 1k） */
   costPer1kOutput: number
+  /** 缓存命中输入单价（每 1k），DeepSeek 分级计费用 */
+  costPer1kInputCached?: number
   /** 会话成本上限 */
   maxSessionCost: number
   /** 获取降级模型（主模型全部重试失败后使用） */
@@ -67,6 +82,11 @@ export interface ExecutorConfig {
   fallbackModelName?: string
   /** 中断信号（Orchestrator.abort() 时触发） */
   abortSignal?: AbortSignal
+  /**
+   * Provider 特定的模型参数
+   * 由 ProviderAdapter.getModelParameters() 生成，用于优化 DeepSeek 等模型的调用参数
+   */
+  modelParameters?: Record<string, unknown>
 }
 
 /**
@@ -113,6 +133,7 @@ export class Executor {
   private stuckWarnings = 0
   /** 是否执行过 edit_file（仅在有代码变更时运行验证） */
   private hasCodeChanges = false
+  private lastError: string | null = null
 
   constructor(config: ExecutorConfig) {
     this.config = config
@@ -145,11 +166,6 @@ export class Executor {
     // 构建初始消息
     const planSummary = `## 已批准的计划\n${plan.summary}\n\n步骤:\n${plan.todos.map((t, i) => `${i + 1}. ${t.content}`).join('\n')}`
 
-    type ExecMessage =
-      | { role: 'user' | 'assistant'; content: string }
-      | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> }
-      | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }
-
     const messages: ExecMessage[] = [
       ...contextMessages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
       { role: 'user', content: planSummary },
@@ -169,7 +185,15 @@ export class Executor {
       this.iterations++
 
       // 使用共享的 LLM 调用工具（统一 streamText + 重试 + 成本记录），支持降级模型
-      let callResult: { streamedText: string; toolCalls: Array<{ toolName: string; args: Record<string, unknown> }> }
+      // DeepSeek 思考模式返回 reasoning（思维链），需在后续轮次中回传（有工具调用时）
+      let callResult: {
+        streamedText: string
+        toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>
+        reasoning?: string
+        cacheHitTokens?: number
+        cacheMissTokens?: number
+        reasoningTokens?: number
+      }
       try {
         callResult = await callLLMWithRetry(
           {
@@ -179,6 +203,7 @@ export class Executor {
             tools: toolsForAI,
             maxSteps: 1,
             abortSignal: this.config.abortSignal,
+            modelParameters: this.config.modelParameters,
           },
           {
             onEvent,
@@ -189,6 +214,7 @@ export class Executor {
               modelName: this.config.modelName,
               costPer1kInput: this.config.costPer1kInput,
               costPer1kOutput: this.config.costPer1kOutput,
+              costPer1kInputCached: this.config.costPer1kInputCached,
             },
           },
           this.config.getFallbackModel?.() ?? undefined,
@@ -207,7 +233,7 @@ export class Executor {
         break
       }
 
-      const { streamedText, toolCalls } = callResult
+      const { streamedText, toolCalls, reasoning } = callResult
 
       // 检查成本上限
       if (this.config.costTracker.isOverBudget(this.config.maxSessionCost)) {
@@ -231,6 +257,7 @@ export class Executor {
       const assistantMsg: ExecMessage = {
         role: 'assistant',
         content: streamedText || '',
+        reasoning, // 包含 reasoning_content，有工具调用时必须在后续轮次回传
         toolCalls: toolCalls.map((tc, idx) => ({
           toolCallId: `exec-${this.iterations}-${tc.toolName}-${idx}`,
           toolName: tc.toolName,
@@ -240,8 +267,8 @@ export class Executor {
       messages.push(assistantMsg)
 
       // 分离串行和并行工具调用
-      const serialCalls = toolCalls.filter(tc => Executor.SERIAL_TOOLS.has(tc.toolName))
-      const parallelCalls = toolCalls.filter(tc => !Executor.SERIAL_TOOLS.has(tc.toolName))
+      const serialCalls = toolCalls.filter((tc) => Executor.SERIAL_TOOLS.has(tc.toolName))
+      const parallelCalls = toolCalls.filter((tc) => !Executor.SERIAL_TOOLS.has(tc.toolName))
 
       // 收集所有工具结果，最后统一推入 tool 消息
       const toolResults: Array<{ toolCallId: string; toolName: string; result: string }> = []
@@ -249,7 +276,9 @@ export class Executor {
       // 并行执行只读/非串行工具
       if (parallelCalls.length > 0) {
         const parallelSettled = await Promise.allSettled(
-          parallelCalls.map((tc, idx) => this.executeSingleToolCall(tc, messages, toolResults, idx))
+          parallelCalls.map((tc, idx) =>
+            this.executeSingleToolCall(tc, messages, toolResults, idx),
+          ),
         )
         for (let i = 0; i < parallelSettled.length; i++) {
           const r = parallelSettled[i]
@@ -265,7 +294,12 @@ export class Executor {
 
       // 串行执行写工具（edit_file / update_todo）
       for (let idx = 0; idx < serialCalls.length; idx++) {
-        await this.executeSingleToolCall(serialCalls[idx], messages, toolResults, parallelCalls.length + idx)
+        await this.executeSingleToolCall(
+          serialCalls[idx],
+          messages,
+          toolResults,
+          parallelCalls.length + idx,
+        )
       }
 
       // 将所有工具结果作为一条 tool 消息推入（AI SDK 原生格式）
@@ -307,6 +341,8 @@ export class Executor {
           t.status = 'complete'
         }
       }
+    } else {
+      this.lastError = finalText || '执行过程中出现未知错误'
     }
 
     onEvent({ type: 'todo_update', todos: this.todos })
@@ -333,7 +369,23 @@ export class Executor {
   private async runVerification(
     plan: Plan,
     executionResult: string,
-    messages: Array<{ role: 'user' | 'assistant'; content: string } | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> } | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }>,
+    messages: Array<
+      | { role: 'user' | 'assistant'; content: string }
+      | {
+          role: 'assistant'
+          content: string
+          toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+        }
+      | {
+          role: 'tool'
+          content: Array<{
+            type: 'tool-result'
+            toolCallId: string
+            toolName: string
+            result: string
+          }>
+        }
+    >,
     _toolsForAI: Record<string, { description: string; parameters: unknown }>,
   ): Promise<string> {
     const { model, toolRegistry, toolContext, onEvent } = this.config
@@ -375,8 +427,20 @@ ${executionResult || '(无文本输出)'}
     // 构建验证专用的消息列表（不污染主 messages）
     type VerifyMsg =
       | { role: 'user' | 'assistant'; content: string }
-      | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> }
-      | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }
+      | {
+          role: 'assistant'
+          content: string
+          toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+        }
+      | {
+          role: 'tool'
+          content: Array<{
+            type: 'tool-result'
+            toolCallId: string
+            toolName: string
+            result: string
+          }>
+        }
 
     const verifyMessages: VerifyMsg[] = [
       ...messages.map((m) => ({ ...m })),
@@ -390,21 +454,39 @@ ${executionResult || '(无文本输出)'}
         // 检查中断
         if (this.config.abortSignal?.aborted) break
 
-        const genResult = await callWithRetry(async () => {
-          return await generateText({
-            model,
-            system: '你是验证助手。只读检查执行结果（可用 read_file + grep + bash），不修改文件。每步先说明你要检查什么，然后调用工具。',
-            messages: verifyMessages as never,
-            tools: verifyToolsForAI,
-            maxSteps: 1,
-            abortSignal: this.config.abortSignal,
-          })
-        }, {
-          maxRetries: 1,
-          onRetry: ({ attempt, delay, error }) => {
-            onEvent({ type: 'error', message: `验证请求重试 #${attempt}（${delay}ms 后）: ${error.message}`, recoverable: true })
+        // 拆分 provider 参数：验证循环同为多轮工具调用，需注入 thinking: disabled 等避免 422
+        const {
+          topLevel: verifyTopLevel,
+          providerOptions: verifyProviderOptions,
+          thinking: verifyThinking,
+        } = splitModelParameters(this.config.modelParameters)
+        const genResult = await callWithRetry(
+          async () => {
+            return await withDeepSeekThinking(verifyThinking, () =>
+              generateText({
+                model,
+                system:
+                  '你是验证助手。只读检查执行结果（可用 read_file + grep + bash），不修改文件。每步先说明你要检查什么，然后调用工具。',
+                messages: verifyMessages as never,
+                tools: verifyToolsForAI,
+                maxSteps: 1,
+                abortSignal: this.config.abortSignal,
+                ...(verifyTopLevel as Record<string, never>),
+                ...(verifyProviderOptions ? { providerOptions: verifyProviderOptions } : {}),
+              } as Parameters<typeof generateText>[0]),
+            )
           },
-        })
+          {
+            maxRetries: 1,
+            onRetry: ({ attempt, delay, error }) => {
+              onEvent({
+                type: 'error',
+                message: `验证请求重试 #${attempt}（${delay}ms 后）: ${error.message}`,
+                recoverable: true,
+              })
+            },
+          },
+        )
 
         const text = genResult.text ?? ''
         const toolCalls = genResult.toolCalls ?? []
@@ -428,7 +510,12 @@ ${executionResult || '(无文本输出)'}
         })
 
         // 执行工具并收集结果
-        const toolResults: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> = []
+        const toolResults: Array<{
+          type: 'tool-result'
+          toolCallId: string
+          toolName: string
+          result: string
+        }> = []
         for (let idx = 0; idx < toolCalls.length; idx++) {
           const tc = toolCalls[idx]
           const callId = `verify-${step}-${tc.toolName}-${idx}`
@@ -439,8 +526,19 @@ ${executionResult || '(无文本输出)'}
           const result = await toolRegistry.execute(tc.toolName, args, { ...toolContext, callId })
           const resultText = result.error ? `[错误] ${result.error}` : result.result
 
-          onEvent({ type: 'tool_result', callId, tool: tc.toolName, result: result.result, error: result.error })
-          toolResults.push({ type: 'tool-result', toolCallId: callId, toolName: tc.toolName, result: resultText })
+          onEvent({
+            type: 'tool_result',
+            callId,
+            tool: tc.toolName,
+            result: result.result,
+            error: result.error,
+          })
+          toolResults.push({
+            type: 'tool-result',
+            toolCallId: callId,
+            toolName: tc.toolName,
+            result: resultText,
+          })
         }
 
         verifyMessages.push({ role: 'tool', content: toolResults })
@@ -461,7 +559,23 @@ ${executionResult || '(无文本输出)'}
    */
   private async executeSingleToolCall(
     toolCall: { toolName: string; args: Record<string, unknown> },
-    messages: Array<{ role: 'user' | 'assistant'; content: string } | { role: 'assistant'; content: string; toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> } | { role: 'tool'; content: Array<{ type: 'tool-result'; toolCallId: string; toolName: string; result: string }> }>,
+    messages: Array<
+      | { role: 'user' | 'assistant'; content: string }
+      | {
+          role: 'assistant'
+          content: string
+          toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+        }
+      | {
+          role: 'tool'
+          content: Array<{
+            type: 'tool-result'
+            toolCallId: string
+            toolName: string
+            result: string
+          }>
+        }
+    >,
     toolResults: Array<{ toolCallId: string; toolName: string; result: string }>,
     callIndex: number,
   ): Promise<void> {
@@ -477,8 +591,18 @@ ${executionResult || '(无文本输出)'}
       const rejectMsg = '用户拒绝了此操作。请换一种方式完成任务,或解释为什么需要这个操作。'
       // 审批拒绝用 user role（表达“用户不允许”的语义）
       messages.push({ role: 'user', content: `[工具被拒绝 ${toolCall.toolName}]: ${rejectMsg}` })
-      toolResults.push({ toolCallId: callId, toolName: toolCall.toolName, result: `[拒绝] ${rejectMsg}` })
-      onEvent({ type: 'tool_result', callId, tool: toolCall.toolName, result: '', error: rejectMsg })
+      toolResults.push({
+        toolCallId: callId,
+        toolName: toolCall.toolName,
+        result: `[拒绝] ${rejectMsg}`,
+      })
+      onEvent({
+        type: 'tool_result',
+        callId,
+        tool: toolCall.toolName,
+        result: '',
+        error: rejectMsg,
+      })
       return
     }
 
@@ -507,7 +631,7 @@ ${executionResult || '(无文本输出)'}
     if (toolCall.toolName === 'edit_file' && !toolResult.error) {
       const checkpoint = await this.config.checkpoint.create(
         `edit: ${args.path}`,
-        this.getCurrentTodoId()
+        this.getCurrentTodoId(),
       )
       if (checkpoint) {
         onEvent({ type: 'checkpoint', step: checkpoint.step, message: checkpoint.message })
@@ -614,9 +738,7 @@ ${executionResult || '(无文本输出)'}
       // 检查是否能匹配
       if (oldString !== '' && !content.includes(oldString)) return null
 
-      const newContent = oldString === ''
-        ? newString
-        : content.replace(oldString, newString)
+      const newContent = oldString === '' ? newString : content.replace(oldString, newString)
       return generateDiff(filePath, content, newContent)
     } catch {
       return null
@@ -651,5 +773,10 @@ ${executionResult || '(无文本输出)'}
 
   getTodos(): Todo[] {
     return this.todos
+  }
+
+  /** 获取最后一次执行错误（用于自动修复模式） */
+  getLastError(): string | null {
+    return this.lastError
   }
 }

@@ -4,11 +4,11 @@
  * 使用 CodeGraph (TypeScript Compiler API) 进行符号搜索
  */
 
-import { resolve } from 'path'
 import { readFile } from 'fs/promises'
+import { resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
 import { createGraphEngine } from '../context/CodeGraph'
+import type { ToolContext, ToolHandler } from './registry'
 
 const definition: ToolDefinition = {
   name: 'search_symbol',
@@ -34,18 +34,24 @@ const definition: ToolDefinition = {
 }
 
 /** 从文件中读取指定行附近的内容 */
-async function readLinesAround(filePath: string, line: number, contextLines: number = 1): Promise<string> {
+async function readLinesAround(
+  filePath: string,
+  line: number,
+  contextLines: number = 1,
+): Promise<string> {
   try {
     const content = await readFile(resolve(filePath), 'utf-8')
     const lines = content.split('\n')
     const start = Math.max(0, line - 1 - contextLines)
     const end = Math.min(lines.length, line + contextLines)
     const selected = lines.slice(start, end)
-    return selected.map((l, i) => {
-      const lineNum = start + i + 1
-      const marker = lineNum === line ? '→' : ' '
-      return `  ${marker} ${String(lineNum).padStart(4)}│ ${l}`
-    }).join('\n')
+    return selected
+      .map((l, i) => {
+        const lineNum = start + i + 1
+        const marker = lineNum === line ? '→' : ' '
+        return `  ${marker} ${String(lineNum).padStart(4)}│ ${l}`
+      })
+      .join('\n')
   } catch {
     return '  (无法读取文件内容)'
   }
@@ -95,9 +101,9 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
       const codeSnippet = await readLinesAround(absPath, s.startLine)
       results.push(
         `### [${i + 1}] ${s.kind} ${s.name}\n` +
-        `📁 ${s.filePath}:${s.startLine}-${s.endLine}${s.exports ? ' (exported)' : ''}\n` +
-        (s.docstring ? `📝 ${s.docstring.split('\n')[0]}\n` : '') +
-        `\`\`\`\n${codeSnippet}\n\`\`\``
+          `📁 ${s.filePath}:${s.startLine}-${s.endLine}${s.exports ? ' (exported)' : ''}\n` +
+          (s.docstring ? `📝 ${s.docstring.split('\n')[0]}\n` : '') +
+          `\`\`\`\n${codeSnippet}\n\`\`\``,
       )
     }
 

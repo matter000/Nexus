@@ -8,7 +8,10 @@ import { spawn } from 'child_process'
 import type { Checkpoint } from '../agent/types'
 
 /** 执行 git 命令 */
-function git(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+function git(
+  args: string[],
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
     const child = spawn('git', args, {
       cwd,
@@ -19,10 +22,16 @@ function git(args: string[], cwd: string): Promise<{ stdout: string; stderr: str
     let stdout = ''
     let stderr = ''
 
-    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
-    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+    child.stdout?.on('data', (d: Buffer) => {
+      stdout += d.toString()
+    })
+    child.stderr?.on('data', (d: Buffer) => {
+      stderr += d.toString()
+    })
 
-    child.on('close', (code) => resolve({ stdout: stdout.trim(), stderr: stderr.trim(), exitCode: code ?? 1 }))
+    child.on('close', (code) =>
+      resolve({ stdout: stdout.trim(), stderr: stderr.trim(), exitCode: code ?? 1 }),
+    )
     child.on('error', (err) => resolve({ stdout: '', stderr: err.message, exitCode: 1 }))
   })
 }
@@ -146,9 +155,10 @@ export class CheckpointManager {
     }
 
     const last = this.checkpoints[this.checkpoints.length - 1]
-    const targetHash = this.checkpoints.length > 1
-      ? this.checkpoints[this.checkpoints.length - 2].commitHash
-      : `${last.commitHash}~1`
+    const targetHash =
+      this.checkpoints.length > 1
+        ? this.checkpoints[this.checkpoints.length - 2].commitHash
+        : `${last.commitHash}~1`
 
     const result = await git(['reset', '--hard', targetHash], this.projectRoot)
     if (result.exitCode !== 0) {
@@ -252,13 +262,15 @@ export class CheckpointManager {
     const merge = await git(['merge', this.branch, '--no-edit'], this.projectRoot)
     if (merge.exitCode !== 0) {
       // 检测是否为合并冲突
-      const isConflict = merge.stderr.includes('CONFLICT') || merge.stderr.includes('Automatic merge failed')
+      const isConflict =
+        merge.stderr.includes('CONFLICT') || merge.stderr.includes('Automatic merge failed')
       if (isConflict) {
         // 中止合并,保留工作区状态,让用户手动解决
         await git(['merge', '--abort'], this.projectRoot)
         return {
           success: false,
-          message: `合并冲突!checkpoint 分支 "${this.branch}" 与 "${target}" 存在冲突。` +
+          message:
+            `合并冲突!checkpoint 分支 "${this.branch}" 与 "${target}" 存在冲突。` +
             `请手动执行: git checkout ${target} && git merge ${this.branch}，解决冲突后提交。`,
         }
       }

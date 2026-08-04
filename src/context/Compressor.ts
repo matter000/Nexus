@@ -6,9 +6,9 @@
  * - 工具结果分级
  */
 
-import type { ChatMessage } from '../agent/types'
 import type { LanguageModel } from 'ai'
 import { generateText } from 'ai'
+import type { ChatMessage } from '../agent/types'
 import { estimateTokens } from './TokenBudget'
 
 export interface CompressionResult {
@@ -27,7 +27,7 @@ export interface CompressionResult {
 export function compressHistory(
   messages: ChatMessage[],
   recentKeep: number,
-  maxTokens: number
+  maxTokens: number,
 ): CompressionResult {
   const originalTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
 
@@ -100,10 +100,12 @@ function compressEarlyMessages(messages: ChatMessage[]): ChatMessage[] {
   if (roundSummaries.length === 0) return []
 
   // 生成一条摘要消息
-  return [{
-    role: 'user',
-    content: `[历史摘要 - 早期 ${messages.length} 条消息(${rounds.length} 轮)已压缩]\n${roundSummaries.join('\n')}`,
-  }]
+  return [
+    {
+      role: 'user',
+      content: `[历史摘要 - 早期 ${messages.length} 条消息(${rounds.length} 轮)已压缩]\n${roundSummaries.join('\n')}`,
+    },
+  ]
 }
 
 /** 将单轮对话压缩为摘要行 */
@@ -175,7 +177,10 @@ function compressToolResult(msg: ChatMessage): string | null {
   if (name === 'bash') {
     const lines = content.split('\n')
     const exitLine = lines.find((l) => l.startsWith('Exit code:')) ?? 'Exit code: 0'
-    const outputPreview = lines.filter((l) => !l.startsWith('Exit code:') && l.trim()).slice(0, 3).join('; ')
+    const outputPreview = lines
+      .filter((l) => !l.startsWith('Exit code:') && l.trim())
+      .slice(0, 3)
+      .join('; ')
     return `[bash ${exitLine}${outputPreview ? ' | ' + outputPreview : ''}]`
   }
 
@@ -195,7 +200,11 @@ function compressToolResult(msg: ChatMessage): string | null {
 }
 
 /** 压缩单条工具结果(用于实时压缩，在喂回 LLM 之前调用) */
-export function compressSingleToolResult(toolName: string, result: string, hasError: boolean): string {
+export function compressSingleToolResult(
+  toolName: string,
+  result: string,
+  hasError: boolean,
+): string {
   // 错误完整保留(错误信息对 debug 至关重要)
   if (hasError) return result
 
@@ -211,7 +220,9 @@ export function compressSingleToolResult(toolName: string, result: string, hasEr
       const lines = result.split('\n')
       const matchLines = lines.filter((l) => /^\S+:\d+/.test(l))
       if (matchLines.length > 0) {
-        return matchLines.join('\n') + (matchLines.length < lines.length ? '\n...(上下文行已省略)' : '')
+        return (
+          matchLines.join('\n') + (matchLines.length < lines.length ? '\n...(上下文行已省略)' : '')
+        )
       }
       return result.length > 1000 ? result.slice(0, 1000) + '\n...(已截断)' : result
     }
@@ -279,11 +290,13 @@ export async function llmCompressHistory(
   }
 
   // 构建早期消息的简化文本（截断过长的单条消息）
-  const earlyText = earlyMessages.map((m) => {
-    const prefix = m.role === 'user' ? '用户' : m.role === 'assistant' ? 'Agent' : '工具'
-    const content = m.content.length > 500 ? m.content.slice(0, 500) + '...' : m.content
-    return `[${prefix}] ${content}`
-  }).join('\n\n')
+  const earlyText = earlyMessages
+    .map((m) => {
+      const prefix = m.role === 'user' ? '用户' : m.role === 'assistant' ? 'Agent' : '工具'
+      const content = m.content.length > 500 ? m.content.slice(0, 500) + '...' : m.content
+      return `[${prefix}] ${content}`
+    })
+    .join('\n\n')
 
   const summaryPrompt = `请将以下对话历史压缩为结构化摘要。保留：
 1. 用户的原始需求和关键决策
@@ -324,11 +337,17 @@ ${earlyText}`
     }
 
     const compressedMessages: ChatMessage[] = [
-      { role: 'user', content: `[历史摘要 - ${earlyMessages.length} 条消息已由 LLM 压缩]\n${summary}` },
+      {
+        role: 'user',
+        content: `[历史摘要 - ${earlyMessages.length} 条消息已由 LLM 压缩]\n${summary}`,
+      },
       ...recentMessages,
     ]
 
-    const compressedTokens = compressedMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
+    const compressedTokens = compressedMessages.reduce(
+      (sum, m) => sum + estimateTokens(m.content),
+      0,
+    )
 
     return {
       messages: compressedMessages,

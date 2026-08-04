@@ -4,9 +4,8 @@
  * 通过模块级 TodoStore 共享状态，通过 eventBus 通知 UI
  */
 
-import type { Todo } from '../agent/types'
-import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
+import type { Todo, ToolDefinition, ToolResult } from '../agent/types'
+import type { ToolContext, ToolHandler } from './registry'
 
 const definition: ToolDefinition = {
   name: 'update_todo',
@@ -109,7 +108,14 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
     // 格式化当前状态返回
     const summary = currentTodos
       .map((t) => {
-        const icon = t.status === 'complete' ? '✓' : t.status === 'in_progress' ? '▶' : t.status === 'cancelled' ? '✗' : '○'
+        const icon =
+          t.status === 'complete'
+            ? '✓'
+            : t.status === 'in_progress'
+              ? '▶'
+              : t.status === 'cancelled'
+                ? '✗'
+                : '○'
         return `${icon} [${t.id}] ${t.content}`
       })
       .join('\n')

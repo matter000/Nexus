@@ -13,7 +13,9 @@ export const readFileSchema = z.object({
 
 export const editFileSchema = z.object({
   path: z.string().describe('要编辑的文件路径(相对于项目根目录)'),
-  old_string: z.string().describe('要替换的原文,必须在文件中唯一匹配。包含足够上下文以确保唯一性。'),
+  old_string: z
+    .string()
+    .describe('要替换的原文,必须在文件中唯一匹配。包含足够上下文以确保唯一性。'),
   new_string: z.string().describe('替换后的新内容'),
 })
 
@@ -54,7 +56,10 @@ export const listDirectorySchema = z.object({
 
 export const searchSymbolSchema = z.object({
   symbol: z.string().describe('要搜索的符号名称(如 "ToolHandler", "createToolRegistry")'),
-  type: z.enum(['definition', 'reference', 'all']).optional().describe('搜索类型: definition(定义), reference(引用), all(全部,默认)'),
+  type: z
+    .enum(['definition', 'reference', 'all'])
+    .optional()
+    .describe('搜索类型: definition(定义), reference(引用), all(全部,默认)'),
 })
 
 export const fetchUrlSchema = z.object({
@@ -64,12 +69,34 @@ export const fetchUrlSchema = z.object({
 
 export const submitPlanSchema = z.object({
   summary: z.string().describe('计划摘要（一句话描述整体目标）'),
-  todos: z.array(z.object({
-    id: z.string().optional().describe('步骤 ID（如 "1", "2"）'),
-    content: z.string().describe('步骤描述'),
-  })).describe('执行步骤列表'),
+  todos: z
+    .array(
+      z.object({
+        id: z.string().optional().describe('步骤 ID（如 "1", "2"）'),
+        content: z.string().describe('步骤描述'),
+      }),
+    )
+    .describe('执行步骤列表'),
   filesToModify: z.array(z.string()).optional().describe('预计需要修改的文件路径列表'),
   estimatedSteps: z.number().optional().describe('预估总步数'),
+})
+
+export const gitStatusSchema = z.object({})
+
+export const gitCommitSchema = z.object({
+  message: z.string().describe('提交信息'),
+  files: z.string().optional().describe('要暂存的文件路径（可选，多个文件用空格分隔）'),
+})
+
+export const gitPushSchema = z.object({
+  remote: z.string().optional().describe('远程仓库名（默认 origin）'),
+  branch: z.string().optional().describe('要推送的分支名'),
+  force: z.boolean().optional().describe('是否强制推送（默认 false）'),
+})
+
+export const webSearchSchema = z.object({
+  query: z.string().describe('搜索关键词'),
+  count: z.number().optional().describe('返回结果数量（默认 5，最大 10）'),
 })
 
 export const dispatchSubagentSchema = z.object({
@@ -92,4 +119,8 @@ export const toolSchemas: Record<string, z.ZodType> = {
   fetch_url: fetchUrlSchema,
   submit_plan: submitPlanSchema,
   dispatch_subagent: dispatchSubagentSchema,
+  git_status: gitStatusSchema,
+  git_commit: gitCommitSchema,
+  git_push: gitPushSchema,
+  web_search: webSearchSchema,
 }

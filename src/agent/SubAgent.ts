@@ -4,12 +4,14 @@
  * 关键约束:深度限制 1 层,写权限默认关闭
  */
 
-import { generateText } from 'ai'
 import type { LanguageModel } from 'ai'
-import type { NexusEvent, PermissionMode, SubAgentResult, SubAgentTask, ModelRole } from './types'
-import type { ToolRegistry, ToolContext } from '../tools/registry'
-import { requiresForcedApproval } from '../sandbox/CommandGuard'
+import { generateText } from 'ai'
 import type { CostTracker } from '../router/CostTracker'
+import { withDeepSeekThinking } from '../router/providers/deepseekFetch'
+import { requiresForcedApproval } from '../sandbox/CommandGuard'
+import type { ToolContext, ToolRegistry } from '../tools/registry'
+import { splitModelParameters } from './ReActLoop'
+import type { ModelRole, NexusEvent, PermissionMode, SubAgentResult, SubAgentTask } from './types'
 
 export interface SubAgentConfig {
   model: LanguageModel
@@ -20,7 +22,11 @@ export interface SubAgentConfig {
   /** 权限模式（与 Executor 一致） */
   permissionMode: PermissionMode
   /** 审批回调 */
-  requestApproval: (tool: string, params: Record<string, unknown>, diff?: string) => Promise<boolean>
+  requestApproval: (
+    tool: string,
+    params: Record<string, unknown>,
+    diff?: string,
+  ) => Promise<boolean>
   /** 成本追踪器 */
   costTracker: CostTracker
   /** 当前模型角色（用于成本记录） */
@@ -33,6 +39,13 @@ export interface SubAgentConfig {
   costPer1kInput: number
   /** 输出 token 单价（每 1k） */
   costPer1kOutput: number
+  /** 缓存命中输入单价（每 1k），DeepSeek 分级计费用 */
+  costPer1kInputCached?: number
+  /**
+   * Provider 特定的模型参数（DeepSeek 深度适配）。
+   * 子 Agent 同样是多轮工具调用，需传入 thinking: disabled 等参数避免 422。
+   */
+  modelParameters?: Record<string, unknown>
   /**
    * 中断信号获取器（Orchestrator.abort() 时触发，与 Executor 行为一致）。
    * 用 getter 而非静态 signal：因为 SubAgent 在 init() 时创建，
@@ -57,9 +70,10 @@ export class SubAgent {
     const availableTools = toolRegistry.getForPhase(phase)
 
     // 如果指定了工具列表,进一步过滤
-    const filteredTools = task.tools.length > 0
-      ? availableTools.filter((t) => task.tools.includes(t.definition.name))
-      : availableTools
+    const filteredTools =
+      task.tools.length > 0
+        ? availableTools.filter((t) => task.tools.includes(t.definition.name))
+        : availableTools
 
     const toolsForAI: Record<string, { description: string; parameters: unknown }> = {}
     for (const tool of filteredTools) {
@@ -95,13 +109,21 @@ export class SubAgent {
         }
         iterations++
 
-        const result = await generateText({
-          model,
-          messages,
-          tools: toolsForAI,
-          maxSteps: 1,
-          abortSignal,
-        })
+        // 拆分 provider 参数：thinking 经 ALS + fetch 拦截器注入，其余经 providerOptions 映射
+        const { topLevel, providerOptions, thinking } = splitModelParameters(
+          this.config.modelParameters,
+        )
+        const result = await withDeepSeekThinking(thinking, () =>
+          generateText({
+            model,
+            messages,
+            tools: toolsForAI,
+            maxSteps: 1,
+            abortSignal,
+            ...(topLevel as Record<string, never>),
+            ...(providerOptions ? { providerOptions } : {}),
+          } as Parameters<typeof generateText>[0]),
+        )
 
         // 记录成本
         const usage = await result.usage
@@ -114,6 +136,7 @@ export class SubAgent {
             outputTokens: usage.completionTokens,
             costPer1kInput: this.config.costPer1kInput,
             costPer1kOutput: this.config.costPer1kOutput,
+            costPer1kInputCached: this.config.costPer1kInputCached,
           })
         }
 
@@ -148,10 +171,11 @@ export class SubAgent {
             filesChanged.push(args.path as string)
           }
 
-          const resultContent = toolResult.error
-            ? `[错误]: ${toolResult.error}`
-            : toolResult.result
-          messages.push({ role: 'user', content: `[${toolCall.toolName}]: ${resultContent}` } as never)
+          const resultContent = toolResult.error ? `[错误]: ${toolResult.error}` : toolResult.result
+          messages.push({
+            role: 'user',
+            content: `[${toolCall.toolName}]: ${resultContent}`,
+          } as never)
         }
       }
 
@@ -185,7 +209,11 @@ export class SubAgent {
     if (!handler?.definition.requiresApproval) return true
 
     // bash 危险命令始终强制审批
-    if (toolName === 'bash' && typeof args.command === 'string' && requiresForcedApproval(args.command)) {
+    if (
+      toolName === 'bash' &&
+      typeof args.command === 'string' &&
+      requiresForcedApproval(args.command)
+    ) {
       return requestApproval(toolName, args)
     }
 

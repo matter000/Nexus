@@ -20,11 +20,55 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Type check
+      - name: Dependency audit (warning only)
+        continue-on-error: true
+        run: bun audit || echo "::warning::bun audit reported vulnerabilities — review recommended"
+
+      - name: Import boundary check
+        run: bun run scripts/check-import-boundaries.ts
+
+      - name: Lint & type check
         run: bun run lint
 
-      - name: Unit tests
-        run: bun run test:unit
+      - name: Unit tests (with coverage)
+        run: bun test tests/unit/ tests/integration/ --coverage --test-name-pattern '^(?:(?!Tree-sitter).)*$' --coverage-reporter=lcov --coverage-reporter=text --coverage-reporter=text-summary
 
-      - name: Integration tests
-        run: bun run test:integration
+      - name: Tree-sitter tests (separate process to avoid WASM memory conflict)
+        run: bun test tests/unit/treesitter.test.ts
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/lcov.info
+          retention-days: 30
+
+      - name: Core change detection
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          CORE_CHANGED=false
+          TEST_CHANGED=false
+          if echo "$CHANGED" | grep -qE '^src/(agent|core)/'; then
+            CORE_CHANGED=true
+          fi
+          if echo "$CHANGED" | grep -qE '^tests/'; then
+            TEST_CHANGED=true
+          fi
+          if [ "$CORE_CHANGED" = true ] && [ "$TEST_CHANGED" = false ]; then
+            echo "::warning::src/agent/ or src/core/ changed but no test files were modified. Please add or update corresponding tests."
+          fi
+
+      - name: Generate coverage summary
+        if: always()
+        run: |
+          echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          bun test tests/unit/ tests/integration/ --coverage --test-name-pattern '^(?:(?!Tree-sitter).)*$' --coverage-reporter=text-summary 2>&1 | tail -20 >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Tree-sitter tests" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          bun test tests/unit/treesitter.test.ts 2>&1 | tail -5 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY

@@ -18,9 +18,26 @@ export interface CommandContext {
   /** 仅重新初始化 providers（用于删除自定义模型后回退 auto 选择） */
   reinitProviders: () => Promise<void>
   getAvailableModels: () => Array<{ name: string; provider: string; current: boolean }>
-  getAllKnownModels: () => Array<{ name: string; provider: string; configured: boolean; current: boolean }>
+  getAllKnownModels: () => Array<{
+    name: string
+    provider: string
+    configured: boolean
+    current: boolean
+  }>
   isProviderConfigured: (providerName: string) => boolean
-  getCost: () => { total: number; inputTokens: number; outputTokens: number; byModel?: Record<string, { cost: number; inputTokens: number; outputTokens: number }> }
+  getCost: () => {
+    total: number
+    inputTokens: number
+    outputTokens: number
+    byModel?: Record<string, { cost: number; inputTokens: number; outputTokens: number }>
+    /** DeepSeek 缓存/推理统计 */
+    cacheHitTokens?: number
+    cacheMissTokens?: number
+    cacheHitRate?: number
+    cacheSavedCost?: number
+    reasoningTokens?: number
+    reasoningPercentage?: number
+  }
   clearContext: () => void
   undo: () => Promise<string>
   compact: () => Promise<{ tokensUsed: number } | string>
@@ -34,11 +51,28 @@ export interface CommandContext {
   /** 恢复指定会话（或最近一次） */
   restoreSession: (sessionId?: string) => Promise<{ restored: boolean; message: string }>
   /** 列出最近会话 */
-  listRecentSessions: (limit?: number) => Array<{ id: string; startTime: number; messageCount: number; cost: number }>
+  listRecentSessions: (
+    limit?: number,
+  ) => Array<{ id: string; startTime: number; messageCount: number; cost: number }>
   /** 导出当前会话 */
   exportSession: (outputPath?: string) => Promise<string>
   /** 获取系统状态 */
-  getStatus: () => { db: boolean; codeGraph: boolean; mcp: boolean; watcher: boolean; model: string; cost: number }
+  getStatus: () => {
+    db: boolean
+    codeGraph: boolean
+    mcp: boolean
+    watcher: boolean
+    model: string
+    cost: number
+  }
+  /** 搜索会话消息 */
+  searchSessions: (query: string) => string
+  /** 设置自动修复模式的重试次数（0=关闭，1-3=开启） */
+  setAutoRetries: (retries: number) => void
+  /** 获取当前自动修复重试次数 */
+  getAutoRetries: () => number
+  /** 获取最近的错误报告 */
+  getRecentErrors: (limit?: number) => Promise<string>
 }
 
 const commands: SlashCommand[] = [
@@ -84,7 +118,7 @@ const commands: SlashCommand[] = [
   {
     name: 'cost',
     aliases: [],
-    description: '查看本次会话花费（含按模型分类明细）',
+    description: '查看本次会话花费（含按模型分类、缓存命中与推理统计）',
     handler: async (_args, ctx) => {
       const cost = ctx.getCost()
       const lines: string[] = [
@@ -92,10 +126,29 @@ const commands: SlashCommand[] = [
         `  输入 tokens: ${cost.inputTokens}`,
         `  输出 tokens: ${cost.outputTokens}`,
       ]
+      // DeepSeek 缓存/推理统计（有数据才展示）
+      const cacheTotal = (cost.cacheHitTokens ?? 0) + (cost.cacheMissTokens ?? 0)
+      if (cacheTotal > 0) {
+        lines.push(
+          `  缓存命中: ${((cost.cacheHitRate ?? 0) * 100).toFixed(1)}% (${cost.cacheHitTokens} hit / ${cost.cacheMissTokens} miss)`,
+        )
+        if ((cost.cacheSavedCost ?? 0) > 0) {
+          lines.push(
+            `  缓存节省: $${(cost.cacheSavedCost ?? 0).toFixed(4)}（分级计费已计入总花费）`,
+          )
+        }
+      }
+      if ((cost.reasoningTokens ?? 0) > 0) {
+        lines.push(
+          `  推理 tokens: ${cost.reasoningTokens}（占输出 ${(cost.reasoningPercentage ?? 0).toFixed(1)}%）`,
+        )
+      }
       if (cost.byModel && Object.keys(cost.byModel).length > 0) {
         lines.push('\n按模型分类:')
         for (const [model, info] of Object.entries(cost.byModel)) {
-          lines.push(`  ${model}: $${info.cost.toFixed(4)} (${info.inputTokens} in / ${info.outputTokens} out)`)
+          lines.push(
+            `  ${model}: $${info.cost.toFixed(4)} (${info.inputTokens} in / ${info.outputTokens} out)`,
+          )
         }
       }
       return lines.join('\n')
@@ -143,11 +196,13 @@ const commands: SlashCommand[] = [
         if (sessions.length === 0) return '没有可恢复的历史会话'
 
         const result = await ctx.restoreSession()
-        const list = sessions.map((s, i) => {
-          const time = new Date(s.startTime).toLocaleString()
-          const marker = i === 0 ? ' ← 已恢复' : ''
-          return `  ${i + 1}. [${s.id.slice(0, 8)}] ${time} | ${s.messageCount} 条消息 | $${s.cost.toFixed(4)}${marker}`
-        }).join('\n')
+        const list = sessions
+          .map((s, i) => {
+            const time = new Date(s.startTime).toLocaleString()
+            const marker = i === 0 ? ' ← 已恢复' : ''
+            return `  ${i + 1}. [${s.id.slice(0, 8)}] ${time} | ${s.messageCount} 条消息 | $${s.cost.toFixed(4)}${marker}`
+          })
+          .join('\n')
         return `${result.message}\n\n最近会话:\n${list}\n\n提示: 使用 /resume <id> 恢复其他会话`
       }
 
@@ -187,7 +242,7 @@ const commands: SlashCommand[] = [
     description: '显示各子系统健康状态（DB/CodeGraph/MCP/Watcher）',
     handler: async (_args, ctx) => {
       const status = ctx.getStatus()
-      const icon = (ok: boolean) => ok ? '✅' : '❌'
+      const icon = (ok: boolean) => (ok ? '✅' : '❌')
       return [
         `系统状态:`,
         `  ${icon(status.db)} 数据库 (NexusDB)`,
@@ -212,6 +267,49 @@ const commands: SlashCommand[] = [
       } catch (err) {
         return `导出失败: ${err instanceof Error ? err.message : String(err)}`
       }
+    },
+  },
+  {
+    name: 'search',
+    aliases: ['s'],
+    description: '搜索历史会话消息（/search <关键词>）',
+    handler: async (args, ctx) => {
+      const query = args.trim()
+      if (!query) {
+        return '用法: /search <关键词>\n示例: /search 配置文件\n将搜索所有历史会话中的消息内容，返回匹配的会话和消息摘要。'
+      }
+      return ctx.searchSessions(query)
+    },
+  },
+  {
+    name: 'autofix',
+    aliases: ['af'],
+    description: '查看或设置自动修复模式（/autofix 查看，/autofix <0-3> 设置重试次数）',
+    handler: async (args, ctx) => {
+      const input = args.trim()
+      if (!input) {
+        const current = ctx.getAutoRetries()
+        return current > 0
+          ? `自动修复模式: 已开启（重试 ${current} 次）\n使用 /autofix 0 关闭，/autofix <1-3> 设置重试次数`
+          : '自动修复模式: 已关闭\n使用 /autofix <1-3> 开启（设置重试次数）'
+      }
+      const retries = Number.parseInt(input, 10)
+      if (Number.isNaN(retries) || retries < 0 || retries > 3) {
+        return '无效参数。用法: /autofix <0|1|2|3>\n  0 = 关闭\n  1-3 = 开启并设置重试次数'
+      }
+      ctx.setAutoRetries(retries)
+      return retries > 0
+        ? `自动修复模式已开启，错误时将自动重试 ${retries} 次`
+        : '自动修复模式已关闭'
+    },
+  },
+  {
+    name: 'errors',
+    aliases: ['err'],
+    description: '查看最近错误报告（/errors [数量]）',
+    handler: async (args, ctx) => {
+      const limit = args.trim() ? Number.parseInt(args.trim(), 10) || 10 : 10
+      return ctx.getRecentErrors(limit)
     },
   },
   {
@@ -252,7 +350,10 @@ function findMatchingCommands(name: string): SlashCommand[] {
   return commands.filter((c) => c.name.startsWith(name))
 }
 
-export async function handleSlashCommand(input: string, ctx: CommandContext): Promise<string | null> {
+export async function handleSlashCommand(
+  input: string,
+  ctx: CommandContext,
+): Promise<string | null> {
   const trimmed = input.slice(1) // 去掉 /
   const [name, ...rest] = trimmed.split(' ')
   const args = rest.join(' ')
@@ -282,7 +383,5 @@ export function getAvailableCommands(): SlashCommand[] {
  */
 export function getCommandCompletions(prefix: string): string[] {
   const p = prefix.startsWith('/') ? prefix.slice(1) : prefix
-  return commands
-    .filter((c) => c.name.startsWith(p))
-    .map((c) => `/${c.name}`)
+  return commands.filter((c) => c.name.startsWith(p)).map((c) => `/${c.name}`)
 }

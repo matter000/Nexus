@@ -4,7 +4,7 @@
  */
 
 import { readFile } from 'fs/promises'
-import { resolve, join } from 'path'
+import { join, resolve } from 'path'
 import { parse } from 'smol-toml'
 import type { ProjectRules } from '../agent/types'
 
@@ -37,14 +37,22 @@ export async function loadRules(projectRoot: string): Promise<ProjectRules> {
     return {
       project: {
         name: (raw.project as Record<string, string>)?.name ?? DEFAULT_RULES.project.name,
-        language: (raw.project as Record<string, string>)?.language ?? DEFAULT_RULES.project.language,
-        testCommand: (raw.project as Record<string, string>)?.test_command ?? DEFAULT_RULES.project.testCommand,
-        buildCommand: (raw.project as Record<string, string>)?.build_command ?? DEFAULT_RULES.project.buildCommand,
+        language:
+          (raw.project as Record<string, string>)?.language ?? DEFAULT_RULES.project.language,
+        testCommand:
+          (raw.project as Record<string, string>)?.test_command ??
+          DEFAULT_RULES.project.testCommand,
+        buildCommand:
+          (raw.project as Record<string, string>)?.build_command ??
+          DEFAULT_RULES.project.buildCommand,
       },
       style: {
         indent: (raw.style as Record<string, number>)?.indent ?? DEFAULT_RULES.style.indent,
-        quote: (raw.style as Record<string, string>)?.quote as 'single' | 'double' ?? DEFAULT_RULES.style.quote,
-        semicolons: (raw.style as Record<string, boolean>)?.semicolons ?? DEFAULT_RULES.style.semicolons,
+        quote:
+          ((raw.style as Record<string, string>)?.quote as 'single' | 'double') ??
+          DEFAULT_RULES.style.quote,
+        semicolons:
+          (raw.style as Record<string, boolean>)?.semicolons ?? DEFAULT_RULES.style.semicolons,
       },
       constraints: (raw.constraints as Record<string, boolean>) ?? {},
       context: {

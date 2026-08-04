@@ -1,12 +1,12 @@
 /**
  * 输入框组件
- * 支持多行输入、斜杠命令提示与 Tab 自动补全
+ * 支持多行输入（Alt+Enter 换行，Enter 提交）、斜杠命令提示与 Tab 自动补全
  */
 
-import React, { useState, useMemo } from 'react'
 import { Box, Text, useInput } from 'ink'
+import React, { useMemo, useRef, useState } from 'react'
+import { getAvailableCommands, getCommandCompletions } from '../../cli/commands'
 import { theme } from '../theme'
-import { getCommandCompletions, getAvailableCommands } from '../../cli/commands'
 
 interface InputBoxProps {
   onSubmit: (text: string) => void
@@ -14,7 +14,11 @@ interface InputBoxProps {
   placeholder?: string
 }
 
-export function InputBox({ onSubmit, disabled = false, placeholder = '输入任务...' }: InputBoxProps) {
+export function InputBox({
+  onSubmit,
+  disabled = false,
+  placeholder = '输入任务...',
+}: InputBoxProps) {
   const [value, setValue] = useState('')
   const [completionIndex, setCompletionIndex] = useState(-1)
 
@@ -38,6 +42,14 @@ export function InputBox({ onSubmit, disabled = false, placeholder = '输入任�
   useInput((input, key) => {
     if (disabled) return
 
+    // Alt+Enter 换行（meta 即 Alt 键）
+    if (key.return && key.meta) {
+      setValue((v) => v + '\n')
+      setCompletionIndex(-1)
+      return
+    }
+
+    // Enter 提交
     if (key.return) {
       if (value.trim()) {
         onSubmit(value.trim())
@@ -68,13 +80,17 @@ export function InputBox({ onSubmit, disabled = false, placeholder = '输入任�
     }
 
     // 忽略带修饰键的输入（Shift+P 留给 TodoProgress 折叠等全局快捷键）
-    if (key.shift || key.ctrl || key.meta) return
+    // 但允许 Alt（meta）在 Alt+Enter 中已处理
+    if (key.shift || key.ctrl) return
 
     if (input) {
       setValue((v) => v + input)
       setCompletionIndex(-1)
     }
   })
+
+  // 显示多行内容：将 \n 拆分为多行 Text
+  const displayLines = value.split('\n')
 
   return (
     <Box flexDirection="column">
@@ -83,9 +99,14 @@ export function InputBox({ onSubmit, disabled = false, placeholder = '输入任�
         <Box flexDirection="column" marginBottom={1}>
           {displayCommands.map((cmd) => (
             <Box key={cmd.name}>
-              <Text color={theme.colors.primary} bold>{cmd.name}</Text>
+              <Text color={theme.colors.primary} bold>
+                {cmd.name}
+              </Text>
               {cmd.description && (
-                <Text color={theme.colors.muted} dimColor> — {cmd.description}</Text>
+                <Text color={theme.colors.muted} dimColor>
+                  {' '}
+                  — {cmd.description}
+                </Text>
               )}
             </Box>
           ))}
@@ -96,14 +117,38 @@ export function InputBox({ onSubmit, disabled = false, placeholder = '输入任�
           )}
         </Box>
       )}
-      <Box>
-        <Text color={disabled ? theme.colors.muted : theme.colors.primary} bold dimColor={disabled}>{'> '}</Text>
-        <Text>
-          {value || <Text color={theme.colors.muted} dimColor>{disabled ? '执行中，无法输入' : placeholder}</Text>}
-        </Text>
-        {!disabled && <Text color={theme.colors.primary}>▌</Text>}
+      <Box flexDirection="column">
+        <Box>
+          <Text
+            color={disabled ? theme.colors.muted : theme.colors.primary}
+            bold
+            dimColor={disabled}
+          >
+            {'> '}
+          </Text>
+          {value ? (
+            <Box flexDirection="column">
+              {displayLines.map((line, i) => (
+                <Text key={i}>
+                  {line}
+                  {i < displayLines.length - 1 ? '' : ''}
+                </Text>
+              ))}
+            </Box>
+          ) : (
+            <Text color={theme.colors.muted} dimColor>
+              {disabled ? '执行中，无法输入' : placeholder}
+            </Text>
+          )}
+          {!disabled && <Text color={theme.colors.primary}>▌</Text>}
+        </Box>
+        {/* 多行提示 */}
+        {value.includes('\n') && (
+          <Text color={theme.colors.muted} dimColor italic>
+            [Alt+Enter 换行 · Enter 提交]
+          </Text>
+        )}
       </Box>
-
     </Box>
   )
 }

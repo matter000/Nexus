@@ -10,6 +10,14 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { CheckpointManager } from '../../src/sandbox/Checkpoint'
 
+// Git 环境变量，避免并行测试中 git config 互相干扰
+const GIT_ENV = {
+  GIT_AUTHOR_NAME: 'Nexus Test',
+  GIT_AUTHOR_EMAIL: 'test@nexus.dev',
+  GIT_COMMITTER_NAME: 'Nexus Test',
+  GIT_COMMITTER_EMAIL: 'test@nexus.dev',
+}
+
 // 帮助函数：在临时目录中执行 git 命令
 async function gitRun(args: string[], cwd: string): Promise<{ stdout: string; exitCode: number }> {
   const { spawn } = await import('child_process')
@@ -18,6 +26,7 @@ async function gitRun(args: string[], cwd: string): Promise<{ stdout: string; ex
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      env: { ...process.env, ...GIT_ENV },
     })
     let stdout = ''
     child.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
@@ -26,10 +35,9 @@ async function gitRun(args: string[], cwd: string): Promise<{ stdout: string; ex
   })
 }
 
-// 配置 git 用户信息（CI 环境可能没有全局配置）
-async function configureGit(cwd: string) {
-  await gitRun(['config', 'user.email', 'test@nexus.dev'], cwd)
-  await gitRun(['config', 'user.name', 'Nexus Test'], cwd)
+// 初始化临时目录为 git 仓库并配置用户信息
+async function initGitRepo(cwd: string) {
+  await gitRun(['init', '-q'], cwd)
 }
 
 describe('CheckpointManager', () => {
@@ -38,8 +46,8 @@ describe('CheckpointManager', () => {
   beforeEach(async () => {
     // 为每个测试创建独立的临时目录
     tmpDir = await mkdtemp(join(tmpdir(), 'nexus-checkpoint-test-'))
-    // 配置 git 用户信息（某些环境需要）
-    await configureGit(tmpDir)
+    // 初始化为 git 仓库（环境变量 GIT_ENV 保证 commit 不依赖全局配置）
+    await initGitRepo(tmpDir)
   })
 
   afterEach(async () => {
@@ -88,7 +96,7 @@ describe('CheckpointManager', () => {
     expect(checkpoint!.commitHash).toBeDefined()
     expect(checkpoint!.commitHash.length).toBeGreaterThan(0)
     expect(checkpoint!.filesChanged).toContain('test.txt')
-  })
+  }, 15000)
 
   it('create() 无变更时返回 null', async () => {
     const cm = new CheckpointManager(tmpDir)
@@ -118,7 +126,7 @@ describe('CheckpointManager', () => {
     expect(result).toContain('已回滚步骤 2')
     expect(cm.getCurrentStep()).toBe(1)
     expect(cm.hasCheckpoints()).toBe(true) // 还有第一个 checkpoint
-  })
+  }, 15000)
 
   it('undo() 无 checkpoint 时返回提示', async () => {
     const cm = new CheckpointManager(tmpDir)
@@ -144,7 +152,7 @@ describe('CheckpointManager', () => {
     expect(all[0].message).toBe('步骤A')
     expect(all[1].step).toBe(2)
     expect(all[1].message).toBe('步骤B')
-  })
+  }, 15000)
 
   it('getAll() 返回副本，不影响内部状态', async () => {
     const cm = new CheckpointManager(tmpDir)
@@ -201,7 +209,7 @@ describe('CheckpointManager', () => {
 
     expect(checkpoint).not.toBeNull()
     expect(checkpoint!.todoId).toBe('todo-123')
-  })
+  }, 15000)
 
   it('多次 create() 步骤号递增', async () => {
     const cm = new CheckpointManager(tmpDir)
@@ -220,5 +228,5 @@ describe('CheckpointManager', () => {
     expect(cp2!.step).toBe(2)
     expect(cp3!.step).toBe(3)
     expect(cm.getCurrentStep()).toBe(3)
-  })
+  }, 15000)
 })

@@ -2,10 +2,10 @@
  * 验证器 — 对任务结果执行验证规则
  */
 
-import { readFile, access } from 'fs/promises'
-import { join } from 'path'
 import { spawn } from 'child_process'
-import type { ValidateRule, EvalTask } from './types'
+import { access, readFile } from 'fs/promises'
+import { join } from 'path'
+import type { EvalTask, ValidateRule } from './types'
 
 export interface ValidateResult {
   pass: boolean
@@ -37,7 +37,10 @@ export async function validateTask(dir: string, task: EvalTask): Promise<Validat
   }
 }
 
-async function checkRule(dir: string, rule: ValidateRule): Promise<{ pass: boolean; reason?: string }> {
+async function checkRule(
+  dir: string,
+  rule: ValidateRule,
+): Promise<{ pass: boolean; reason?: string }> {
   try {
     switch (rule.type) {
       case 'file_exists': {
@@ -83,7 +86,10 @@ async function checkRule(dir: string, rule: ValidateRule): Promise<{ pass: boole
         if (output.exitCode === 0) {
           return { pass: true }
         }
-        return { pass: false, reason: `命令失败 (exit ${output.exitCode}): ${rule.command}\n${output.stderr}` }
+        return {
+          pass: false,
+          reason: `命令失败 (exit ${output.exitCode}): ${rule.command}\n${output.stderr}`,
+        }
       }
       case 'bash_output_contains': {
         const output = await runCommand(rule.command, dir)
@@ -93,7 +99,10 @@ async function checkRule(dir: string, rule: ValidateRule): Promise<{ pass: boole
         if (output.stdout.includes(rule.pattern)) {
           return { pass: true }
         }
-        return { pass: false, reason: `命令输出未包含: ${rule.pattern}\n输出: ${output.stdout.slice(0, 200)}` }
+        return {
+          pass: false,
+          reason: `命令输出未包含: ${rule.pattern}\n输出: ${output.stdout.slice(0, 200)}`,
+        }
       }
       default:
         return { pass: false, reason: `未知验证类型: ${(rule as ValidateRule).type}` }
@@ -103,7 +112,10 @@ async function checkRule(dir: string, rule: ValidateRule): Promise<{ pass: boole
   }
 }
 
-function runCommand(command: string, cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+function runCommand(
+  command: string,
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
     const child = spawn('bash', ['-c', command], {
       cwd,
@@ -113,9 +125,15 @@ function runCommand(command: string, cwd: string): Promise<{ stdout: string; std
     })
     let stdout = ''
     let stderr = ''
-    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
-    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
-    child.on('close', (code) => resolve({ stdout: stdout.trim(), stderr: stderr.trim(), exitCode: code ?? 1 }))
+    child.stdout?.on('data', (d: Buffer) => {
+      stdout += d.toString()
+    })
+    child.stderr?.on('data', (d: Buffer) => {
+      stderr += d.toString()
+    })
+    child.on('close', (code) =>
+      resolve({ stdout: stdout.trim(), stderr: stderr.trim(), exitCode: code ?? 1 }),
+    )
     child.on('error', (err) => resolve({ stdout: '', stderr: err.message, exitCode: 1 }))
   })
 }

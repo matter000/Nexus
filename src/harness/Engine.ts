@@ -2,12 +2,12 @@
  * 评估引擎 — 批量加载、运行、验证评估任务
  */
 
-import { mkdtemp, writeFile, rm } from 'fs/promises'
-import { join } from 'path'
+import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
+import { join } from 'path'
 import { loadTasks } from './TaskLoader'
+import type { EvalReport, EvalResult, EvalTask } from './types'
 import { validateTask } from './Validator'
-import type { EvalTask, EvalResult, EvalReport } from './types'
 
 export interface HarnessOptions {
   /** 任务目录（.toml 文件所在） */
@@ -115,7 +115,9 @@ export class HarnessEngine {
     } finally {
       // 清理临时目录
       if (workDir) {
-        try { await rm(workDir, { recursive: true, force: true }) } catch {}
+        try {
+          await rm(workDir, { recursive: true, force: true })
+        } catch {}
       }
     }
   }
@@ -126,5 +128,7 @@ async function mkdirIfNeeded(filePath: string): Promise<void> {
   const { dirname } = await import('path')
   try {
     await mkdir(dirname(filePath), { recursive: true })
-  } catch { /* 目录已存在 */ }
+  } catch {
+    /* 目录已存在 */
+  }
 }

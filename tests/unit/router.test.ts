@@ -3,7 +3,7 @@
  * 验证 provider 初始化、模型降级、FALLBACK_CHAIN 完整性
  */
 
-import { describe, it, expect, beforeEach, mock } from 'bun:test'
+import { beforeEach, describe, expect, it, mock } from 'bun:test'
 import type { NexusConfig } from '../../src/agent/types'
 
 // ─── mock 外部依赖 ────────────────────────────────────────────────────────────
@@ -14,24 +14,67 @@ let availableProviderNames: string[] = ['anthropic']
 ;(mock as any).module('../../src/router/providers/index', () => ({
   getAvailableProviders: () => {
     const all = [
-      { name: 'anthropic', isAvailable: () => availableProviderNames.includes('anthropic'), getDefaultModel: () => 'claude-sonnet-4-20250514', getContextWindow: () => 200000, supportsTools: () => true },
-      { name: 'openai', isAvailable: () => availableProviderNames.includes('openai'), getDefaultModel: () => 'gpt-4o', getContextWindow: () => 128000, supportsTools: () => true },
-      { name: 'deepseek', isAvailable: () => availableProviderNames.includes('deepseek'), getDefaultModel: () => 'deepseek-chat', getContextWindow: () => 65536, supportsTools: (m: string) => m === 'deepseek-chat' },
-      { name: 'custom', isAvailable: () => availableProviderNames.includes('custom'), getDefaultModel: () => 'default', getContextWindow: () => 128000, supportsTools: () => true },
+      {
+        name: 'anthropic',
+        isAvailable: () => availableProviderNames.includes('anthropic'),
+        getDefaultModel: () => 'claude-sonnet-4-20250514',
+        getContextWindow: () => 200000,
+        supportsTools: () => true,
+      },
+      {
+        name: 'openai',
+        isAvailable: () => availableProviderNames.includes('openai'),
+        getDefaultModel: () => 'gpt-4o',
+        getContextWindow: () => 128000,
+        supportsTools: () => true,
+      },
+      {
+        name: 'deepseek',
+        isAvailable: () => availableProviderNames.includes('deepseek'),
+        getDefaultModel: () => 'deepseek-v4-flash',
+        getContextWindow: () => 1_000_000,
+        supportsTools: (m: string) => m === 'deepseek-v4-flash' || m === 'deepseek-v4-pro',
+      },
+      {
+        name: 'custom',
+        isAvailable: () => availableProviderNames.includes('custom'),
+        getDefaultModel: () => 'default',
+        getContextWindow: () => 128000,
+        supportsTools: () => true,
+      },
     ]
-    return all.filter(p => p.isAvailable())
+    return all.filter((p) => p.isAvailable())
   },
   getProvider: (name: string) => {
     const adapters: Record<string, any> = {
-      anthropic: { name: 'anthropic', getDefaultModel: () => 'claude-sonnet-4-20250514', getContextWindow: () => 200000, supportsTools: () => true },
-      openai: { name: 'openai', getDefaultModel: () => 'gpt-4o', getContextWindow: () => 128000, supportsTools: () => true },
-      deepseek: { name: 'deepseek', getDefaultModel: () => 'deepseek-chat', getContextWindow: () => 65536, supportsTools: (m: string) => m === 'deepseek-chat' },
-      custom: { name: 'custom', getDefaultModel: () => 'default', getContextWindow: () => 128000, supportsTools: () => true },
+      anthropic: {
+        name: 'anthropic',
+        getDefaultModel: () => 'claude-sonnet-4-20250514',
+        getContextWindow: () => 200000,
+        supportsTools: () => true,
+      },
+      openai: {
+        name: 'openai',
+        getDefaultModel: () => 'gpt-4o',
+        getContextWindow: () => 128000,
+        supportsTools: () => true,
+      },
+      deepseek: {
+        name: 'deepseek',
+        getDefaultModel: () => 'deepseek-v4-flash',
+        getContextWindow: () => 1_000_000,
+        supportsTools: (m: string) => m === 'deepseek-v4-flash' || m === 'deepseek-v4-pro',
+      },
+      custom: {
+        name: 'custom',
+        getDefaultModel: () => 'default',
+        getContextWindow: () => 128000,
+        supportsTools: () => true,
+      },
     }
     return adapters[name]
   },
-}));
-
+}))
 // Mock AI SDK - 让 createAnthropic/createOpenAI 返回可调用工厂
 ;(mock as any).module('@ai-sdk/anthropic', () => ({
   createAnthropic: (_opts: any) => {
@@ -45,8 +88,7 @@ let availableProviderNames: string[] = ['anthropic']
     const factory = (model: string) => ({ modelId: model, provider: 'openai.mock' })
     return factory
   },
-}));
-
+}))
 // Mock config-secrets
 ;(mock as any).module('../../src/config-secrets', () => ({
   getEffectiveApiKey: (providerName: string, _envVarName: string, secrets: any) => {
@@ -55,8 +97,8 @@ let availableProviderNames: string[] = ['anthropic']
   },
 }))
 
-import { ModelRouter, FALLBACK_CHAIN } from '../../src/router/ModelRouter'
 import { CostTracker } from '../../src/router/CostTracker'
+import { FALLBACK_CHAIN, ModelRouter } from '../../src/router/ModelRouter'
 
 function createDefaultConfig(): NexusConfig {
   return {
@@ -68,12 +110,23 @@ function createDefaultConfig(): NexusConfig {
       providers: {
         anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY', defaultModel: 'claude-sonnet-4-20250514' },
         openai: { apiKeyEnv: 'OPENAI_API_KEY', defaultModel: 'gpt-4o' },
-        deepseek: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com', defaultModel: 'deepseek-chat' },
+        deepseek: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseUrl: 'https://api.deepseek.com',
+          defaultModel: 'deepseek-v4-flash',
+        },
         custom: { apiKeyEnv: 'CUSTOM_API_KEY', defaultModel: '' },
       },
     },
     permissions: { mode: 'ask' },
-    limits: { maxSessionCost: 5, bashTimeout: 30, maxReadLines: 2000, maxIterations: 50, maxOutputBytes: 102400 },
+    limits: {
+      maxSessionCost: 5,
+      bashTimeout: 30,
+      maxReadLines: 2000,
+      maxIterations: 50,
+      maxOutputBytes: 102400,
+      maxAutoRetries: 0,
+    },
     context: { budgetRatio: 0.8, recentTurnsKeep: 5 },
     checkpoint: { autoCheckpoint: true, branch: 'nexus/checkpoints' },
   }
@@ -110,16 +163,25 @@ describe('ModelRouter', () => {
     expect((model as any).modelId).toBeDefined()
   })
 
-  it('FALLBACK_CHAIN 包含合理的降级路径', () => {
-    // claude-sonnet 应降级到 deepseek-chat
-    expect(FALLBACK_CHAIN['claude-sonnet-4-20250514']).toBe('deepseek-chat')
-    // deepseek-chat 应降级到 gpt-4o-mini
-    expect(FALLBACK_CHAIN['deepseek-chat']).toBe('gpt-4o-mini')
-    // gpt-4o 应降级到 deepseek-chat
-    expect(FALLBACK_CHAIN['gpt-4o']).toBe('deepseek-chat')
+  it('FALLBACK_CHAIN 包含合理的降级路径（跨 provider 容灾策略）', () => {
+    // claude-sonnet 应降级到 deepseek-v4-flash（DeepSeek 优先）
+    expect(FALLBACK_CHAIN['claude-sonnet-4-20250514']).toBe('deepseek-v4-flash')
+    // deepseek-v4-flash 跨 provider 容灾到 claude-haiku-3-5（同生态内降级无意义）
+    expect(FALLBACK_CHAIN['deepseek-v4-flash']).toBe('claude-haiku-3-5')
+    // deepseek-v4-pro 优先降级到更便宜的 flash，再跨 provider
+    expect(FALLBACK_CHAIN['deepseek-v4-pro']).toBe('deepseek-v4-flash')
+    // gpt-4o 应降级到 deepseek-v4-flash
+    expect(FALLBACK_CHAIN['gpt-4o']).toBe('deepseek-v4-flash')
     // 所有降级目标应是已知模型
-    const knownModels = ['claude-sonnet-4-20250514', 'claude-haiku-3-5', 'gpt-4o', 'gpt-4o-mini', 'deepseek-chat', 'deepseek-reasoner']
-    for (const fallback of Object.values(FALLBACK_CHAIN)) {
+    const knownModels = [
+      'claude-sonnet-4-20250514',
+      'claude-haiku-3-5',
+      'gpt-4o',
+      'gpt-4o-mini',
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+    ]
+    for (const [, fallback] of Object.entries(FALLBACK_CHAIN)) {
       expect(knownModels).toContain(fallback)
     }
   })
@@ -161,6 +223,18 @@ describe('ModelRouter', () => {
     expect(typeof route.contextWindow).toBe('number')
   })
 
+  it('getRouteInfo() 成本参数随实际模型动态变化（非硬编码）', () => {
+    availableProviderNames = ['deepseek'] // 只有 deepseek，executor 从 claude 降级到 deepseek-v4-flash
+    const router = new ModelRouter(createDefaultConfig(), new CostTracker())
+
+    const route = router.getRouteInfo('executor')
+    expect(route.model).toBe('deepseek-v4-flash')
+    expect(route.provider).toBe('deepseek')
+    // 应为 deepseek-v4-flash 的成本，而非硬编码的 anthropic 价格（0.003 / 0.015）
+    expect(route.costPer1kInput).toBe(0.000137)
+    expect(route.costPer1kOutput).toBe(0.000274)
+  })
+
   it('getContextWindow() 返回有效数值', () => {
     availableProviderNames = ['anthropic']
     const router = new ModelRouter(createDefaultConfig(), new CostTracker())
@@ -183,8 +257,8 @@ describe('ModelRouter', () => {
     availableProviderNames = ['anthropic']
     const router = new ModelRouter(createDefaultConfig(), new CostTracker())
     const fallback = router.getFallbackModelName('executor')
-    // executor 默认 claude-sonnet-4-20250514，降级到 deepseek-chat
-    expect(fallback).toBe('deepseek-chat')
+    // executor 默认 claude-sonnet-4-20250514，降级到 deepseek-v4-flash
+    expect(fallback).toBe('deepseek-v4-flash')
   })
 
   it('使用 secrets 配置初始化 provider', () => {
@@ -205,7 +279,7 @@ describe('ModelRouter', () => {
     const models = router.getAvailableModels()
     expect(Array.isArray(models)).toBe(true)
     // anthropic 可用时应有 claude 模型
-    const claudeModels = models.filter(m => m.provider === 'anthropic')
+    const claudeModels = models.filter((m) => m.provider === 'anthropic')
     expect(claudeModels.length).toBeGreaterThan(0)
   })
 

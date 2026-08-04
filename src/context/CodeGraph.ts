@@ -5,9 +5,9 @@
  * 生成"地图"(每文件压缩到几行),常驻 L1 上下文
  */
 
-import ts from 'typescript'
 import { readdir, readFile } from 'fs/promises'
-import { join, relative, extname } from 'path'
+import { extname, join, relative } from 'path'
+import ts from 'typescript'
 import { getParserForFile, getSupportedExtensions } from './parsers/index'
 
 export interface CodeSymbol {
@@ -98,11 +98,27 @@ export interface GraphEngine {
 // ─── 排除目录 ──────────────────────────────────────────────────────────────
 
 const EXCLUDED_DIRS = new Set([
-  'node_modules', '.git', 'dist', 'build', '.next', '.nuxt',
-  'coverage', '__pycache__', '.cache', 'bun.lock',
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  '.next',
+  '.nuxt',
+  'coverage',
+  '__pycache__',
+  '.cache',
+  'bun.lock',
 ])
 
-const SUPPORTED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', ...getSupportedExtensions()])
+const SUPPORTED_EXTENSIONS = new Set([
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mts',
+  '.cts',
+  ...getSupportedExtensions(),
+])
 
 // ─── 文件遍历 ──────────────────────────────────────────────────────────────
 
@@ -118,7 +134,7 @@ async function collectFiles(dir: string, rootDir: string): Promise<string[]> {
     const fullPath = join(dir, entry.name)
     if (entry.isDirectory()) {
       if (!EXCLUDED_DIRS.has(entry.name)) {
-        results.push(...await collectFiles(fullPath, rootDir))
+        results.push(...(await collectFiles(fullPath, rootDir)))
       }
     } else if (entry.isFile()) {
       const ext = extname(entry.name)
@@ -135,7 +151,12 @@ async function collectFiles(dir: string, rootDir: string): Promise<string[]> {
 function getJSDocComment(node: ts.Node, sourceFile: ts.SourceFile): string | undefined {
   const jsDoc = (node as unknown as { jsDoc?: ts.JSDoc[] }).jsDoc
   if (jsDoc && jsDoc.length > 0) {
-    return jsDoc.map((d) => d.comment ?? '').filter(Boolean).join('\n') || undefined
+    return (
+      jsDoc
+        .map((d) => d.comment ?? '')
+        .filter(Boolean)
+        .join('\n') || undefined
+    )
   }
   return undefined
 }
@@ -153,7 +174,10 @@ function isExported(node: ts.Node): boolean {
   return modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false
 }
 
-function parseSourceFile(content: string, filePath: string): { symbols: CodeSymbol[]; imports: string[]; lineCount: number } {
+function parseSourceFile(
+  content: string,
+  filePath: string,
+): { symbols: CodeSymbol[]; imports: string[]; lineCount: number } {
   const sourceFile = ts.createSourceFile(
     filePath,
     content,
@@ -208,8 +232,11 @@ function parseSourceFile(content: string, filePath: string): { symbols: CodeSymb
       // Extract methods (top-level only, don't recurse into function bodies)
       for (const member of node.members) {
         if (ts.isMethodDeclaration(member) && member.name) {
-          const mName = ts.isIdentifier(member.name) ? member.name.text : member.name.getText(sourceFile)
-          const mStartLine = sourceFile.getLineAndCharacterOfPosition(member.getStart(sourceFile)).line + 1
+          const mName = ts.isIdentifier(member.name)
+            ? member.name.text
+            : member.name.getText(sourceFile)
+          const mStartLine =
+            sourceFile.getLineAndCharacterOfPosition(member.getStart(sourceFile)).line + 1
           const mEndLine = sourceFile.getLineAndCharacterOfPosition(member.getEnd()).line + 1
           symbols.push({
             name: `${node.name.text}.${mName}`,
@@ -262,7 +289,8 @@ function parseSourceFile(content: string, filePath: string): { symbols: CodeSymb
     if (ts.isVariableStatement(node) && isExported(node)) {
       for (const decl of node.declarationList.declarations) {
         if (ts.isIdentifier(decl.name)) {
-          const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+          const startLine =
+            sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
           const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1
           symbols.push({
             name: decl.name.text,
@@ -294,7 +322,11 @@ function parseSourceFile(content: string, filePath: string): { symbols: CodeSymb
  */
 export class TypeScriptGraphEngine implements GraphEngine {
   readonly name = 'typescript'
-  private graph: CodeGraph = { files: new Map(), symbolIndex: new Map(), dependencyGraph: new Map() }
+  private graph: CodeGraph = {
+    files: new Map(),
+    symbolIndex: new Map(),
+    dependencyGraph: new Map(),
+  }
   private projectRoot: string = ''
 
   async buildGraph(projectRoot: string): Promise<CodeGraph> {
@@ -361,19 +393,34 @@ export class TypeScriptGraphEngine implements GraphEngine {
       let imports: string[]
       let lineCount: number
 
-      // TS/JS 用精确 AST 解析，其他语言用正则 parser
+      // TS/JS 用精确 TypeScript Compiler API，其他语言优先 tree-sitter 后降级正则
       if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts'].includes(ext)) {
         const parsed = parseSourceFile(content, relPath)
         symbols = parsed.symbols
         imports = parsed.imports
         lineCount = parsed.lineCount
       } else {
-        const parser = getParserForFile(relPath)
-        if (!parser) return
-        const parsed = parser.parse(content, relPath)
-        symbols = parsed.symbols
-        imports = parsed.imports
-        lineCount = content.split('\n').length
+        // 尝试 tree-sitter（懒加载 WASM grammar，失败不阻塞）
+        let parsed: { symbols: CodeSymbol[]; imports: string[] } | null = null
+        try {
+          const { parseWithTreeSitter } = await import('./parsers/treesitter')
+          parsed = await parseWithTreeSitter(content, relPath)
+        } catch {
+          // tree-sitter 不可用（grammar 加载失败或模块不存在），降级
+        }
+        if (parsed) {
+          symbols = parsed.symbols
+          imports = parsed.imports
+          lineCount = content.split('\n').length
+        } else {
+          // 降级：回退到正则 parser
+          const parser = getParserForFile(relPath)
+          if (!parser) return
+          const regexParsed = parser.parse(content, relPath)
+          symbols = regexParsed.symbols
+          imports = regexParsed.imports
+          lineCount = content.split('\n').length
+        }
       }
 
       const skeleton: FileSkeleton = { filePath: relPath, symbols, imports, lineCount }
@@ -459,7 +506,9 @@ export function formatGraphForContext(graph: CodeGraph): string {
   const parts: string[] = ['## 代码地图']
   for (const [filePath, skeleton] of graph.files) {
     // Only show exported symbols for compact context
-    const exportSymbols = skeleton.symbols.filter((s) => s.exports || s.kind === 'class' || s.kind === 'interface' || s.kind === 'type')
+    const exportSymbols = skeleton.symbols.filter(
+      (s) => s.exports || s.kind === 'class' || s.kind === 'interface' || s.kind === 'type',
+    )
     if (exportSymbols.length === 0) continue
 
     const symbols = exportSymbols
@@ -521,7 +570,11 @@ function removeFileFromGraph(graph: CodeGraph, filePath: string): void {
 }
 
 /** 解析单个文件并添加到 graph（文件不存在时静默跳过） */
-async function parseAndAddToGraph(graph: CodeGraph, relPath: string, projectRoot: string): Promise<void> {
+async function parseAndAddToGraph(
+  graph: CodeGraph,
+  relPath: string,
+  projectRoot: string,
+): Promise<void> {
   const absPath = join(projectRoot, relPath)
   let content: string
   try {
@@ -542,12 +595,26 @@ async function parseAndAddToGraph(graph: CodeGraph, relPath: string, projectRoot
       imports = parsed.imports
       lineCount = parsed.lineCount
     } else {
-      const parser = getParserForFile(relPath)
-      if (!parser) return
-      const parsed = parser.parse(content, relPath)
-      symbols = parsed.symbols
-      imports = parsed.imports
-      lineCount = content.split('\n').length
+      // 尝试 tree-sitter（懒加载，失败降级正则）
+      let parsed: { symbols: CodeSymbol[]; imports: string[] } | null = null
+      try {
+        const { parseWithTreeSitter } = await import('./parsers/treesitter')
+        parsed = await parseWithTreeSitter(content, relPath)
+      } catch {
+        /* 降级 */
+      }
+      if (parsed) {
+        symbols = parsed.symbols
+        imports = parsed.imports
+        lineCount = content.split('\n').length
+      } else {
+        const parser = getParserForFile(relPath)
+        if (!parser) return
+        const regexParsed = parser.parse(content, relPath)
+        symbols = regexParsed.symbols
+        imports = regexParsed.imports
+        lineCount = content.split('\n').length
+      }
     }
 
     const skeleton: FileSkeleton = { filePath: relPath, symbols, imports, lineCount }

@@ -1,8 +1,9 @@
 /**
  * 审批提示组件 - 纯展示，输入由 App.tsx 的 useInput 统一处理
  */
-import React, { useState } from 'react'
+
 import { Box, Text } from 'ink'
+import React, { useState } from 'react'
 import { theme } from '../theme'
 import { DiffView } from './DiffView'
 
@@ -22,7 +23,9 @@ export function ApprovalPrompt({ tool, description, diff }: ApprovalPromptProps)
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.colors.warning} paddingX={1}>
       <Box>
-        <Text color={theme.colors.warning} bold>⚠️ 需要审批</Text>
+        <Text color={theme.colors.warning} bold>
+          ⚠️ 需要审批
+        </Text>
         <Text> </Text>
         <Text bold>{tool}</Text>
         <Text color={theme.colors.muted}> {description}</Text>
@@ -37,22 +40,34 @@ export function ApprovalPrompt({ tool, description, diff }: ApprovalPromptProps)
           {diffSummary.split('\n').map((line, i) => (
             <DiffSummaryLine key={i} line={line} />
           ))}
-          {hasMoreLines && <Text color={theme.colors.muted} dimColor>…</Text>}
+          {hasMoreLines && (
+            <Text color={theme.colors.muted} dimColor>
+              …
+            </Text>
+          )}
         </Box>
       ) : null}
 
       <Box marginTop={1}>
-        <Text color={theme.colors.success} bold>[Y] 批准</Text>
+        <Text color={theme.colors.success} bold>
+          [Y] 批准
+        </Text>
         <Text color={theme.colors.muted}> · </Text>
-        <Text color={theme.colors.error} bold>[N] 拒绝</Text>
+        <Text color={theme.colors.error} bold>
+          [N] 拒绝
+        </Text>
         {diff && (
           <>
             <Text color={theme.colors.muted}> · </Text>
-            <Text color={theme.colors.primary} bold>[D] {showFullDiff ? '折叠' : '展开'}</Text>
+            <Text color={theme.colors.primary} bold>
+              [D] {showFullDiff ? '折叠' : '展开'}
+            </Text>
           </>
         )}
         <Text color={theme.colors.muted}> · </Text>
-        <Text color={theme.colors.accent} bold>[A] 自动批准此类</Text>
+        <Text color={theme.colors.accent} bold>
+          [A] 自动批准此类
+        </Text>
       </Box>
     </Box>
   )

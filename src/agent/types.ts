@@ -9,10 +9,17 @@ export type NexusEvent =
   | { type: 'user_input'; text: string }
   | { type: 'llm_start'; phase: 'plan' | 'execute' }
   | { type: 'llm_chunk'; text: string }
+  | { type: 'llm_reasoning'; text: string }
   | { type: 'llm_done'; text: string }
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; callId: string }
-  | { type: 'tool_approval_request'; callId: string; tool: string; params: Record<string, unknown>; diff?: string }
-  | { type: 'plan_approval_request'; plan: Plan }
+  | {
+      type: 'tool_approval_request'
+      callId: string
+      tool: string
+      params: Record<string, unknown>
+      diff?: string
+    }
+  | { type: 'plan_approval_request'; callId: string; plan: Plan }
   | { type: 'tool_result'; callId: string; tool: string; result: string; error?: string }
   | { type: 'todo_update'; todos: Todo[] }
   | { type: 'checkpoint'; step: number; message: string }
@@ -25,7 +32,14 @@ export type NexusEvent =
 
 // ─── Agent 状态 ───────────────────────────────────────────────────────────────
 
-export type AgentPhase = 'idle' | 'planning' | 'awaiting_approval' | 'executing' | 'verifying' | 'done' | 'error'
+export type AgentPhase =
+  | 'idle'
+  | 'planning'
+  | 'awaiting_approval'
+  | 'executing'
+  | 'verifying'
+  | 'done'
+  | 'error'
 
 export type PermissionMode = 'ask' | 'auto-edit' | 'auto-all' | 'yolo'
 
@@ -93,6 +107,8 @@ export interface ModelRoute {
   role: ModelRole
   costPer1kInput: number
   costPer1kOutput: number
+  /** 缓存命中输入单价（每 1k）。DeepSeek 缓存命中价远低于未命中价，缺省时按 costPer1kInput 计费 */
+  costPer1kInputCached?: number
   contextWindow: number
   supportsTools: boolean
   supportsStreaming: boolean
@@ -107,6 +123,12 @@ export interface CostRecord {
   inputTokens: number
   outputTokens: number
   cost: number
+  /** 缓存命中的 prompt token 数（DeepSeek API 返回） */
+  cacheHitTokens?: number
+  /** 缓存未命中的 prompt token 数（DeepSeek API 返回） */
+  cacheMissTokens?: number
+  /** 推理 token 数（DeepSeek 思考模式下产生） */
+  reasoningTokens?: number
 }
 
 // ─── 上下文类型 ───────────────────────────────────────────────────────────────
@@ -132,6 +154,31 @@ export interface ChatMessage {
   name?: string
 }
 
+/** Executor ReAct 循环内部使用的消息类型（含工具调用与工具结果）
+ *
+ * DeepSeek 思考模式适配:
+ * - 当模型在思考模式下进行了工具调用，`reasoning_content` 必须在后续所有请求中回传
+ * - 若无工具调用，`reasoning_content` 可省略（API 会忽略）
+ * - 详见: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode#%E5%B7%A5%E5%85%B7%E8%B0%83%E7%94%A8
+ */
+export type ExecMessage =
+  | { role: 'user' | 'assistant'; content: string; reasoning?: string }
+  | {
+      role: 'assistant'
+      content: string
+      reasoning?: string
+      toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+    }
+  | {
+      role: 'tool'
+      content: Array<{
+        type: 'tool-result'
+        toolCallId: string
+        toolName: string
+        result: string
+      }>
+    }
+
 // ─── 配置类型 ─────────────────────────────────────────────────────────────────
 
 export interface NexusConfig {
@@ -141,6 +188,11 @@ export interface NexusConfig {
     summarizer: string
     verifier: string
     providers: Record<string, ProviderConfig>
+    /** 模型成本覆盖：模型名 → 每千 token 成本。用于新增/自定义模型，优先于内置成本表 */
+    costOverrides?: Record<
+      string,
+      { costPer1kInput: number; costPer1kOutput: number; costPer1kInputCached?: number }
+    >
   }
   permissions: {
     mode: PermissionMode
@@ -151,6 +203,8 @@ export interface NexusConfig {
     maxReadLines: number
     maxIterations: number
     maxOutputBytes: number
+    /** 自动修复模式：错误时自动重试次数（0 表示关闭） */
+    maxAutoRetries: number
   }
   context: {
     budgetRatio: number
@@ -240,11 +294,14 @@ export interface Session {
  * 替换时只需更换注入的实现,Agent loop 零改动
  */
 export interface SandboxProvider {
-  execute(command: string, options: {
-    cwd: string
-    timeoutMs: number
-    maxOutputBytes: number
-  }): Promise<{
+  execute(
+    command: string,
+    options: {
+      cwd: string
+      timeoutMs: number
+      maxOutputBytes: number
+    },
+  ): Promise<{
     stdout: string
     stderr: string
     exitCode: number

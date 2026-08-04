@@ -1,73 +1,31 @@
 #!/usr/bin/env bun
+
 /**
  * Nexus 入口文件
  * 解析参数 → 加载配置 → 启动 TUI 或非交互模式
  */
 
-import React from 'react'
 import { render } from 'ink'
-import { parseArgs, getHelpText } from './cli/args'
-import { loadConfig } from './config'
-import { loadSecrets, saveSecrets, hasAnyApiKey } from './config-secrets'
+import React from 'react'
 import { Orchestrator } from './agent/Orchestrator'
-import { App } from './tui/App'
-import { eventBus } from './core/eventBus'
-import type { CommandContext } from './cli/commands'
 import type { NexusConfig, NexusEvent } from './agent/types'
+import { getHelpText, parseArgs } from './cli/args'
+import type { CommandContext } from './cli/commands'
+import { loadConfig } from './config'
+import { hasAnyApiKey, loadSecrets, saveSecrets } from './config-secrets'
+import {
+  nextApprovalCallId,
+  registerPlanApproval,
+  registerToolApproval,
+} from './core/approvalRegistry'
+import { eventBus } from './core/eventBus'
+import { App } from './tui/App'
 import { exportSession } from './utils/export'
 
 const VERSION = '0.1.0'
 
-/** 当前待处理的审批 resolve 函数，由 requestApproval 设置，App 通过 globalThis 获取 */
-let approvalResolver: ((approved: boolean) => void) | null = null
-
-/** 审批队列：callId → resolve，防止快速连续审批时互相覆盖 */
-const approvalResolverMap = new Map<string, (approved: boolean) => void>()
-
-export function setApprovalResolve(resolve: ((approved: boolean) => void) | null): void {
-  approvalResolver = resolve
-  ;(globalThis as Record<string, unknown>).__nexusApprovalResolve = resolve
-}
-
-export function getApprovalResolve(): ((approved: boolean) => void) | null {
-  return approvalResolver
-}
-
-/** 计划审批 resolve 函数：返回 'approve' | 'reject' | 反馈文本 */
-type PlanApprovalResult = 'approve' | 'reject' | string
-let planApprovalResolver: ((result: PlanApprovalResult) => void) | null = null
-
-/** 计划审批队列：callId → resolve */
-const planApprovalResolverMap = new Map<string, (result: PlanApprovalResult) => void>()
-
-export function setPlanApprovalResolve(resolve: ((result: PlanApprovalResult) => void) | null): void {
-  planApprovalResolver = resolve
-  ;(globalThis as Record<string, unknown>).__nexusPlanApprovalResolve = resolve
-}
-
-export function getPlanApprovalResolve(): ((result: PlanApprovalResult) => void) | null {
-  return planApprovalResolver
-}
-
-/** 生成唯一 callId */
-let approvalCounter = 0
-function nextApprovalCallId(): string {
-  return `approval-${Date.now()}-${++approvalCounter}`
-}
-
-/** 通过 callId 获取并移除 tool 审批 resolver */
-export function getApprovalResolveByCallId(callId: string): ((approved: boolean) => void) | null {
-  const r = approvalResolverMap.get(callId) ?? null
-  if (r) approvalResolverMap.delete(callId)
-  return r
-}
-
-/** 通过 callId 获取并移除 plan 审批 resolver */
-export function getPlanApprovalResolveByCallId(callId: string): ((result: PlanApprovalResult) => void) | null {
-  const r = planApprovalResolverMap.get(callId) ?? null
-  if (r) planApprovalResolverMap.delete(callId)
-  return r
-}
+// 审批 resolver 由 core/approvalRegistry 统一管理（按 callId 索引）。
+// 入口与 TUI 均通过该模块交互，避免 globalThis 单槽与循环依赖。
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
@@ -138,8 +96,10 @@ async function main() {
         if (args.evalMock) return { output: '', cost: 0 }
         try {
           const orch = new Orchestrator({
-            projectRoot: workDir, config,
-            permissionMode: 'yolo', skipPlan: true,
+            projectRoot: workDir,
+            config,
+            permissionMode: 'yolo',
+            skipPlan: true,
             maxIterations: Math.min(config.limits.maxIterations, 20),
             onEvent: () => {},
             requestApproval: async () => true,
@@ -151,18 +111,33 @@ async function main() {
           await orch.shutdown()
           return { output, cost }
         } catch (err) {
-          return { output: `执行失败: ${err instanceof Error ? err.message : String(err)}`, cost: 0 }
+          return {
+            output: `执行失败: ${err instanceof Error ? err.message : String(err)}`,
+            cost: 0,
+          }
         }
       },
     })
 
-    let report
+    let report: Awaited<ReturnType<typeof engine.runAll>>
     if (args.evalTask) {
       const { loadTasks } = await import('./harness/TaskLoader')
       const tasks = await loadTasks(args.evalDir)
-      const task = tasks.find(t => t.id === args.evalTask)
-      if (!task) { console.error(`未找到任务: ${args.evalTask}`); process.exit(1) }
-      report = { mode: args.evalMock ? 'mock' as const : 'real' as const, tasksTotal: 1, tasksPassed: 0, tasksFailed: 0, totalCost: 0, totalDurationMs: 0, results: [await engine.runOne(task)], timestamp: Date.now() }
+      const task = tasks.find((t) => t.id === args.evalTask)
+      if (!task) {
+        console.error(`未找到任务: ${args.evalTask}`)
+        process.exit(1)
+      }
+      report = {
+        mode: args.evalMock ? ('mock' as const) : ('real' as const),
+        tasksTotal: 1,
+        tasksPassed: 0,
+        tasksFailed: 0,
+        totalCost: 0,
+        totalDurationMs: 0,
+        results: [await engine.runOne(task)],
+        timestamp: Date.now(),
+      }
       report.tasksPassed = report.results[0].pass ? 1 : 0
       report.tasksFailed = report.results[0].pass ? 0 : 1
       report.totalCost = report.results[0].cost
@@ -194,12 +169,7 @@ async function main() {
       if (args.nonInteractive) return true
       const callId = nextApprovalCallId()
       return new Promise<boolean>((resolve) => {
-        // 存入队列 Map，支持并发审批
-        approvalResolverMap.set(callId, resolve)
-        // 兼容旧的单槽 globalThis（TUI 的自动批准路径仍用此）
-        approvalResolver = resolve
-        ;(globalThis as Record<string, unknown>).__nexusApprovalResolve = resolve
-        ;(globalThis as Record<string, unknown>).__nexusApprovalCallId = callId
+        registerToolApproval(callId, resolve)
         eventBus.emit({ type: 'tool_approval_request', callId, tool, params, diff })
       })
     },
@@ -208,11 +178,8 @@ async function main() {
       if (args.nonInteractive) return 'approve'
       const callId = nextApprovalCallId()
       return new Promise<'approve' | 'reject' | string>((resolve) => {
-        planApprovalResolverMap.set(callId, resolve)
-        planApprovalResolver = resolve
-        ;(globalThis as Record<string, unknown>).__nexusPlanApprovalResolve = resolve
-        ;(globalThis as Record<string, unknown>).__nexusPlanApprovalCallId = callId
-        eventBus.emit({ type: 'plan_approval_request', plan })
+        registerPlanApproval(callId, resolve)
+        eventBus.emit({ type: 'plan_approval_request', callId, plan })
       })
     },
   })
@@ -225,16 +192,18 @@ async function main() {
   if (!hasProvider) {
     // 非交互模式: 输出引导信息后正常退出
     if (args.nonInteractive) {
-      console.error([
-        '❌ 未检测到任何可用的 AI 模型 API Key。',
-        '',
-        '请至少配置一个 provider:',
-        '  • Anthropic:  export ANTHROPIC_API_KEY=sk-...',
-        '  • OpenAI:     export OPENAI_API_KEY=sk-...',
-        '  • DeepSeek:   export DEEPSEEK_API_KEY=sk-...',
-        '',
-        '或运行交互模式进行配置: nexus（不带 --non-interactive）',
-      ].join('\n'))
+      console.error(
+        [
+          '❌ 未检测到任何可用的 AI 模型 API Key。',
+          '',
+          '请至少配置一个 provider:',
+          '  • Anthropic:  export ANTHROPIC_API_KEY=sk-...',
+          '  • OpenAI:     export OPENAI_API_KEY=sk-...',
+          '  • DeepSeek:   export DEEPSEEK_API_KEY=sk-...',
+          '',
+          '或运行交互模式进行配置: nexus（不带 --non-interactive）',
+        ].join('\n'),
+      )
       await orchestrator.shutdown()
       process.exit(1)
     }
@@ -256,9 +225,11 @@ async function main() {
       if (currentModel && currentModel !== 'not-initialized' && !currentModel.includes('未配置')) {
         const exitSecrets = await loadSecrets(args.cwd)
         exitSecrets.lastModel = currentModel
-        await saveSecrets(args.cwd, exitSecrets)
+        await saveSecrets(exitSecrets)
       }
-    } catch { /* 静默忽略：模型持久化失败不应阻塞退出 */ }
+    } catch {
+      /* 静默忽略：模型持久化失败不应阻塞退出 */
+    }
     await orchestrator.shutdown()
   }
   process.on('SIGINT', async () => {
@@ -280,7 +251,7 @@ async function main() {
       // 同时持久化最后使用的模型
       const currentSecrets = await loadSecrets(args.cwd)
       currentSecrets.lastModel = model
-      await saveSecrets(args.cwd, currentSecrets)
+      await saveSecrets(currentSecrets)
     },
     reinitProviders: async () => {
       await orchestrator.reinitProviders()
@@ -300,7 +271,7 @@ async function main() {
     saveLastModel: async (model) => {
       const currentSecrets = await loadSecrets(args.cwd)
       currentSecrets.lastModel = model
-      await saveSecrets(args.cwd, currentSecrets)
+      await saveSecrets(currentSecrets)
     },
     restoreSession: async (sessionId?) => {
       return orchestrator.restoreSession(sessionId)
@@ -309,15 +280,30 @@ async function main() {
       return orchestrator.listRecentSessions(limit)
     },
     exportSession: async (outputPath?) => {
-      return exportSession({
-        history: orchestrator.getFullHistory(),
-        todos: orchestrator.getTodos(),
-        cost: orchestrator.getCostSummary(),
-        projectRoot: args.cwd,
-      }, outputPath)
+      return exportSession(
+        {
+          history: orchestrator.getFullHistory(),
+          todos: orchestrator.getTodos(),
+          cost: orchestrator.getCostSummary(),
+          projectRoot: args.cwd,
+        },
+        outputPath,
+      )
     },
     getStatus: () => {
       return orchestrator.getStatus()
+    },
+    searchSessions: (query: string) => {
+      return orchestrator.searchSessions(query)
+    },
+    setAutoRetries: (retries: number) => {
+      orchestrator.setAutoRetries(retries)
+    },
+    getAutoRetries: () => {
+      return orchestrator.getAutoRetries()
+    },
+    getRecentErrors: async (limit) => {
+      return await orchestrator.getRecentErrors(limit)
     },
   }
 
@@ -363,7 +349,9 @@ async function main() {
             eventBus.emit({ type: 'error', message: String(err), recoverable: true })
           })
         },
-        onApproval: () => { /* resolve handled via module-level approvalResolver */ },
+        onApproval: () => {
+          /* resolve handled via module-level approvalResolver */
+        },
         commandContext,
         projectRoot: args.cwd,
       }),
@@ -384,15 +372,18 @@ async function main() {
   }
 
   // TUI 已渲染，后台异步完成剩余初始化（CodeGraph / DB / MCP），不阻塞用户交互
-  orchestrator.startBackgroundInit().then(async () => {
-    // 初始化完成后处理 --resume 标志
-    if (args.resume) {
-      const sessionId = typeof args.resume === 'string' ? args.resume : undefined
-      await orchestrator.restoreSession(sessionId)
-    }
-  }).catch((err) => {
-    eventBus.emit({ type: 'error', message: `后台初始化失败: ${err}`, recoverable: true })
-  })
+  orchestrator
+    .startBackgroundInit()
+    .then(async () => {
+      // 初始化完成后处理 --resume 标志
+      if (args.resume) {
+        const sessionId = typeof args.resume === 'string' ? args.resume : undefined
+        await orchestrator.restoreSession(sessionId)
+      }
+    })
+    .catch((err) => {
+      eventBus.emit({ type: 'error', message: `后台初始化失败: ${err}`, recoverable: true })
+    })
 
   // 如果有初始 prompt,自动提交
   if (args.prompt) {

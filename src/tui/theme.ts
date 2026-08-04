@@ -18,7 +18,7 @@ export const theme = {
   },
   /** Logo pixel art palette — spider blue */
   logo: {
-    spider: '#0E76B0',  // spider blue — pure single color silhouette
+    spider: '#0E76B0', // spider blue — pure single color silhouette
   },
   symbols: {
     user: '◆',

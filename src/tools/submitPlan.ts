@@ -5,9 +5,8 @@
  * 替代旧的 JSON 代码块 regex 解析方式
  */
 
-import type { Plan, Todo } from '../agent/types'
-import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
+import type { Plan, Todo, ToolDefinition, ToolResult } from '../agent/types'
+import type { ToolContext, ToolHandler } from './registry'
 
 const definition: ToolDefinition = {
   name: 'submit_plan',
@@ -67,13 +66,18 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
   const summary = params.summary as string
   const todosRaw = params.todos as Array<{ id?: string; content?: string }> | undefined
   const filesToModify = (params.filesToModify as string[]) ?? []
-  const estimatedSteps = (params.estimatedSteps as number) ?? (todosRaw?.length ?? 0)
+  const estimatedSteps = (params.estimatedSteps as number) ?? todosRaw?.length ?? 0
 
   if (!summary || !summary.trim()) {
     return { callId, tool: 'submit_plan', result: '', error: 'summary 不能为空' }
   }
   if (!todosRaw || !Array.isArray(todosRaw) || todosRaw.length === 0) {
-    return { callId, tool: 'submit_plan', result: '', error: 'todos 不能为空，至少需要一个执行步骤' }
+    return {
+      callId,
+      tool: 'submit_plan',
+      result: '',
+      error: 'todos 不能为空，至少需要一个执行步骤',
+    }
   }
 
   const todos: Todo[] = todosRaw.map((t, i) => ({

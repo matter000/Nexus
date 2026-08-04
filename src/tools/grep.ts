@@ -6,8 +6,8 @@
 import { spawn } from 'child_process'
 import { resolve } from 'path'
 import type { ToolDefinition, ToolResult } from '../agent/types'
-import type { ToolHandler, ToolContext } from './registry'
 import { isInsideProject } from '../utils'
+import type { ToolContext, ToolHandler } from './registry'
 
 const definition: ToolDefinition = {
   name: 'grep',
@@ -44,7 +44,10 @@ const definition: ToolDefinition = {
 }
 
 /** 执行 ripgrep 搜索 */
-function runRipgrep(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+function runRipgrep(
+  args: string[],
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolvePromise) => {
     // 尝试使用 rg,如果不存在则回退到 findstr/grep
     const isWindows = process.platform === 'win32'
@@ -100,10 +103,12 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
 
     // 构建 rg 参数
     const args: string[] = [
-      '--line-number',    // 显示行号
-      '--no-heading',     // 不用文件标题分组
-      '--color', 'never', // 不要颜色
-      '--max-count', '100', // 限制每个文件最多 100 个匹配
+      '--line-number', // 显示行号
+      '--no-heading', // 不用文件标题分组
+      '--color',
+      'never', // 不要颜色
+      '--max-count',
+      '100', // 限制每个文件最多 100 个匹配
     ]
 
     if (caseInsensitive) {
@@ -133,7 +138,8 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
         callId,
         tool: 'grep',
         result: '',
-        error: 'ripgrep (rg) 未安装。请安装 ripgrep: https://github.com/BurntSushi/ripgrep#installation',
+        error:
+          'ripgrep (rg) 未安装。请安装 ripgrep: https://github.com/BurntSushi/ripgrep#installation',
       }
     }
 
@@ -165,10 +171,7 @@ async function execute(params: Record<string, unknown>, context: ToolContext): P
     }
 
     // 统计匹配数（只统计实际匹配行，排除 context_lines 引入的上下文行和分隔符）
-    const matchCount = output
-      .split('\n')
-      .filter((l) => /^[^:]+:\d+:/.test(l))
-      .length
+    const matchCount = output.split('\n').filter((l) => /^[^:]+:\d+:/.test(l)).length
 
     return {
       callId,

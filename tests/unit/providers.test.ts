@@ -6,15 +6,16 @@
  * 当用户只在 ~/.nexus/secrets.toml 配置了 key 时误判为不可用。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import type { SecretsConfig } from '../../src/config-secrets'
+import { parseDeepSeekError } from '../../src/router/providers/deepseekErrors'
 import {
   anthropicAdapter,
-  openaiAdapter,
   deepseekAdapter,
-  getProvider,
   getAvailableProviders,
+  getProvider,
+  openaiAdapter,
 } from '../../src/router/providers/index'
-import type { SecretsConfig } from '../../src/config-secrets'
 
 // ─── 测试用 secrets 配置 ───────────────────────────────────────────────────────
 
@@ -105,5 +106,56 @@ describe('Provider 适配器 isAvailable 与 secrets 一致性', () => {
     const names = available.map((p) => p.name)
     expect(names).toContain('anthropic') // 来自 secrets
     expect(names).toContain('openai') // 来自 env
+  })
+})
+
+// ─── DeepSeek 思考模式角色策略（深度适配） ─────────────────────────────
+
+describe('deepseekAdapter.getModelParameters 思考模式角色策略', () => {
+  it('planner/executor 关闭思考模式（SDK 不回传 reasoning_content，避免 422）', () => {
+    for (const role of ['planner', 'executor'] as const) {
+      for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
+        const params = deepseekAdapter.getModelParameters!(model, role)!
+        expect(params.thinking).toEqual({ type: 'disabled' })
+        // 关闭思考模式后不应再携带推理深度控制
+        expect(params.reasoningEffort).toBeUndefined()
+      }
+    }
+  })
+
+  it('summarizer/verifier 保持思考模式（单轮无工具，无 422 风险）', () => {
+    for (const role of ['summarizer', 'verifier'] as const) {
+      const params = deepseekAdapter.getModelParameters!('deepseek-v4-flash', role)!
+      expect(params.thinking).toBeUndefined()
+    }
+  })
+
+  it('v4-pro verifier 使用 reasoningEffort: max，summarizer 使用 high（驼峰键供 SDK 映射）', () => {
+    const verifier = deepseekAdapter.getModelParameters!('deepseek-v4-pro', 'verifier')!
+    expect(verifier.reasoningEffort).toBe('max')
+    expect(verifier.thinking).toBeUndefined()
+
+    const summarizer = deepseekAdapter.getModelParameters!('deepseek-v4-pro', 'summarizer')!
+    expect(summarizer.reasoningEffort).toBe('high')
+  })
+})
+
+// ─── DeepSeek 422 自愈标记 ─────────────────────────────────────────────
+
+describe('parseDeepSeekError reasoning_content 契约错误', () => {
+  it('reasoning_content 错误标记为可恢复且需关闭思考模式', () => {
+    const parsed = parseDeepSeekError(
+      new Error('422 Please carry back reasoning_content in multi-turn'),
+      'deepseek-v4-flash',
+    )
+    expect(parsed.parsed).toBe(true)
+    expect(parsed.recoverable).toBe(true)
+    expect(parsed.disableThinking).toBe(true)
+  })
+
+  it('普通错误不携带 disableThinking 标记', () => {
+    const parsed = parseDeepSeekError(new Error('429 Too Many Requests'))
+    expect(parsed.disableThinking).toBeUndefined()
+    expect(parsed.recoverable).toBe(true)
   })
 })

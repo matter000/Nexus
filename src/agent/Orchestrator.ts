@@ -3,6 +3,29 @@
  * 协调 Plan/Execute 双阶段、子 Agent 分派、检查点管理
  */
 
+import { readFile } from 'fs/promises'
+import { join } from 'path'
+import { parse } from 'smol-toml'
+import { loadSecrets, type SecretsConfig } from '../config-secrets'
+import { ContextAssembler } from '../context/Assembler'
+import { buildCodeGraph, type CodeGraph, updateCodeGraph } from '../context/CodeGraph'
+import { compressHistory, llmCompressHistory } from '../context/Compressor'
+import { FileWatcher } from '../context/FileWatcher'
+import { loadRules } from '../context/RulesLoader'
+import { closeSemanticSearchEngine } from '../context/SemanticSearch'
+import { TokenBudget } from '../context/TokenBudget'
+import { CostTracker } from '../router/CostTracker'
+import { ModelRouter } from '../router/ModelRouter'
+import { getProvider } from '../router/providers'
+import { CheckpointManager } from '../sandbox/Checkpoint'
+import { NexusDB } from '../storage/db'
+import { ExternalMCPManager, type ExternalServerConfig } from '../tools/external'
+import { createToolRegistry, type ToolContext } from '../tools/registry'
+import { logError } from '../utils/debugLog'
+import { recordError } from '../utils/errorReport'
+import { Executor } from './Executor'
+import { Planner } from './Planner'
+import { SubAgent } from './SubAgent'
 import type {
   AgentPhase,
   ChatMessage,
@@ -13,26 +36,6 @@ import type {
   ProjectRules,
   Todo,
 } from './types'
-import { Planner } from './Planner'
-import { Executor } from './Executor'
-import { SubAgent } from './SubAgent'
-import { createToolRegistry, type ToolContext } from '../tools/registry'
-import { ContextAssembler } from '../context/Assembler'
-import { TokenBudget } from '../context/TokenBudget'
-import { loadRules } from '../context/RulesLoader'
-import { ModelRouter } from '../router/ModelRouter'
-import { CostTracker } from '../router/CostTracker'
-import { CheckpointManager } from '../sandbox/Checkpoint'
-import { compressHistory, llmCompressHistory } from '../context/Compressor'
-import { loadSecrets, type SecretsConfig } from '../config-secrets'
-import { NexusDB } from '../storage/db'
-import { ExternalMCPManager, type ExternalServerConfig } from '../tools/external'
-import { buildCodeGraph, updateCodeGraph, type CodeGraph } from '../context/CodeGraph'
-import { FileWatcher } from '../context/FileWatcher'
-import { readFile } from 'fs/promises'
-import { join } from 'path'
-import { parse } from 'smol-toml'
-import { logError } from '../utils/debugLog'
 
 export interface OrchestratorConfig {
   projectRoot: string
@@ -41,7 +44,11 @@ export interface OrchestratorConfig {
   skipPlan: boolean
   maxIterations: number
   onEvent: (event: NexusEvent) => void
-  requestApproval: (tool: string, params: Record<string, unknown>, diff?: string) => Promise<boolean>
+  requestApproval: (
+    tool: string,
+    params: Record<string, unknown>,
+    diff?: string,
+  ) => Promise<boolean>
   /** 计划审批：返回 'approve' | 'reject' | 反馈文本（反馈文本触发重规划） */
   requestPlanApproval: (plan: Plan) => Promise<'approve' | 'reject' | string>
 }
@@ -75,10 +82,7 @@ export class Orchestrator {
   constructor(cfg: OrchestratorConfig) {
     this.cfg = cfg
     this.skipPlan = cfg.skipPlan
-    this.checkpoint = new CheckpointManager(
-      cfg.projectRoot,
-      cfg.config.checkpoint.branch
-    )
+    this.checkpoint = new CheckpointManager(cfg.projectRoot, cfg.config.checkpoint.branch)
     this.checkpoint.setEnabled(cfg.config.checkpoint.autoCheckpoint)
   }
 
@@ -101,10 +105,7 @@ export class Orchestrator {
 
     this.rules = await loadRules(this.cfg.projectRoot)
     const contextWindow = this.router.getContextWindow('executor')
-    const budget = new TokenBudget(
-      contextWindow,
-      this.cfg.config.context.budgetRatio
-    )
+    const budget = new TokenBudget(contextWindow, this.cfg.config.context.budgetRatio)
 
     this.assembler = new ContextAssembler({
       projectRoot: this.cfg.projectRoot,
@@ -117,22 +118,7 @@ export class Orchestrator {
     // 创建 SubAgent 实例并注入工具注册表
     // 如果无可用 provider，推迟到首次 submit() 时创建
     if (this.router.hasAvailableProvider()) {
-      this.subAgent = new SubAgent({
-        model: this.router.getModel('executor'),
-        toolRegistry: this.toolRegistry,
-        toolContext: this.getToolContext(),
-        maxIterations: Math.min(10, this.cfg.config.limits.maxIterations),
-        onEvent: (e) => this.emit(e),
-        permissionMode: this.cfg.permissionMode,
-        requestApproval: this.cfg.requestApproval,
-        costTracker: this.costTracker,
-        modelRole: 'executor',
-        providerName: 'anthropic', // 默认 provider，子 Agent 成本计入主 provider
-        modelName: this.router.getCurrentModel('executor'),
-        costPer1kInput: 0.003,
-        costPer1kOutput: 0.015,
-        getAbortSignal: () => this.abortController?.signal,
-      })
+      this.subAgent = this.createSubAgent()
       this.toolRegistry.setSubAgentRunner(this.subAgent)
     } else {
       this.noProviderAvailable = true
@@ -188,10 +174,12 @@ export class Orchestrator {
         onChange: (changedFiles) => {
           // 增量更新代码图谱
           if (this.codeGraph) {
-            updateCodeGraph(this.codeGraph, changedFiles, this.cfg.projectRoot).then((updated) => {
-              this.codeGraph = updated
-              this.assembler?.setCodeGraph(updated)
-            }).catch(() => {})
+            updateCodeGraph(this.codeGraph, changedFiles, this.cfg.projectRoot)
+              .then((updated) => {
+                this.codeGraph = updated
+                this.assembler?.setCodeGraph(updated)
+              })
+              .catch(() => {})
           }
         },
       })
@@ -270,130 +258,173 @@ export class Orchestrator {
     // 如果之前因无 provider 推迟了 SubAgent 创建，现在补建
     if (this.noProviderAvailable && this.router?.hasAvailableProvider()) {
       this.noProviderAvailable = false
-      this.subAgent = new SubAgent({
-        model: this.router.getModel('executor'),
-        toolRegistry: this.toolRegistry,
-        toolContext: this.getToolContext(),
-        maxIterations: Math.min(10, this.cfg.config.limits.maxIterations),
-        onEvent: (e) => this.emit(e),
-        permissionMode: this.cfg.permissionMode,
-        requestApproval: this.cfg.requestApproval,
-        costTracker: this.costTracker,
-        modelRole: 'executor',
-        providerName: 'anthropic',
-        modelName: this.router.getCurrentModel('executor'),
-        costPer1kInput: 0.003,
-        costPer1kOutput: 0.015,
-        getAbortSignal: () => this.abortController?.signal,
-      })
+      this.subAgent = this.createSubAgent()
       this.toolRegistry.setSubAgentRunner(this.subAgent)
     }
   }
 
+  /** 创建 SubAgent 实例：从 router 动态获取 provider 与成本参数，避免硬编码 */
+  private createSubAgent(): SubAgent {
+    const router = this.router
+    if (!router) {
+      throw new Error('createSubAgent 调用前 router 尚未初始化')
+    }
+    const route = router.getRouteInfo('executor')
+    return new SubAgent({
+      model: router.getModel('executor'),
+      toolRegistry: this.toolRegistry,
+      toolContext: this.getToolContext(),
+      maxIterations: Math.min(10, this.cfg.config.limits.maxIterations),
+      onEvent: (e) => this.emit(e),
+      permissionMode: this.cfg.permissionMode,
+      requestApproval: this.cfg.requestApproval,
+      costTracker: this.costTracker,
+      modelRole: 'executor',
+      providerName: route.provider,
+      modelName: route.model,
+      costPer1kInput: route.costPer1kInput,
+      costPer1kOutput: route.costPer1kOutput,
+      costPer1kInputCached: route.costPer1kInputCached,
+      modelParameters: getProvider(route.provider, this.secrets)?.getModelParameters?.(
+        route.model,
+        'executor',
+      ),
+      getAbortSignal: () => this.abortController?.signal,
+    })
+  }
+
   /** 处理用户输入(主入口) */
   async submit(userInput: string): Promise<string> {
-    if (!this.assembler || !this.rules) {
-      await this.init()
-    }
+    try {
+      if (!this.assembler || !this.rules) {
+        await this.init()
+      }
 
-    // 若初始化时无 provider，再尝试一次（用户可能已通过 TUI 配置了 API Key）
-    if (this.noProviderAvailable) {
-      await this.reinitProviders()
+      // 若初始化时无 provider，再尝试一次（用户可能已通过 TUI 配置了 API Key）
       if (this.noProviderAvailable) {
-        const errorMsg = [
-          '❌ 未检测到任何可用的 AI 模型 API Key。',
-          '',
-          '请至少配置一个 provider：',
-        ].join('\n')
-        this.emit({ type: 'error', message: errorMsg, recoverable: true })
-        return errorMsg
+        await this.reinitProviders()
+        if (this.noProviderAvailable) {
+          const errorMsg = [
+            '❌ 未检测到任何可用的 AI 模型 API Key。',
+            '',
+            '请至少配置一个 provider：',
+          ].join('\n')
+          this.emit({ type: 'error', message: errorMsg, recoverable: true })
+          return errorMsg
+        }
       }
-    }
 
-    this.aborted = false
-    this.abortController = new AbortController()
-    this.emit({ type: 'user_input', text: userInput })
+      this.aborted = false
+      this.abortController = new AbortController()
+      this.emit({ type: 'user_input', text: userInput })
 
-    // 创建持久化会话
-    if (this.db && !this.currentSessionId) {
-      try {
-        this.currentSessionId = crypto.randomUUID()
-        this.db.createSession(this.currentSessionId, this.cfg.projectRoot)
-      } catch (err) {
-        console.warn('[NexusDB] 创建会话失败:', err)
-        this.currentSessionId = null
+      // 创建持久化会话
+      if (this.db && !this.currentSessionId) {
+        try {
+          this.currentSessionId = crypto.randomUUID()
+          this.db.createSession(this.currentSessionId, this.cfg.projectRoot)
+        } catch (err) {
+          console.warn('[NexusDB] 创建会话失败:', err)
+          this.currentSessionId = null
+        }
       }
-    }
 
-    // 持久化用户消息
-    if (this.db && this.currentSessionId) {
-      try {
-        this.db.addMessage(this.currentSessionId, 'user', userInput)
-      } catch (err) {
-        console.warn('[NexusDB] 持久化用户消息失败:', err)
+      // 持久化用户消息
+      if (this.db && this.currentSessionId) {
+        try {
+          this.db.addMessage(this.currentSessionId, 'user', userInput)
+        } catch (err) {
+          console.warn('[NexusDB] 持久化用户消息失败:', err)
+        }
       }
-    }
 
-    // 构建上下文
-    const systemPrompt = await this.assembler!.buildSystemPrompt(this.todos)
-
-    // 自动压缩检测：历史过长时用 LLM 压缩早期对话
-    if (this.history.length > this.cfg.config.context.recentTurnsKeep * 4 && this.router) {
-      const contextWindow = this.router.getContextWindow('executor')
-      const maxTokens = Math.floor(contextWindow * this.cfg.config.context.budgetRatio)
-      try {
-        const summarizerModel = this.router.getModel('summarizer')
-        const result = await llmCompressHistory(
-          this.history,
-          summarizerModel,
-          this.cfg.config.context.recentTurnsKeep,
-          maxTokens,
+      // 构建上下文
+      let systemPrompt = await this.assembler!.buildSystemPrompt(this.todos)
+      // DeepSeek 深度适配：追加 provider 优化后的系统提示后缀（仅当非空）
+      if (this.router) {
+        const promptRoute = this.router.getRouteInfo('executor')
+        const suffix = getProvider(promptRoute.provider, this.secrets)?.getSystemPromptSuffix?.(
+          promptRoute.model,
+          'executor',
         )
-        if (result.compressed) {
-          this.history = result.messages
-          this.emit({
-            type: 'system_info',
-            message: `上下文已自动压缩: ~${Math.round(result.originalTokens / 1000)}k → ~${Math.round(result.compressedTokens / 1000)}k tokens`,
-          })
-        }
-      } catch (err) {
-        // 压缩失败不阻塞主流程，但记录日志
-        logError('auto-compress', err).catch(() => {})
+        if (suffix) systemPrompt += `\n${suffix}`
       }
-    }
 
-    const messages = this.assembler!.assembleMessages(systemPrompt, this.history, userInput)
-
-    let result: string
-
-    if (this.skipPlan) {
-      // 跳过 Plan,直接执行
-      result = await this.executeDirectly(userInput, messages)
-    } else {
-      // 双阶段: Plan → Execute
-      result = await this.planAndExecute(userInput, messages)
-    }
-
-    // 记录到历史
-    this.history.push({ role: 'user', content: userInput })
-    this.history.push({ role: 'assistant', content: result })
-
-    // 持久化 assistant 回复
-    if (this.db && this.currentSessionId) {
-      try {
-        this.db.addMessage(this.currentSessionId, 'assistant', result)
-        // 持久化 todos 快照（用于会话恢复）
-        if (this.todos.length > 0) {
-          this.db.saveTodos(this.currentSessionId, this.todos)
+      // 自动压缩检测：历史过长时用 LLM 压缩早期对话
+      if (this.history.length > this.cfg.config.context.recentTurnsKeep * 4 && this.router) {
+        const contextWindow = this.router.getContextWindow('executor')
+        const maxTokens = Math.floor(contextWindow * this.cfg.config.context.budgetRatio)
+        try {
+          const summarizerModel = this.router.getModel('summarizer')
+          const result = await llmCompressHistory(
+            this.history,
+            summarizerModel,
+            this.cfg.config.context.recentTurnsKeep,
+            maxTokens,
+          )
+          if (result.compressed) {
+            this.history = result.messages
+            this.emit({
+              type: 'system_info',
+              message: `上下文已自动压缩: ~${Math.round(result.originalTokens / 1000)}k → ~${Math.round(result.compressedTokens / 1000)}k tokens`,
+            })
+          }
+        } catch (err) {
+          // 压缩失败不阻塞主流程，但记录日志
+          logError('auto-compress', err).catch(() => {})
         }
-      } catch (err) {
-        console.warn('[NexusDB] 持久化 assistant 消息失败:', err)
       }
-    }
 
-    this.phase = 'done'
-    this.emit({ type: 'done', summary: result })
-    return result
+      const messages = this.assembler!.assembleMessages(systemPrompt, this.history, userInput)
+
+      let result: string
+
+      if (this.skipPlan) {
+        // 跳过 Plan,直接执行
+        result = await this.executeDirectly(userInput, messages)
+      } else {
+        // 双阶段: Plan → Execute
+        result = await this.planAndExecute(userInput, messages)
+      }
+
+      // 记录到历史
+      this.history.push({ role: 'user', content: userInput })
+      this.history.push({ role: 'assistant', content: result })
+
+      // 持久化 assistant 回复
+      if (this.db && this.currentSessionId) {
+        try {
+          this.db.addMessage(this.currentSessionId, 'assistant', result)
+          // 持久化 todos 快照（用于会话恢复）
+          if (this.todos.length > 0) {
+            this.db.saveTodos(this.currentSessionId, this.todos)
+          }
+        } catch (err) {
+          console.warn('[NexusDB] 持久化 assistant 消息失败:', err)
+        }
+      }
+
+      this.phase = 'done'
+      this.emit({ type: 'done', summary: result })
+      return result
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      this.emit({ type: 'error', message: errorMessage, recoverable: true })
+      this.phase = 'error'
+      // 自动记录错误报告
+      recordError({
+        type: 'submit_error',
+        message: errorMessage,
+        stack: err instanceof Error ? err.stack : undefined,
+        context: {
+          phase: this.phase,
+          skipPlan: this.skipPlan,
+          inputLength: userInput.length,
+        },
+        projectRoot: this.cfg.projectRoot,
+      }).catch(() => {})
+      return `执行出错: ${errorMessage}`
+    }
   }
 
   /** Plan → Execute 双阶段（支持重规划循环） */
@@ -402,6 +433,7 @@ export class Orchestrator {
     this.setPhase('planning')
 
     const plannerRoute = this.router!.getRouteInfo('planner')
+    const plannerProvider = getProvider(plannerRoute.provider, this.secrets)
     const planner = new Planner({
       model: this.router!.getModel('planner'),
       toolRegistry: this.toolRegistry,
@@ -414,6 +446,8 @@ export class Orchestrator {
       modelName: plannerRoute.model,
       costPer1kInput: plannerRoute.costPer1kInput,
       costPer1kOutput: plannerRoute.costPer1kOutput,
+      costPer1kInputCached: plannerRoute.costPer1kInputCached,
+      modelParameters: plannerProvider?.getModelParameters?.(plannerRoute.model, 'planner'),
     })
 
     let currentPlan = await planner.plan(userInput, messages)
@@ -471,6 +505,7 @@ export class Orchestrator {
     this.setPhase('executing')
 
     const executorRoute = this.router!.getRouteInfo('executor')
+    const executorProvider = getProvider(executorRoute.provider, this.secrets)
     const executor = new Executor({
       model: this.router!.getModel('executor'),
       toolRegistry: this.toolRegistry,
@@ -486,14 +521,88 @@ export class Orchestrator {
       modelName: executorRoute.model,
       costPer1kInput: executorRoute.costPer1kInput,
       costPer1kOutput: executorRoute.costPer1kOutput,
+      costPer1kInputCached: executorRoute.costPer1kInputCached,
       maxSessionCost: this.cfg.config.limits.maxSessionCost,
       getFallbackModel: () => this.router!.getModelWithFallback('executor'),
       fallbackModelName: this.router!.getFallbackModelName('executor') ?? undefined,
       abortSignal: this.abortController?.signal,
+      modelParameters: executorProvider?.getModelParameters?.(executorRoute.model, 'executor'),
     })
 
     const result = await executor.execute(plan, messages)
     this.todos = executor.getTodos()
+
+    // 自动修复模式：执行失败时自动重试
+    const maxRetries = this.cfg.config.limits.maxAutoRetries
+    if (maxRetries > 0 && executor.getLastError()) {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        if (this.aborted) break
+
+        this.emit({
+          type: 'system_info',
+          message: `自动修复模式：检测到执行错误，尝试自动修复 (${attempt}/${maxRetries})...`,
+        })
+
+        // 将错误信息和新指令追加到消息中
+        const retryMessages: ChatMessage[] = [
+          ...messages,
+          { role: 'assistant', content: result },
+          {
+            role: 'user',
+            content: `执行时遇到了以下错误:\n${executor.getLastError()}\n\n请修复这个问题。运行测试验证修复是否成功。`,
+          },
+        ]
+
+        // 创建新的 Executor 实例重试
+        const retryExecutor = new Executor({
+          model: this.router!.getModel('executor'),
+          toolRegistry: this.toolRegistry,
+          toolContext: this.getToolContext(),
+          checkpoint: this.checkpoint,
+          maxIterations: Math.min(10, this.cfg.maxIterations),
+          permissionMode: this.cfg.permissionMode,
+          onEvent: (e) => this.emit(e),
+          requestApproval: this.cfg.requestApproval,
+          costTracker: this.costTracker,
+          modelRole: 'executor',
+          providerName: executorRoute.provider,
+          modelName: executorRoute.model,
+          costPer1kInput: executorRoute.costPer1kInput,
+          costPer1kOutput: executorRoute.costPer1kOutput,
+          costPer1kInputCached: executorRoute.costPer1kInputCached,
+          maxSessionCost: this.cfg.config.limits.maxSessionCost,
+          getFallbackModel: () => this.router!.getModelWithFallback('executor'),
+          fallbackModelName: this.router!.getFallbackModelName('executor') ?? undefined,
+          abortSignal: this.abortController?.signal,
+          modelParameters: executorProvider?.getModelParameters?.(executorRoute.model, 'executor'),
+        })
+
+        const retryResult = await retryExecutor.execute(
+          { ...plan, summary: `${plan.summary}（自动修复尝试 ${attempt}）` },
+          retryMessages,
+        )
+
+        // 更新最终结果
+        this.todos = retryExecutor.getTodos()
+
+        const retryError = retryExecutor.getLastError()
+        if (!retryError) {
+          this.emit({ type: 'system_info', message: `自动修复成功（第 ${attempt} 次尝试）` })
+          return retryResult
+        }
+
+        // 记录错误供下一次尝试
+        Object.defineProperty(retryExecutor, 'lastError', {
+          get: () => retryError,
+        })
+      }
+
+      this.emit({
+        type: 'system_info',
+        message: `自动修复模式：已尝试 ${maxRetries} 次修复，均未成功。请手动处理。`,
+      })
+    }
+
     return result
   }
 
@@ -518,13 +627,31 @@ export class Orchestrator {
     return this.todos
   }
 
-  /** 获取成本摘要 */
-  getCostSummary(): { total: number; inputTokens: number; outputTokens: number } {
+  /** 获取成本摘要（含 DeepSeek 缓存/推理统计） */
+  getCostSummary(): {
+    total: number
+    inputTokens: number
+    outputTokens: number
+    cacheHitTokens?: number
+    cacheMissTokens?: number
+    cacheHitRate?: number
+    cacheSavedCost?: number
+    reasoningTokens?: number
+    reasoningPercentage?: number
+  } {
     const tokens = this.costTracker.getTotalTokens()
+    const cache = this.costTracker.getCacheStats()
+    const reasoning = this.costTracker.getReasoningStats()
     return {
       total: this.costTracker.getTotalCost(),
       inputTokens: tokens.input,
       outputTokens: tokens.output,
+      cacheHitTokens: cache.hit,
+      cacheMissTokens: cache.miss,
+      cacheHitRate: cache.hitRate,
+      cacheSavedCost: this.costTracker.getCacheSavedCost(),
+      reasoningTokens: reasoning.total,
+      reasoningPercentage: reasoning.percentage,
     }
   }
 
@@ -546,13 +673,18 @@ export class Orchestrator {
   }
 
   /** 获取所有已知模型（含未配置 provider 的） */
-  getAllKnownModels(): Array<{ name: string; provider: string; configured: boolean; current: boolean }> {
+  getAllKnownModels(): Array<{
+    name: string
+    provider: string
+    configured: boolean
+    current: boolean
+  }> {
     return this.router?.getAllKnownModels() ?? []
   }
 
   /** 检查指定 provider 是否已配置 API Key */
   isProviderConfigured(providerName: string): boolean {
-    return this.router?.isProviderConfigured(providerName as any) ?? false
+    return this.router?.isProviderConfigured(providerName) ?? false
   }
 
   /** 获取可用模型列表 */
@@ -613,7 +745,7 @@ export class Orchestrator {
           cost.total,
           cost.inputTokens,
           cost.outputTokens,
-          this.history.length
+          this.history.length,
         )
       } catch (err) {
         console.warn('[NexusDB] 结束会话失败:', err)
@@ -637,6 +769,13 @@ export class Orchestrator {
     if (this.fileWatcher) {
       this.fileWatcher.stop()
       this.fileWatcher = null
+    }
+
+    // 关闭语义搜索引擎单例的数据库连接
+    try {
+      closeSemanticSearchEngine()
+    } catch (err) {
+      console.warn('[SemanticSearch] 关闭失败:', err)
     }
   }
 
@@ -663,7 +802,10 @@ export class Orchestrator {
       : this.db.getLatestSession(this.cfg.projectRoot)
 
     if (!session) {
-      return { restored: false, message: sessionId ? `未找到会话: ${sessionId}` : '没有可恢复的历史会话' }
+      return {
+        restored: false,
+        message: sessionId ? `未找到会话: ${sessionId}` : '没有可恢复的历史会话',
+      }
     }
 
     // 加载消息历史
@@ -683,9 +825,10 @@ export class Orchestrator {
     // 设置当前会话 ID 为恢复的会话（继续在同一会话下追加消息）
     this.currentSessionId = session.id
 
-    const todoInfo = this.todos.length > 0
-      ? `，${this.todos.filter((t) => t.status !== 'complete').length} 个待办未完成`
-      : ''
+    const todoInfo =
+      this.todos.length > 0
+        ? `，${this.todos.filter((t) => t.status !== 'complete').length} 个待办未完成`
+        : ''
     const msg = `已恢复会话（${new Date(session.start_time).toLocaleString()}）：${this.history.length} 条消息${todoInfo}`
 
     this.emit({ type: 'system_info', message: msg })
@@ -697,7 +840,9 @@ export class Orchestrator {
   }
 
   /** 列出最近会话（供 /resume 命令展示） */
-  listRecentSessions(limit = 5): Array<{ id: string; startTime: number; messageCount: number; cost: number }> {
+  listRecentSessions(
+    limit = 5,
+  ): Array<{ id: string; startTime: number; messageCount: number; cost: number }> {
     if (!this.db) {
       try {
         this.db = new NexusDB(this.cfg.projectRoot)
@@ -739,9 +884,7 @@ export class Orchestrator {
 
   /** 获取历史摘要 */
   getHistory(): string[] {
-    return this.history
-      .filter((m) => m.role === 'user')
-      .map((m) => m.content.slice(0, 80))
+    return this.history.filter((m) => m.role === 'user').map((m) => m.content.slice(0, 80))
   }
 
   /** 获取完整历史（用于导出） */
@@ -750,7 +893,14 @@ export class Orchestrator {
   }
 
   /** 获取各子系统健康状态 */
-  getStatus(): { db: boolean; codeGraph: boolean; mcp: boolean; watcher: boolean; model: string; cost: number } {
+  getStatus(): {
+    db: boolean
+    codeGraph: boolean
+    mcp: boolean
+    watcher: boolean
+    model: string
+    cost: number
+  } {
     return {
       db: this.db !== null,
       codeGraph: this.codeGraph !== null && this.codeGraph.files.size > 0,
@@ -759,6 +909,69 @@ export class Orchestrator {
       model: this.getCurrentModel(),
       cost: this.costTracker.getTotalCost(),
     }
+  }
+
+  /** 搜索会话消息 */
+  searchSessions(query: string): string {
+    if (!this.db) {
+      try {
+        this.db = new NexusDB(this.cfg.projectRoot)
+      } catch {
+        return '数据库不可用，无法搜索'
+      }
+    }
+
+    const results = this.db.searchMessages(query)
+    if (results.length === 0) {
+      return `未找到包含 "${query}" 的会话消息`
+    }
+
+    const lines: string[] = [`找到 ${results.length} 个相关会话：\n`]
+    for (const r of results) {
+      const time = new Date(r.startTime).toLocaleString()
+      lines.push(`[${r.sessionId.slice(0, 8)}] ${time} | ${r.matchCount} 条匹配`)
+      for (const m of r.matches) {
+        const roleLabel = m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : '系统'
+        lines.push(`  ${roleLabel}: ${m.snippet}`)
+      }
+      lines.push('')
+    }
+    lines.push('提示: 使用 /resume <会话ID> 恢复某个会话查看完整上下文')
+    return lines.join('\n')
+  }
+
+  /** 设置自动修复模式的重试次数 */
+  setAutoRetries(retries: number): void {
+    this.cfg.config.limits.maxAutoRetries = Math.max(0, Math.min(3, retries))
+  }
+
+  /** 获取当前自动修复重试次数 */
+  getAutoRetries(): number {
+    return this.cfg.config.limits.maxAutoRetries
+  }
+
+  /** 获取最近的错误报告 */
+  async getRecentErrors(limit = 10): Promise<string> {
+    const { getRecentErrors } = await import('../utils/errorReport')
+    const errors = await getRecentErrors(this.cfg.projectRoot, limit)
+    if (errors.length === 0) {
+      return '暂无错误报告'
+    }
+    const lines: string[] = [`最近 ${errors.length} 条错误报告：\n`]
+    for (const err of errors) {
+      const time = new Date(err.timestamp).toLocaleString()
+      lines.push(`[${time}] ${err.type}`)
+      lines.push(`  消息: ${err.message}`)
+      if (err.context) {
+        const ctx = Object.entries(err.context)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(', ')
+        lines.push(`  上下文: ${ctx}`)
+      }
+      lines.push('')
+    }
+    lines.push('提示: 错误报告保存在 .nexus/error-log.jsonl')
+    return lines.join('\n')
   }
 
   private getToolContext(): ToolContext {
