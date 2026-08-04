@@ -8,13 +8,14 @@ import { generateText } from 'ai'
 import { readFile } from 'fs/promises'
 import { resolve } from 'path'
 import type { CostTracker } from '../router/CostTracker'
+import { withDeepSeekThinking } from '../router/providers/deepseekFetch'
 import type { CheckpointManager } from '../sandbox/Checkpoint'
 import { requiresForcedApproval } from '../sandbox/CommandGuard'
 import { generateDiff } from '../tools/editFile'
 import type { ToolContext, ToolRegistry } from '../tools/registry'
 import { toolSchemas } from '../tools/schemas'
 import { callWithRetry } from '../utils'
-import { callLLMWithRetry } from './ReActLoop'
+import { callLLMWithRetry, splitModelParameters } from './ReActLoop'
 import type {
   ChatMessage,
   ExecMessage,
@@ -71,6 +72,8 @@ export interface ExecutorConfig {
   costPer1kInput: number
   /** 输出 token 单价（每 1k） */
   costPer1kOutput: number
+  /** 缓存命中输入单价（每 1k），DeepSeek 分级计费用 */
+  costPer1kInputCached?: number
   /** 会话成本上限 */
   maxSessionCost: number
   /** 获取降级模型（主模型全部重试失败后使用） */
@@ -79,6 +82,11 @@ export interface ExecutorConfig {
   fallbackModelName?: string
   /** 中断信号（Orchestrator.abort() 时触发） */
   abortSignal?: AbortSignal
+  /**
+   * Provider 特定的模型参数
+   * 由 ProviderAdapter.getModelParameters() 生成，用于优化 DeepSeek 等模型的调用参数
+   */
+  modelParameters?: Record<string, unknown>
 }
 
 /**
@@ -125,6 +133,7 @@ export class Executor {
   private stuckWarnings = 0
   /** 是否执行过 edit_file（仅在有代码变更时运行验证） */
   private hasCodeChanges = false
+  private lastError: string | null = null
 
   constructor(config: ExecutorConfig) {
     this.config = config
@@ -176,9 +185,14 @@ export class Executor {
       this.iterations++
 
       // 使用共享的 LLM 调用工具（统一 streamText + 重试 + 成本记录），支持降级模型
+      // DeepSeek 思考模式返回 reasoning（思维链），需在后续轮次中回传（有工具调用时）
       let callResult: {
         streamedText: string
         toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>
+        reasoning?: string
+        cacheHitTokens?: number
+        cacheMissTokens?: number
+        reasoningTokens?: number
       }
       try {
         callResult = await callLLMWithRetry(
@@ -189,6 +203,7 @@ export class Executor {
             tools: toolsForAI,
             maxSteps: 1,
             abortSignal: this.config.abortSignal,
+            modelParameters: this.config.modelParameters,
           },
           {
             onEvent,
@@ -199,6 +214,7 @@ export class Executor {
               modelName: this.config.modelName,
               costPer1kInput: this.config.costPer1kInput,
               costPer1kOutput: this.config.costPer1kOutput,
+              costPer1kInputCached: this.config.costPer1kInputCached,
             },
           },
           this.config.getFallbackModel?.() ?? undefined,
@@ -217,7 +233,7 @@ export class Executor {
         break
       }
 
-      const { streamedText, toolCalls } = callResult
+      const { streamedText, toolCalls, reasoning } = callResult
 
       // 检查成本上限
       if (this.config.costTracker.isOverBudget(this.config.maxSessionCost)) {
@@ -241,6 +257,7 @@ export class Executor {
       const assistantMsg: ExecMessage = {
         role: 'assistant',
         content: streamedText || '',
+        reasoning, // 包含 reasoning_content，有工具调用时必须在后续轮次回传
         toolCalls: toolCalls.map((tc, idx) => ({
           toolCallId: `exec-${this.iterations}-${tc.toolName}-${idx}`,
           toolName: tc.toolName,
@@ -324,6 +341,8 @@ export class Executor {
           t.status = 'complete'
         }
       }
+    } else {
+      this.lastError = finalText || '执行过程中出现未知错误'
     }
 
     onEvent({ type: 'todo_update', todos: this.todos })
@@ -435,17 +454,27 @@ ${executionResult || '(无文本输出)'}
         // 检查中断
         if (this.config.abortSignal?.aborted) break
 
+        // 拆分 provider 参数：验证循环同为多轮工具调用，需注入 thinking: disabled 等避免 422
+        const {
+          topLevel: verifyTopLevel,
+          providerOptions: verifyProviderOptions,
+          thinking: verifyThinking,
+        } = splitModelParameters(this.config.modelParameters)
         const genResult = await callWithRetry(
           async () => {
-            return await generateText({
-              model,
-              system:
-                '你是验证助手。只读检查执行结果（可用 read_file + grep + bash），不修改文件。每步先说明你要检查什么，然后调用工具。',
-              messages: verifyMessages as never,
-              tools: verifyToolsForAI,
-              maxSteps: 1,
-              abortSignal: this.config.abortSignal,
-            })
+            return await withDeepSeekThinking(verifyThinking, () =>
+              generateText({
+                model,
+                system:
+                  '你是验证助手。只读检查执行结果（可用 read_file + grep + bash），不修改文件。每步先说明你要检查什么，然后调用工具。',
+                messages: verifyMessages as never,
+                tools: verifyToolsForAI,
+                maxSteps: 1,
+                abortSignal: this.config.abortSignal,
+                ...(verifyTopLevel as Record<string, never>),
+                ...(verifyProviderOptions ? { providerOptions: verifyProviderOptions } : {}),
+              } as Parameters<typeof generateText>[0]),
+            )
           },
           {
             maxRetries: 1,
@@ -744,5 +773,10 @@ ${executionResult || '(无文本输出)'}
 
   getTodos(): Todo[] {
     return this.todos
+  }
+
+  /** 获取最后一次执行错误（用于自动修复模式） */
+  getLastError(): string | null {
+    return this.lastError
   }
 }

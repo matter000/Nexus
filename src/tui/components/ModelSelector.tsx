@@ -43,7 +43,7 @@ interface ModelSelectorProps {
 }
 
 const COMPATIBILITY_OPTIONS: Array<{ value: Compatibility; label: string; hint: string }> = [
-  { value: 'openai', label: 'OpenAI 兼容', hint: 'gpt-4o / deepseek-chat / 多数第三方端点' },
+  { value: 'openai', label: 'OpenAI 兼容', hint: 'gpt-4o / deepseek-v4-flash / 多数第三方端点' },
   { value: 'anthropic', label: 'Anthropic 兼容', hint: 'claude-sonnet-4 / Anthropic 代理端点' },
 ]
 
@@ -453,7 +453,7 @@ export function ModelSelector({
           <Text color={theme.colors.muted} dimColor>
             {pendingCompat === 'anthropic'
               ? '例如: claude-sonnet-4-20250514 · claude-haiku-3-5'
-              : '例如: gpt-4o · deepseek-chat · qwen-plus'}
+              : '例如: gpt-4o · deepseek-v4-flash · qwen-plus'}
             {' · Esc 返回'}
           </Text>
         </Box>

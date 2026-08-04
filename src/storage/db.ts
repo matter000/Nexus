@@ -159,6 +159,74 @@ export class NexusDB {
     }))
   }
 
+  /**
+   * 搜索会话和消息内容
+   * 返回匹配的会话列表，每条附带匹配的消息摘要
+   */
+  searchMessages(
+    query: string,
+    limit = 10,
+  ): Array<{
+    sessionId: string
+    startTime: number
+    messageCount: number
+    matchCount: number
+    matches: Array<{ role: string; snippet: string; timestamp: number }>
+  }> {
+    const likePattern = `%${query}%`
+    const rows = this.db
+      .prepare(
+        `
+      SELECT m.session_id, m.role, m.content, m.timestamp, s.start_time, s.message_count
+      FROM messages m
+      JOIN sessions s ON s.id = m.session_id
+      WHERE m.content LIKE ?
+      ORDER BY m.timestamp DESC
+      LIMIT ?
+    `,
+      )
+      .all(likePattern, limit * 5) as Array<{
+      session_id: string
+      role: string
+      content: string
+      timestamp: number
+      start_time: number
+      message_count: number
+    }>
+
+    // 按 session 分组
+    const sessionMap = new Map<
+      string,
+      {
+        sessionId: string
+        startTime: number
+        messageCount: number
+        matchCount: number
+        matches: Array<{ role: string; snippet: string; timestamp: number }>
+      }
+    >()
+    for (const row of rows) {
+      if (!sessionMap.has(row.session_id)) {
+        sessionMap.set(row.session_id, {
+          sessionId: row.session_id,
+          startTime: row.start_time,
+          messageCount: row.message_count,
+          matchCount: 0,
+          matches: [],
+        })
+      }
+      const entry = sessionMap.get(row.session_id)!
+      if (entry.matches.length < 3) {
+        // 每条消息只取前 120 字符作为摘要
+        const snippet = row.content.length > 120 ? row.content.slice(0, 120) + '...' : row.content
+        entry.matches.push({ role: row.role, snippet, timestamp: row.timestamp })
+      }
+      entry.matchCount++
+    }
+
+    return Array.from(sessionMap.values()).slice(0, limit)
+  }
+
   /** 关闭数据库 */
   close(): void {
     this.db.close()

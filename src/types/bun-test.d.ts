@@ -6,6 +6,10 @@
 declare module 'bun:test' {
   export function describe(name: string, fn: () => void): void
   export function it(name: string, fn: () => void | Promise<void>): void
+  /** bun:test 支持可选超时（ms），长耗时用例（git 操作类）需要 */
+  export function it(name: string, fn: () => void | Promise<void>, timeout: number): void
+  export function test(name: string, fn: () => void | Promise<void>): void
+  export function test(name: string, fn: () => void | Promise<void>, timeout: number): void
   export function expect(value: unknown): {
     toBe(expected: unknown): void
     toBeCloseTo(expected: number, precision?: number): void

@@ -11,6 +11,7 @@ dist/
 
 # Debug & exports
 .nexus/debug.jsonl
+.nexus/error-log.jsonl
 .nexus/exports/
 .nexus/models/
 

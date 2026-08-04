@@ -293,6 +293,18 @@ async function main() {
     getStatus: () => {
       return orchestrator.getStatus()
     },
+    searchSessions: (query: string) => {
+      return orchestrator.searchSessions(query)
+    },
+    setAutoRetries: (retries: number) => {
+      orchestrator.setAutoRetries(retries)
+    },
+    getAutoRetries: () => {
+      return orchestrator.getAutoRetries()
+    },
+    getRecentErrors: async (limit) => {
+      return await orchestrator.getRecentErrors(limit)
+    },
   }
 
   // 非交互模式

@@ -44,7 +44,7 @@ describe('CLI args --model / --provider 覆盖逻辑', () => {
         providers: {
           anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY', defaultModel: 'claude-sonnet-4-20250514' },
           openai: { apiKeyEnv: 'OPENAI_API_KEY', defaultModel: 'gpt-4o' },
-          deepseek: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com', defaultModel: 'deepseek-chat' },
+          deepseek: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com', defaultModel: 'deepseek-v4-flash' },
           custom: { apiKeyEnv: 'CUSTOM_API_KEY', baseUrl: '', defaultModel: '' },
         },
       },
@@ -104,8 +104,8 @@ describe('CLI args --model / --provider 覆盖逻辑', () => {
 
       const config = getDefaultConfig()
       applyCliOverrides(config, args)
-      expect(config.models.executor).toBe('deepseek-chat')
-      expect(config.models.planner).toBe('deepseek-chat')
+      expect(config.models.executor).toBe('deepseek-v4-flash')
+      expect(config.models.planner).toBe('deepseek-v4-flash')
     })
 
     it('-p 简写形式生效', () => {

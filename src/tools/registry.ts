@@ -12,6 +12,7 @@ import { bashTool } from './bash'
 import { createFileTool } from './createFile'
 import { editFileTool } from './editFile'
 import { fetchUrlTool } from './fetchUrl'
+import { gitCommitTool, gitPushTool, gitStatusTool } from './git'
 import { globTool } from './glob'
 import { grepTool } from './grep'
 import { listDirectoryTool } from './listDirectory'
@@ -20,6 +21,7 @@ import { toolSchemas } from './schemas'
 import { searchSymbolTool } from './searchSymbol'
 import { submitPlanTool } from './submitPlan'
 import { updateTodoTool } from './todo'
+import { webSearchTool } from './webSearch'
 
 /** SubAgent 运行器接口(解耦循环依赖) */
 export interface SubAgentRunner {
@@ -173,6 +175,10 @@ export function createToolRegistry(): ToolRegistry {
   registry.register(searchSymbolTool)
   registry.register(fetchUrlTool)
   registry.register(createFileTool)
+  registry.register(gitStatusTool)
+  registry.register(gitCommitTool)
+  registry.register(gitPushTool)
+  registry.register(webSearchTool)
   // 注册语义搜索工具 (异步加载模型,首次 search 时建立索引)
   registry.register({
     definition: {

@@ -81,12 +81,6 @@ export class ContextAssembler {
       }
     }
 
-    // Git 状态
-    const gitStatus = await this.getGitStatus()
-    if (gitStatus) {
-      parts.push(`\n## 当前 Git 状态\n${gitStatus}`)
-    }
-
     // 项目骨架树
     const tree = await this.getProjectTree()
     if (tree) {
@@ -119,6 +113,12 @@ export class ContextAssembler {
         const icon = todo.status === 'complete' ? '✓' : todo.status === 'in_progress' ? '▶' : '○'
         parts.push(`${icon} ${todo.content}`)
       }
+    }
+
+    // Git 状态（最容易变化的 section 放最后，最大化 DeepSeek prompt 缓存前缀命中）
+    const gitStatus = await this.getGitStatus()
+    if (gitStatus) {
+      parts.push(`\n## 当前 Git 状态\n${gitStatus}`)
     }
 
     return parts.join('\n')

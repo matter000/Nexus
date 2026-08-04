@@ -14,6 +14,7 @@ import { getParserForFile, getSupportedExtensions } from '../../src/context/pars
 import { FileWatcher } from '../../src/context/FileWatcher'
 import { exportSession } from '../../src/utils/export'
 import { NexusDB } from '../../src/storage/db'
+import { CheckpointManager } from '../../src/sandbox/Checkpoint'
 
 // ─── editFile 边界用例 ──────────────────────────────────────────────────────────
 
@@ -340,5 +341,76 @@ describe('NexusDB 会话恢复', () => {
   it('列出最近会话', () => {
     const sessions = db.listRecentSessions(5, tempDir)
     expect(sessions.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('endSession 记录成本和消息数', () => {
+    const sessionId = 'test-session-cost'
+    db.createSession(sessionId, tempDir)
+    db.addMessage(sessionId, 'user', '消息1')
+    db.addMessage(sessionId, 'assistant', '消息2')
+    db.addMessage(sessionId, 'user', '消息3')
+    db.endSession(sessionId, 0.5, 1000, 500, 3)
+    const session = db.getSession(sessionId)
+    expect(session).not.toBeNull()
+    expect(session!.total_cost).toBe(0.5)
+    expect(session!.message_count).toBe(3)
+  })
+
+  it('getSession 返回指定会话', () => {
+    const s1 = 'session-get-1'
+    const s2 = 'session-get-2'
+    db.createSession(s1, tempDir)
+    db.createSession(s2, tempDir)
+    const found = db.getSession(s1)
+    expect(found).not.toBeNull()
+    expect(found!.id).toBe(s1)
+    const notFound = db.getSession('non-existent')
+    expect(notFound).toBeNull()
+  })
+})
+
+// ─── CheckpointManager 边界 ─────────────────────────────────────────────────────
+
+describe('CheckpointManager 边界', () => {
+  let tmpDir: string
+
+  beforeAll(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'nexus-cp-boundary-'))
+  })
+
+  afterAll(async () => {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it('setEnabled/isEnabled 控制检查点开关', async () => {
+    const cm = new CheckpointManager(tmpDir)
+    await cm.init()
+
+    expect(cm.isEnabled()).toBe(true)
+    cm.setEnabled(false)
+    expect(cm.isEnabled()).toBe(false)
+    cm.setEnabled(true)
+    expect(cm.isEnabled()).toBe(true)
+  })
+
+  it('多次 undo 到空后返回提示', async () => {
+    const cm = new CheckpointManager(tmpDir)
+    await cm.init()
+
+    await writeFile(join(tmpDir, 'f.txt'), 'data', 'utf-8')
+    await cm.create('唯一步骤')
+
+    const r1 = await cm.undo()
+    expect(r1).toContain('已回滚')
+
+    const r2 = await cm.undo()
+    expect(r2).toBe('没有可回滚的检查点')
+  })
+
+  it('在已初始化的 git 仓库中 init 不报错', async () => {
+    const cm = new CheckpointManager(tmpDir)
+    await cm.init()
+    await cm.init() // 第二次 init 应幂等
+    expect(cm.getCurrentStep()).toBe(0)
   })
 })

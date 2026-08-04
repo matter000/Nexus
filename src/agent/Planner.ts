@@ -61,6 +61,13 @@ export interface PlannerConfig {
   costPer1kInput: number
   /** 输出 token 单价（每 1k） */
   costPer1kOutput: number
+  /** 缓存命中输入单价（每 1k），DeepSeek 分级计费用 */
+  costPer1kInputCached?: number
+  /**
+   * Provider 特定的模型参数
+   * 由 ProviderAdapter.getModelParameters() 生成，用于优化 DeepSeek 等模型的调用参数
+   */
+  modelParameters?: Record<string, unknown>
 }
 
 export class Planner {
@@ -109,6 +116,7 @@ export class Planner {
           messages: messages as Array<{ role: 'user' | 'assistant'; content: string }>,
           tools: toolsForAI,
           maxSteps: 1,
+          modelParameters: this.config.modelParameters,
         },
         {
           onEvent,
@@ -119,6 +127,7 @@ export class Planner {
             modelName: this.config.modelName,
             costPer1kInput: this.config.costPer1kInput,
             costPer1kOutput: this.config.costPer1kOutput,
+            costPer1kInputCached: this.config.costPer1kInputCached,
           },
         },
       )
@@ -239,6 +248,7 @@ export class Planner {
           messages: messages as Array<{ role: 'user' | 'assistant'; content: string }>,
           tools: toolsForAI,
           maxSteps: 1,
+          modelParameters: this.config.modelParameters,
         },
         {
           onEvent,
@@ -249,6 +259,7 @@ export class Planner {
             modelName: this.config.modelName,
             costPer1kInput: this.config.costPer1kInput,
             costPer1kOutput: this.config.costPer1kOutput,
+            costPer1kInputCached: this.config.costPer1kInputCached,
           },
         },
       )

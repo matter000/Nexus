@@ -7,8 +7,10 @@
 import type { LanguageModel } from 'ai'
 import { generateText } from 'ai'
 import type { CostTracker } from '../router/CostTracker'
+import { withDeepSeekThinking } from '../router/providers/deepseekFetch'
 import { requiresForcedApproval } from '../sandbox/CommandGuard'
 import type { ToolContext, ToolRegistry } from '../tools/registry'
+import { splitModelParameters } from './ReActLoop'
 import type { ModelRole, NexusEvent, PermissionMode, SubAgentResult, SubAgentTask } from './types'
 
 export interface SubAgentConfig {
@@ -37,6 +39,13 @@ export interface SubAgentConfig {
   costPer1kInput: number
   /** 输出 token 单价（每 1k） */
   costPer1kOutput: number
+  /** 缓存命中输入单价（每 1k），DeepSeek 分级计费用 */
+  costPer1kInputCached?: number
+  /**
+   * Provider 特定的模型参数（DeepSeek 深度适配）。
+   * 子 Agent 同样是多轮工具调用，需传入 thinking: disabled 等参数避免 422。
+   */
+  modelParameters?: Record<string, unknown>
   /**
    * 中断信号获取器（Orchestrator.abort() 时触发，与 Executor 行为一致）。
    * 用 getter 而非静态 signal：因为 SubAgent 在 init() 时创建，
@@ -100,13 +109,21 @@ export class SubAgent {
         }
         iterations++
 
-        const result = await generateText({
-          model,
-          messages,
-          tools: toolsForAI,
-          maxSteps: 1,
-          abortSignal,
-        })
+        // 拆分 provider 参数：thinking 经 ALS + fetch 拦截器注入，其余经 providerOptions 映射
+        const { topLevel, providerOptions, thinking } = splitModelParameters(
+          this.config.modelParameters,
+        )
+        const result = await withDeepSeekThinking(thinking, () =>
+          generateText({
+            model,
+            messages,
+            tools: toolsForAI,
+            maxSteps: 1,
+            abortSignal,
+            ...(topLevel as Record<string, never>),
+            ...(providerOptions ? { providerOptions } : {}),
+          } as Parameters<typeof generateText>[0]),
+        )
 
         // 记录成本
         const usage = await result.usage
@@ -119,6 +136,7 @@ export class SubAgent {
             outputTokens: usage.completionTokens,
             costPer1kInput: this.config.costPer1kInput,
             costPer1kOutput: this.config.costPer1kOutput,
+            costPer1kInputCached: this.config.costPer1kInputCached,
           })
         }
 

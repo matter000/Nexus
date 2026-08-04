@@ -2,7 +2,7 @@
  * 单元测试: CostTracker 成本追踪
  */
 
-import { describe, it, expect } from 'bun:test'
+import { describe, expect, it } from 'bun:test'
 import { CostTracker } from '../../src/router/CostTracker'
 
 describe('CostTracker', () => {
@@ -133,5 +133,87 @@ describe('CostTracker', () => {
     expect(summary).toContain('$')
     expect(summary).toContain('in')
     expect(summary).toContain('out')
+  })
+
+  // ─── DeepSeek 缓存分级计费 ─────────────────────────────────────────
+
+  it('缓存命中部分按低价计费（DeepSeek 分级计费）', () => {
+    const tracker = new CostTracker()
+    // DeepSeek v4-flash: 未命中 0.000137/1K，命中 0.0000027/1K，输出 0.000274/1K
+    tracker.record({
+      role: 'executor',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      inputTokens: 10000,
+      outputTokens: 1000,
+      costPer1kInput: 0.000137,
+      costPer1kOutput: 0.000274,
+      costPer1kInputCached: 0.0000027,
+      cacheHitTokens: 8000,
+      cacheMissTokens: 2000,
+    })
+
+    // cost = 2000/1000*0.000137 + 8000/1000*0.0000027 + 1000/1000*0.000274
+    //      = 0.000274 + 0.0000216 + 0.000274 ≈ 0.0005696
+    expect(tracker.getTotalCost()).toBeCloseTo(0.0005696, 8)
+
+    // 统一按未命中价的对照值：10*0.000137 + 0.000274 = 0.001644
+    // 分级计费应显著低于对照值
+    expect(tracker.getTotalCost()).toBeLessThan(0.001644)
+  })
+
+  it('缓存节省额累计正确', () => {
+    const tracker = new CostTracker()
+    tracker.record({
+      role: 'executor',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      inputTokens: 10000,
+      outputTokens: 0,
+      costPer1kInput: 0.000137,
+      costPer1kOutput: 0.000274,
+      costPer1kInputCached: 0.0000027,
+      cacheHitTokens: 10000,
+      cacheMissTokens: 0,
+    })
+
+    // saved = 10 * (0.000137 - 0.0000027) = 0.001343
+    expect(tracker.getCacheSavedCost()).toBeCloseTo(0.001343, 8)
+    expect(tracker.getSummary()).toContain('缓存节省')
+  })
+
+  it('未提供命中价时保持原有计费行为', () => {
+    const tracker = new CostTracker()
+    tracker.record({
+      role: 'executor',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      inputTokens: 10000,
+      outputTokens: 1000,
+      costPer1kInput: 0.000137,
+      costPer1kOutput: 0.000274,
+      cacheHitTokens: 8000,
+      cacheMissTokens: 2000,
+    })
+
+    // 无命中价：全部输入按未命中价
+    expect(tracker.getTotalCost()).toBeCloseTo(10 * 0.000137 + 0.000274, 8)
+    expect(tracker.getCacheSavedCost()).toBe(0)
+  })
+
+  it('cacheHitTokens 超过 inputTokens 时不产生负成本', () => {
+    const tracker = new CostTracker()
+    tracker.record({
+      role: 'executor',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      inputTokens: 100,
+      outputTokens: 0,
+      costPer1kInput: 0.000137,
+      costPer1kOutput: 0.000274,
+      costPer1kInputCached: 0.0000027,
+      cacheHitTokens: 500, // 异常值：大于 inputTokens
+    })
+    expect(tracker.getTotalCost()).toBeGreaterThanOrEqual(0)
   })
 })

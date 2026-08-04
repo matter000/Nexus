@@ -30,6 +30,13 @@ export interface CommandContext {
     inputTokens: number
     outputTokens: number
     byModel?: Record<string, { cost: number; inputTokens: number; outputTokens: number }>
+    /** DeepSeek 缓存/推理统计 */
+    cacheHitTokens?: number
+    cacheMissTokens?: number
+    cacheHitRate?: number
+    cacheSavedCost?: number
+    reasoningTokens?: number
+    reasoningPercentage?: number
   }
   clearContext: () => void
   undo: () => Promise<string>
@@ -58,6 +65,14 @@ export interface CommandContext {
     model: string
     cost: number
   }
+  /** 搜索会话消息 */
+  searchSessions: (query: string) => string
+  /** 设置自动修复模式的重试次数（0=关闭，1-3=开启） */
+  setAutoRetries: (retries: number) => void
+  /** 获取当前自动修复重试次数 */
+  getAutoRetries: () => number
+  /** 获取最近的错误报告 */
+  getRecentErrors: (limit?: number) => Promise<string>
 }
 
 const commands: SlashCommand[] = [
@@ -103,7 +118,7 @@ const commands: SlashCommand[] = [
   {
     name: 'cost',
     aliases: [],
-    description: '查看本次会话花费（含按模型分类明细）',
+    description: '查看本次会话花费（含按模型分类、缓存命中与推理统计）',
     handler: async (_args, ctx) => {
       const cost = ctx.getCost()
       const lines: string[] = [
@@ -111,6 +126,23 @@ const commands: SlashCommand[] = [
         `  输入 tokens: ${cost.inputTokens}`,
         `  输出 tokens: ${cost.outputTokens}`,
       ]
+      // DeepSeek 缓存/推理统计（有数据才展示）
+      const cacheTotal = (cost.cacheHitTokens ?? 0) + (cost.cacheMissTokens ?? 0)
+      if (cacheTotal > 0) {
+        lines.push(
+          `  缓存命中: ${((cost.cacheHitRate ?? 0) * 100).toFixed(1)}% (${cost.cacheHitTokens} hit / ${cost.cacheMissTokens} miss)`,
+        )
+        if ((cost.cacheSavedCost ?? 0) > 0) {
+          lines.push(
+            `  缓存节省: $${(cost.cacheSavedCost ?? 0).toFixed(4)}（分级计费已计入总花费）`,
+          )
+        }
+      }
+      if ((cost.reasoningTokens ?? 0) > 0) {
+        lines.push(
+          `  推理 tokens: ${cost.reasoningTokens}（占输出 ${(cost.reasoningPercentage ?? 0).toFixed(1)}%）`,
+        )
+      }
       if (cost.byModel && Object.keys(cost.byModel).length > 0) {
         lines.push('\n按模型分类:')
         for (const [model, info] of Object.entries(cost.byModel)) {
@@ -235,6 +267,49 @@ const commands: SlashCommand[] = [
       } catch (err) {
         return `导出失败: ${err instanceof Error ? err.message : String(err)}`
       }
+    },
+  },
+  {
+    name: 'search',
+    aliases: ['s'],
+    description: '搜索历史会话消息（/search <关键词>）',
+    handler: async (args, ctx) => {
+      const query = args.trim()
+      if (!query) {
+        return '用法: /search <关键词>\n示例: /search 配置文件\n将搜索所有历史会话中的消息内容，返回匹配的会话和消息摘要。'
+      }
+      return ctx.searchSessions(query)
+    },
+  },
+  {
+    name: 'autofix',
+    aliases: ['af'],
+    description: '查看或设置自动修复模式（/autofix 查看，/autofix <0-3> 设置重试次数）',
+    handler: async (args, ctx) => {
+      const input = args.trim()
+      if (!input) {
+        const current = ctx.getAutoRetries()
+        return current > 0
+          ? `自动修复模式: 已开启（重试 ${current} 次）\n使用 /autofix 0 关闭，/autofix <1-3> 设置重试次数`
+          : '自动修复模式: 已关闭\n使用 /autofix <1-3> 开启（设置重试次数）'
+      }
+      const retries = Number.parseInt(input, 10)
+      if (Number.isNaN(retries) || retries < 0 || retries > 3) {
+        return '无效参数。用法: /autofix <0|1|2|3>\n  0 = 关闭\n  1-3 = 开启并设置重试次数'
+      }
+      ctx.setAutoRetries(retries)
+      return retries > 0
+        ? `自动修复模式已开启，错误时将自动重试 ${retries} 次`
+        : '自动修复模式已关闭'
+    },
+  },
+  {
+    name: 'errors',
+    aliases: ['err'],
+    description: '查看最近错误报告（/errors [数量]）',
+    handler: async (args, ctx) => {
+      const limit = args.trim() ? Number.parseInt(args.trim(), 10) || 10 : 10
+      return ctx.getRecentErrors(limit)
     },
   },
   {

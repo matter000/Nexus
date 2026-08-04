@@ -1,29 +1,51 @@
 /**
  * 单元测试: Planner 成本追踪集成
- * 验证 Planner 在 streamText 后正确调用 costTracker.record()
+ * 验证 Planner 在调用 callLLMWithRetry 后正确调用 costTracker.record()
  */
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
 import type { NexusEvent } from '../../src/agent/types'
 
 // 共享 mock 状态（Bun 的 mock.module 闭包捕获此变量）
-let mockStreamTextResult: Record<string, unknown> = {}
+let mockUsage: { promptTokens: number; completionTokens: number } | undefined = { promptTokens: 1500, completionTokens: 300 }
 
-// Bun mock.module 类型未完善，用 any 绕过
-;(mock as any).module('ai', () => ({
-  streamText: () => ({
-    textStream: (async function* () {
-      const text = mockStreamTextResult.text as string ?? ''
-      if (text) yield text
-    })(),
-    then: (resolve: Function) => resolve({
-      usage: Promise.resolve(mockStreamTextResult.usage),
-      toolCalls: Promise.resolve(mockStreamTextResult.toolCalls ?? []),
-    }),
-  }),
-}))
+// 模拟 callLLMWithRetry 而非全局 ai 模块，避免与 executor.test.ts 等文件的 ai mock 冲突
+// 模拟版本同时模拟成本追踪逻辑，确保 costTracker.record() 和 cost_update 事件被触发
+;(mock as any).module('../../src/agent/ReActLoop', () => {
+  return {
+    callLLMWithRetry: async (_config: any, callbacks: any) => {
+      const usage = mockUsage
 
-// 在 mock.module 之后导入（Bun 会正确处理模块顺序）
+      // 模拟真实 callLLMWithRetry 中的成本追踪逻辑
+      if (usage && callbacks?.costConfig) {
+        const { costConfig, onEvent } = callbacks
+        costConfig.costTracker.record({
+          role: costConfig.modelRole,
+          provider: costConfig.providerName,
+          model: costConfig.modelName,
+          inputTokens: usage.promptTokens,
+          outputTokens: usage.completionTokens,
+          costPer1kInput: costConfig.costPer1kInput,
+          costPer1kOutput: costConfig.costPer1kOutput,
+        })
+        onEvent({
+          type: 'cost_update',
+          inputTokens: usage.promptTokens,
+          outputTokens: usage.completionTokens,
+          cost: costConfig.costTracker.getTotalCost(),
+        })
+      }
+
+      return {
+        streamedText: '```json\n{"summary":"测试计划","todos":[{"id":"1","content":"测试步骤"}],"filesToModify":[],"estimatedSteps":1}\n```',
+        usage,
+        toolCalls: [] as Array<{ toolName: string; args: Record<string, unknown> }>,
+      }
+    },
+  }
+})
+
+// 在 mock.module 之后导入
 import { Planner } from '../../src/agent/Planner'
 import { CostTracker } from '../../src/router/CostTracker'
 
@@ -59,24 +81,13 @@ function createMockPlannerConfig(overrides: Record<string, unknown> = {}) {
 describe('Planner 成本追踪', () => {
   beforeEach(() => {
     // 每次测试前重置 mock 状态
-    mockStreamTextResult = {}
+    mockUsage = undefined
   })
 
   it('plan() 后 costTracker 记录正确 token 数', async () => {
-    const planJson = JSON.stringify({
-      summary: '测试计划',
-      todos: [{ id: '1', content: '步骤一', status: 'pending' }],
-      filesToModify: [],
-      estimatedSteps: 1,
-    })
+    mockUsage = { promptTokens: 1500, completionTokens: 300 }
 
-    mockStreamTextResult = {
-      text: `\`\`\`json\n${planJson}\n\`\`\``,
-      toolCalls: [],
-      usage: { promptTokens: 1500, completionTokens: 300 },
-    }
-
-    const { config, events } = createMockPlannerConfig()
+    const { config } = createMockPlannerConfig()
     const planner = new Planner(config)
     const plan = await planner.plan('测试任务', [])
 
@@ -88,11 +99,7 @@ describe('Planner 成本追踪', () => {
   })
 
   it('plan() 后 costTracker 记录正确成本金额', async () => {
-    mockStreamTextResult = {
-      text: '简单计划',
-      toolCalls: [],
-      usage: { promptTokens: 1000, completionTokens: 1000 },
-    }
+    mockUsage = { promptTokens: 1000, completionTokens: 1000 }
 
     const { config } = createMockPlannerConfig()
     const planner = new Planner(config)
@@ -103,11 +110,7 @@ describe('Planner 成本追踪', () => {
   })
 
   it('plan() 发出 cost_update 事件', async () => {
-    mockStreamTextResult = {
-      text: '计划',
-      toolCalls: [],
-      usage: { promptTokens: 500, completionTokens: 200 },
-    }
+    mockUsage = { promptTokens: 500, completionTokens: 200 }
 
     const { config, events } = createMockPlannerConfig()
     const planner = new Planner(config)
@@ -122,11 +125,7 @@ describe('Planner 成本追踪', () => {
   })
 
   it('无 usage 时 costTracker 不记录', async () => {
-    // 不返回 usage 字段
-    mockStreamTextResult = {
-      text: '计划',
-      toolCalls: [],
-    }
+    // mockUsage 保持 undefined
 
     const { config, events } = createMockPlannerConfig()
     const planner = new Planner(config)

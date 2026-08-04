@@ -81,6 +81,24 @@ export const submitPlanSchema = z.object({
   estimatedSteps: z.number().optional().describe('预估总步数'),
 })
 
+export const gitStatusSchema = z.object({})
+
+export const gitCommitSchema = z.object({
+  message: z.string().describe('提交信息'),
+  files: z.string().optional().describe('要暂存的文件路径（可选，多个文件用空格分隔）'),
+})
+
+export const gitPushSchema = z.object({
+  remote: z.string().optional().describe('远程仓库名（默认 origin）'),
+  branch: z.string().optional().describe('要推送的分支名'),
+  force: z.boolean().optional().describe('是否强制推送（默认 false）'),
+})
+
+export const webSearchSchema = z.object({
+  query: z.string().describe('搜索关键词'),
+  count: z.number().optional().describe('返回结果数量（默认 5，最大 10）'),
+})
+
 export const dispatchSubagentSchema = z.object({
   description: z.string().describe('子任务的详细描述'),
   writable: z.boolean().optional().describe('是否允许子 Agent 修改文件(默认 false)'),
@@ -101,4 +119,8 @@ export const toolSchemas: Record<string, z.ZodType> = {
   fetch_url: fetchUrlSchema,
   submit_plan: submitPlanSchema,
   dispatch_subagent: dispatchSubagentSchema,
+  git_status: gitStatusSchema,
+  git_commit: gitCommitSchema,
+  git_push: gitPushSchema,
+  web_search: webSearchSchema,
 }

@@ -54,7 +54,7 @@ const PROVIDER_LIST: ProviderDef[] = [
     label: 'DeepSeek',
     envVar: 'DEEPSEEK_API_KEY',
     defaultBaseUrl: 'https://api.deepseek.com',
-    defaultModel: 'deepseek-chat',
+    defaultModel: 'deepseek-v4-flash',
   },
   {
     name: 'custom',
@@ -281,7 +281,7 @@ export function ApiConfigPanel({
             <Text color={theme.colors.primary}>▌</Text>
           </Box>
           <Text color={theme.colors.muted} dimColor>
-            例如: {selectedProvider.defaultModel || 'gpt-4o, claude-sonnet-4, deepseek-chat'}
+            例如: {selectedProvider.defaultModel || 'gpt-4o, claude-sonnet-4, deepseek-v4-flash'}
             {selectedProvider.name !== 'custom' ? ' · 直接 Enter 使用默认' : ''}
           </Text>
         </Box>

@@ -15,6 +15,7 @@ import { requiresForcedApproval } from '../sandbox/CommandGuard'
 import { ApiConfigPanel } from './components/ApiConfigPanel'
 import { ApprovalPrompt } from './components/ApprovalPrompt'
 import { InputBox } from './components/InputBox'
+import { LoadingSpinner } from './components/LoadingSpinner'
 import { LogoBanner } from './components/LogoBanner'
 import { type Message, MessageList } from './components/MessageList'
 import { ModelSelector } from './components/ModelSelector'
@@ -431,6 +432,10 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           </Box>
         )}
 
+        {/* LLM 加载动画: 无流式输出且处于活跃阶段时显示 */}
+        {(phase === 'planning' || phase === 'executing' || phase === 'verifying') &&
+          !streamingText && <LoadingSpinner phase={phase} />}
+
         {/* 工具调用卡片 - 显示所有（含完成） */}
         {toolCalls.map((tc) => (
           <ToolCard
@@ -477,7 +482,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         {/* 快捷键提示行 */}
         <Box>
           <Text color={theme.colors.muted} dimColor>
-            [Ctrl+C 中断] [/ 命令] [Tab 补全]
+            [Ctrl+C 中断] [/ 命令] [Tab 补全] [Alt+Enter 换行]
           </Text>
         </Box>
       </Box>

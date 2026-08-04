@@ -31,9 +31,9 @@ let availableProviderNames: string[] = ['anthropic']
       {
         name: 'deepseek',
         isAvailable: () => availableProviderNames.includes('deepseek'),
-        getDefaultModel: () => 'deepseek-chat',
-        getContextWindow: () => 65536,
-        supportsTools: (m: string) => m === 'deepseek-chat',
+        getDefaultModel: () => 'deepseek-v4-flash',
+        getContextWindow: () => 1_000_000,
+        supportsTools: (m: string) => m === 'deepseek-v4-flash' || m === 'deepseek-v4-pro',
       },
       {
         name: 'custom',
@@ -61,9 +61,9 @@ let availableProviderNames: string[] = ['anthropic']
       },
       deepseek: {
         name: 'deepseek',
-        getDefaultModel: () => 'deepseek-chat',
-        getContextWindow: () => 65536,
-        supportsTools: (m: string) => m === 'deepseek-chat',
+        getDefaultModel: () => 'deepseek-v4-flash',
+        getContextWindow: () => 1_000_000,
+        supportsTools: (m: string) => m === 'deepseek-v4-flash' || m === 'deepseek-v4-pro',
       },
       custom: {
         name: 'custom',
@@ -113,7 +113,7 @@ function createDefaultConfig(): NexusConfig {
         deepseek: {
           apiKeyEnv: 'DEEPSEEK_API_KEY',
           baseUrl: 'https://api.deepseek.com',
-          defaultModel: 'deepseek-chat',
+          defaultModel: 'deepseek-v4-flash',
         },
         custom: { apiKeyEnv: 'CUSTOM_API_KEY', defaultModel: '' },
       },
@@ -125,6 +125,7 @@ function createDefaultConfig(): NexusConfig {
       maxReadLines: 2000,
       maxIterations: 50,
       maxOutputBytes: 102400,
+      maxAutoRetries: 0,
     },
     context: { budgetRatio: 0.8, recentTurnsKeep: 5 },
     checkpoint: { autoCheckpoint: true, branch: 'nexus/checkpoints' },
@@ -162,23 +163,25 @@ describe('ModelRouter', () => {
     expect((model as any).modelId).toBeDefined()
   })
 
-  it('FALLBACK_CHAIN 包含合理的降级路径', () => {
-    // claude-sonnet 应降级到 deepseek-chat
-    expect(FALLBACK_CHAIN['claude-sonnet-4-20250514']).toBe('deepseek-chat')
-    // deepseek-chat 应降级到 gpt-4o-mini
-    expect(FALLBACK_CHAIN['deepseek-chat']).toBe('gpt-4o-mini')
-    // gpt-4o 应降级到 deepseek-chat
-    expect(FALLBACK_CHAIN['gpt-4o']).toBe('deepseek-chat')
+  it('FALLBACK_CHAIN 包含合理的降级路径（跨 provider 容灾策略）', () => {
+    // claude-sonnet 应降级到 deepseek-v4-flash（DeepSeek 优先）
+    expect(FALLBACK_CHAIN['claude-sonnet-4-20250514']).toBe('deepseek-v4-flash')
+    // deepseek-v4-flash 跨 provider 容灾到 claude-haiku-3-5（同生态内降级无意义）
+    expect(FALLBACK_CHAIN['deepseek-v4-flash']).toBe('claude-haiku-3-5')
+    // deepseek-v4-pro 优先降级到更便宜的 flash，再跨 provider
+    expect(FALLBACK_CHAIN['deepseek-v4-pro']).toBe('deepseek-v4-flash')
+    // gpt-4o 应降级到 deepseek-v4-flash
+    expect(FALLBACK_CHAIN['gpt-4o']).toBe('deepseek-v4-flash')
     // 所有降级目标应是已知模型
     const knownModels = [
       'claude-sonnet-4-20250514',
       'claude-haiku-3-5',
       'gpt-4o',
       'gpt-4o-mini',
-      'deepseek-chat',
-      'deepseek-reasoner',
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
     ]
-    for (const fallback of Object.values(FALLBACK_CHAIN)) {
+    for (const [, fallback] of Object.entries(FALLBACK_CHAIN)) {
       expect(knownModels).toContain(fallback)
     }
   })
@@ -221,15 +224,15 @@ describe('ModelRouter', () => {
   })
 
   it('getRouteInfo() 成本参数随实际模型动态变化（非硬编码）', () => {
-    availableProviderNames = ['deepseek'] // 只有 deepseek，executor 从 claude 降级到 deepseek-chat
+    availableProviderNames = ['deepseek'] // 只有 deepseek，executor 从 claude 降级到 deepseek-v4-flash
     const router = new ModelRouter(createDefaultConfig(), new CostTracker())
 
     const route = router.getRouteInfo('executor')
-    expect(route.model).toBe('deepseek-chat')
+    expect(route.model).toBe('deepseek-v4-flash')
     expect(route.provider).toBe('deepseek')
-    // 应为 deepseek-chat 的成本，而非硬编码的 anthropic 价格（0.003 / 0.015）
-    expect(route.costPer1kInput).toBe(0.00027)
-    expect(route.costPer1kOutput).toBe(0.0011)
+    // 应为 deepseek-v4-flash 的成本，而非硬编码的 anthropic 价格（0.003 / 0.015）
+    expect(route.costPer1kInput).toBe(0.000137)
+    expect(route.costPer1kOutput).toBe(0.000274)
   })
 
   it('getContextWindow() 返回有效数值', () => {
@@ -254,8 +257,8 @@ describe('ModelRouter', () => {
     availableProviderNames = ['anthropic']
     const router = new ModelRouter(createDefaultConfig(), new CostTracker())
     const fallback = router.getFallbackModelName('executor')
-    // executor 默认 claude-sonnet-4-20250514，降级到 deepseek-chat
-    expect(fallback).toBe('deepseek-chat')
+    // executor 默认 claude-sonnet-4-20250514，降级到 deepseek-v4-flash
+    expect(fallback).toBe('deepseek-v4-flash')
   })
 
   it('使用 secrets 配置初始化 provider', () => {

@@ -10,44 +10,91 @@ import type { LanguageModel } from 'ai'
 import type { ModelRole, ModelRoute, NexusConfig, ProviderName } from '../agent/types'
 import { getEffectiveApiKey, isCustomProviderName, type SecretsConfig } from '../config-secrets'
 import type { CostTracker } from './CostTracker'
+import { createDeepSeekFetch } from './providers/deepseekFetch'
 import { getAvailableProviders, getProvider } from './providers/index'
 
-/** 已知模型的成本与角色信息（Nexus 特有的路由逻辑） */
-const MODEL_COST_DATA: Record<string, { costPer1kInput: number; costPer1kOutput: number }> = {
+/** 已知模型的成本与角色信息（Nexus 特有的路由逻辑）
+ *
+ * DeepSeek 深度适配说明（v4 系列）:
+ * - deepseek-v4-flash: 主力模型，高速低成本，支持 tool calling 和思考模式，适合 planner/executor
+ * - deepseek-v4-pro: 高性能模型，支持深度推理和 tool calling，适合 verifier/复杂分析
+ * - 注意: deepseek-chat / deepseek-reasoner 已于 2026/07/24 弃用
+ * - 优先级: deepseek > anthropic > openai（当 DeepSeek 可用时优先使用）
+ */
+const MODEL_COST_DATA: Record<
+  string,
+  { costPer1kInput: number; costPer1kOutput: number; costPer1kInputCached?: number }
+> = {
+  // DeepSeek v4 系列（最新定价，单位: 美元）
+  // 价格参考（百万 tokens）:
+  //   v4-flash: 输入(缓存命中)=0.02元, 输入(缓存未命中)=1元, 输出=2元
+  //   v4-pro:   输入(缓存命中)=0.025元, 输入(缓存未命中)=3元, 输出=6元
+  // 按 7.3 汇率估算 USD/1K:
+  //   v4-flash: 缓存命中输入≈$0.0000027/1K, 缓存未命中输入≈$0.000137/1K, 输出≈$0.000274/1K
+  //   v4-pro:   缓存命中输入≈$0.0000034/1K, 缓存未命中输入≈$0.000411/1K, 输出≈$0.000822/1K
+  // 注意: 缓存命中价格远低于未命中（v4-flash 约 50x 差异，v4-pro 约 120x 差异）
+  // costPer1kInput 记录"未命中"价格，costPer1kInputCached 记录"命中"价格，
+  // CostTracker 按命中/未命中 token 数分级计费
+  'deepseek-v4-flash': {
+    costPer1kInput: 0.000137,
+    costPer1kOutput: 0.000274,
+    costPer1kInputCached: 0.0000027,
+  },
+  'deepseek-v4-pro': {
+    costPer1kInput: 0.000411,
+    costPer1kOutput: 0.000822,
+    costPer1kInputCached: 0.0000034,
+  },
+  // Anthropic 系列
   'claude-sonnet-4-20250514': { costPer1kInput: 0.003, costPer1kOutput: 0.015 },
   'claude-haiku-3-5': { costPer1kInput: 0.0008, costPer1kOutput: 0.004 },
+  // OpenAI 系列
   'gpt-4o': { costPer1kInput: 0.0025, costPer1kOutput: 0.01 },
   'gpt-4o-mini': { costPer1kInput: 0.00015, costPer1kOutput: 0.0006 },
-  'deepseek-chat': { costPer1kInput: 0.00027, costPer1kOutput: 0.0011 },
-  'deepseek-reasoner': { costPer1kInput: 0.00055, costPer1kOutput: 0.00219 },
 }
 
 /** 模型 → 所属 provider 的映射 */
 const MODEL_PROVIDER_MAP: Record<string, ProviderName> = {
+  // DeepSeek v4 系列
+  'deepseek-v4-flash': 'deepseek',
+  'deepseek-v4-pro': 'deepseek',
+  // Anthropic
   'claude-sonnet-4-20250514': 'anthropic',
   'claude-haiku-3-5': 'anthropic',
+  // OpenAI
   'gpt-4o': 'openai',
   'gpt-4o-mini': 'openai',
-  'deepseek-chat': 'deepseek',
-  'deepseek-reasoner': 'deepseek',
 }
 
-/** 各角色的默认模型选择 */
+/** 各角色的默认模型选择
+ *
+ * 深度适配策略（v4 系列）:
+ * - planner: 用 deepseek-v4-flash（高速低成本，支持 tool calling）
+ * - executor: 用 deepseek-v4-flash（主力执行，支持 tool calling）
+ * - summarizer: 用 deepseek-v4-flash（轻量摘要，成本极低）
+ * - verifier: 用 deepseek-v4-pro（高性能推理，支持思考模式，适合复杂分析）
+ */
 const DEFAULT_ROLE_MODELS: Record<ModelRole, string> = {
-  planner: 'claude-sonnet-4-20250514',
-  executor: 'claude-sonnet-4-20250514',
-  summarizer: 'claude-haiku-3-5',
-  verifier: 'claude-haiku-3-5',
+  planner: 'deepseek-v4-flash',
+  executor: 'deepseek-v4-flash',
+  summarizer: 'deepseek-v4-flash',
+  verifier: 'deepseek-v4-pro',
 }
 
-/** 降级链:高档 → 中档 → 低档 */
+/** 降级链: 跨 provider 容灾策略
+ *  deepseek-v4-flash → claude-haiku-3-5 → gpt-4o-mini（同生态内降级无意义，flash 失败通常是服务端问题）
+ *  deepseek-v4-pro → deepseek-v4-flash → claude-haiku-3-5 → gpt-4o-mini
+ */
 export const FALLBACK_CHAIN: Record<string, string> = {
-  'claude-sonnet-4-20250514': 'deepseek-chat',
-  'deepseek-chat': 'gpt-4o-mini',
-  'gpt-4o': 'deepseek-chat',
-  'gpt-4o-mini': 'claude-haiku-3-5',
+  // DeepSeek 降级链（优先切到更便宜的 flash，再跨 provider 容灾）
+  'deepseek-v4-flash': 'claude-haiku-3-5',
+  'deepseek-v4-pro': 'deepseek-v4-flash',
+  // Anthropic 降级链
+  'claude-sonnet-4-20250514': 'deepseek-v4-flash',
   'claude-haiku-3-5': 'gpt-4o-mini',
-  'deepseek-reasoner': 'deepseek-chat',
+  // OpenAI 降级链
+  'gpt-4o': 'deepseek-v4-flash',
+  'gpt-4o-mini': 'claude-haiku-3-5',
 }
 
 export class ModelRouter {
@@ -103,6 +150,8 @@ export class ModelRouter {
               providerConfig.baseUrl ??
               'https://api.deepseek.com',
             apiKey,
+            // DeepSeek 深度适配: fetch 拦截器注入 thinking 参数（SDK 无此映射）
+            fetch: createDeepSeekFetch(),
           }),
         )
       }
@@ -139,10 +188,14 @@ export class ModelRouter {
     }
   }
 
-  /** auto 模式: 按优先级选择第一个可用 provider 的最佳模型（委托给适配器） */
+  /** auto 模式: 按优先级选择第一个可用 provider 的最佳模型（委托给适配器）
+   *
+   * DeepSeek 深度适配: 优先级改为 deepseek > anthropic > openai
+   * 当 DeepSeek API Key 已配置时，自动优先使用 DeepSeek 模型
+   */
   private resolveAutoModel(role: ModelRole): string {
-    // 内置 provider 优先级: anthropic > deepseek > openai
-    const builtinPriority: string[] = ['anthropic', 'deepseek', 'openai']
+    // 内置 provider 优先级: deepseek > anthropic > openai（DeepSeek 深度适配）
+    const builtinPriority: string[] = ['deepseek', 'anthropic', 'openai']
     const isHighRole = role === 'planner' || role === 'executor'
 
     for (const providerName of builtinPriority) {
@@ -152,7 +205,8 @@ export class ModelRouter {
           // 高能力角色用默认高端模型，低能力角色用轻量模型
           const defaultModel = adapter.getDefaultModel()
           if (isHighRole) return defaultModel
-          // 低端角色尝试降级：anthropic 用 haiku，openai 用 mini，其他用默认
+          // 低端角色尝试降级：deepseek 用 deepseek-v4-flash，anthropic 用 haiku，openai 用 mini
+          if (providerName === 'deepseek') return 'deepseek-v4-flash'
           if (providerName === 'anthropic') return 'claude-haiku-3-5'
           if (providerName === 'openai') return 'gpt-4o-mini'
           return defaultModel
@@ -190,6 +244,7 @@ export class ModelRouter {
       role,
       costPer1kInput: costData.costPer1kInput,
       costPer1kOutput: costData.costPer1kOutput,
+      costPer1kInputCached: costData.costPer1kInputCached,
       contextWindow: adapter.getContextWindow(modelName),
       supportsTools: adapter.supportsTools(modelName),
       supportsStreaming: true,
