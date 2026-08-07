@@ -13,6 +13,8 @@ export interface SlashCommand {
 export interface CommandContext {
   getModel: () => string
   setModel: (model: string) => void
+  /** 中断当前执行（触发 Orchestrator.abort()，中止正在进行的 LLM 调用/工具） */
+  interrupt: () => void
   /** 重新初始化 providers 并切换到指定模型（用于添加新模型后的保存与切换） */
   reinitAndSelectModel: (model: string) => Promise<void>
   /** 仅重新初始化 providers（用于删除自定义模型后回退 auto 选择） */
@@ -73,6 +75,12 @@ export interface CommandContext {
   getAutoRetries: () => number
   /** 获取最近的错误报告 */
   getRecentErrors: (limit?: number) => Promise<string>
+  /** 查看学习记忆统计与 top 教训 */
+  listMemory: () => string
+  /** 删除一条教训或技能 */
+  deleteMemoryEntry: (kind: 'lesson' | 'skill', id: number | string) => string
+  /** 列出技能文件 */
+  listSkills: () => string
 }
 
 const commands: SlashCommand[] = [
@@ -310,6 +318,20 @@ const commands: SlashCommand[] = [
     handler: async (args, ctx) => {
       const limit = args.trim() ? Number.parseInt(args.trim(), 10) || 10 : 10
       return ctx.getRecentErrors(limit)
+    },
+  },
+  {
+    name: 'memory',
+    aliases: ['mem'],
+    description: '查看/管理学习记忆（/memory、/memory delete lesson <id>、/memory skills）',
+    handler: async (args, ctx) => {
+      const [sub, kind, idStr] = args.trim().split(/\s+/)
+      if (sub === 'delete' && kind && idStr) {
+        const id = /^\d+$/.test(idStr) ? Number(idStr) : idStr
+        return ctx.deleteMemoryEntry(kind as 'lesson' | 'skill', id)
+      }
+      if (sub === 'skills') return ctx.listSkills()
+      return ctx.listMemory()
     },
   },
   {

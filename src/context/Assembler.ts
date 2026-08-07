@@ -7,6 +7,7 @@
 import { spawn } from 'child_process'
 import { readFile } from 'fs/promises'
 import type { ChatMessage, ProjectRules, Todo } from '../agent/types'
+import type { RetrievedLesson } from '../memory/LessonRetriever'
 import type { ToolHandler } from '../tools/registry'
 import { type CodeGraph, formatGraphForContext } from './CodeGraph'
 import { compressHistory, compressSingleToolResult } from './Compressor'
@@ -45,9 +46,19 @@ export interface AssemblerConfig {
   recentTurnsKeep: number
 }
 
+/** 教训检索接口（由 Orchestrator 注入 LessonRetriever 实现） */
+export interface LessonProvider {
+  retrieve(query: string, topK?: number): Promise<RetrievedLesson[]>
+}
+
+/** 注入系统提示的教训条数上限与总 token 硬上限（防记忆库膨胀稀释上下文） */
+const LESSONS_TOP_K = 3
+const LESSONS_MAX_TOKENS = 300
+
 export class ContextAssembler {
   private config: AssemblerConfig
   private codeGraph: CodeGraph | null = null
+  private lessonProvider: LessonProvider | null = null
 
   constructor(config: AssemblerConfig) {
     this.config = config
@@ -58,8 +69,13 @@ export class ContextAssembler {
     this.codeGraph = graph
   }
 
+  /** 设置教训检索器（由 Orchestrator 在学习系统初始化后调用） */
+  setLessonRetriever(provider: LessonProvider | null): void {
+    this.lessonProvider = provider
+  }
+
   /** 构建 system prompt (L1 静态上下文) */
-  async buildSystemPrompt(todos?: Todo[]): Promise<string> {
+  async buildSystemPrompt(todos?: Todo[], currentQuery?: string): Promise<string> {
     const parts: string[] = [SYSTEM_PROMPT_BASE]
 
     // 项目规则
@@ -115,6 +131,14 @@ export class ContextAssembler {
       }
     }
 
+    // 历史经验教训（学习系统注入，按当前任务语义检索 top-K）
+    if (currentQuery && this.lessonProvider) {
+      const lessonsSection = await this.buildLessonsSection(currentQuery)
+      if (lessonsSection) {
+        parts.push(lessonsSection)
+      }
+    }
+
     // Git 状态（最容易变化的 section 放最后，最大化 DeepSeek prompt 缓存前缀命中）
     const gitStatus = await this.getGitStatus()
     if (gitStatus) {
@@ -122,6 +146,29 @@ export class ContextAssembler {
     }
 
     return parts.join('\n')
+  }
+
+  /**
+   * 检索历史经验教训并注入 system prompt（top-K + 300 tokens 硬上限）。
+   * 失败时返回空字符串，保持旁路不阻塞主流程。
+   */
+  private async buildLessonsSection(query: string): Promise<string> {
+    try {
+      const lessons = await this.lessonProvider?.retrieve(query, LESSONS_TOP_K)
+      if (!lessons || lessons.length === 0) return ''
+      const lines = lessons.map((r) => {
+        const kindTag = r.lesson.kind === 'failure_pattern' ? '失败模式' : '成功策略'
+        return `- [${kindTag}] ${r.lesson.triggerDesc} → ${r.lesson.advice}`
+      })
+      let section = `\n## 历史经验教训\n${lines.join('\n')}`
+      if (estimateTokens(section) > LESSONS_MAX_TOKENS) {
+        const maxChars = LESSONS_MAX_TOKENS * 4
+        section = section.slice(0, maxChars) + '\n...（经验教训已截断）'
+      }
+      return section
+    } catch {
+      return ''
+    }
   }
 
   /** 组装完整消息列表(带压缩) */

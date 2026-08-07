@@ -245,6 +245,7 @@ async function main() {
   const commandContext: CommandContext = {
     getModel: () => orchestrator.getCurrentModel(),
     setModel: (model) => orchestrator.setModel(model),
+    interrupt: () => orchestrator.abort(),
     reinitAndSelectModel: async (model) => {
       await orchestrator.reinitProviders()
       orchestrator.setModel(model)
@@ -305,6 +306,9 @@ async function main() {
     getRecentErrors: async (limit) => {
       return await orchestrator.getRecentErrors(limit)
     },
+    listMemory: () => orchestrator.listMemory(),
+    deleteMemoryEntry: (kind, id) => orchestrator.deleteMemoryEntry(kind, id),
+    listSkills: () => orchestrator.listSkills(),
   }
 
   // 非交互模式
