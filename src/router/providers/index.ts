@@ -302,8 +302,16 @@ export function createDynamicCustomAdapter(name: string, secret: ProviderSecret)
     name,
     isAvailable: () => !!(secret.apiKey && secret.baseUrl),
     getDefaultModel: () => secret.defaultModel ?? 'default',
-    getContextWindow: () => 128000, // 默认假设
+    getContextWindow: (model) =>
+      DEEPSEEK_MODELS[model]?.contextWindow ??
+      (secret.baseUrl?.includes('api.deepseek.com') ? 1_000_000 : 128000),
     supportsTools: () => true, // OpenAI/Anthropic 兼容接口通常都支持 tool calling
+    // 代理 DeepSeek 端点时复用 DeepSeek 的角色参数优化
+    // （planner/executor 关闭思考模式避免多轮工具调用 422）
+    getModelParameters: (model, role) =>
+      secret.baseUrl?.includes('api.deepseek.com')
+        ? deepseekAdapter.getModelParameters?.(model, role)
+        : undefined,
   }
 }
 

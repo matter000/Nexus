@@ -483,9 +483,9 @@ describe('callLLMWithRetry 模型降级', () => {
     const result = await executor.execute(TEST_PLAN, [])
 
     expect(result).toContain('备用模型执行成功')
-    // 验证降级事件
-    const errorEvents = events.filter((e) => e.type === 'error') as Array<{ message: string }>
-    const fallbackEvent = errorEvents.find((e) => e.message.includes('降级到备用模型'))
+    // 验证降级事件（降级/重试属于仍在继续的过程性提示，用 system_info 而非 error）
+    const infoEvents = events.filter((e) => e.type === 'system_info') as Array<{ message: string }>
+    const fallbackEvent = infoEvents.find((e) => e.message.includes('降级到备用模型'))
     expect(fallbackEvent).toBeDefined()
   })
 

@@ -5,7 +5,7 @@
  *       避免 mock.module 跨文件泄漏
  */
 
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import type { NexusConfig, NexusEvent, Todo } from '../../src/agent/types'
 
 // ─── mock 叶子依赖 ────────────────────────────────────────────────────────────
@@ -13,51 +13,71 @@ import type { NexusConfig, NexusEvent, Todo } from '../../src/agent/types'
 // 不 mock @ai-sdk/anthropic 和 @ai-sdk/openai，避免与 planner/executor 测试的 ai mock 冲突
 // init() 不实际调用 LLM，provider 工厂仅被创建但不会被调用
 
-(mock as any).module('../../src/context/RulesLoader', () => ({
+;(mock as any).module('../../src/context/RulesLoader', () => ({
   loadRules: async () => ({
-    project: { name: 'test', language: 'ts', testCommand: 'bun test', buildCommand: 'bun run build' },
+    project: {
+      name: 'test',
+      language: 'ts',
+      testCommand: 'bun test',
+      buildCommand: 'bun run build',
+    },
     style: { indent: 2, quote: 'single', semicolons: false },
     constraints: {},
     context: { alwaysInclude: [] },
   }),
-}));
+}))
 
-(mock as any).module('../../src/context/Assembler', () => ({
+;(mock as any).module('../../src/context/Assembler', () => ({
   ContextAssembler: class MockAssembler {
     setCodeGraph = () => {}
+    setLessonRetriever = () => {}
     buildSystemPrompt = async () => 'system prompt'
     assembleMessages = () => []
   },
-}));
+}))
 
-(mock as any).module('../../src/context/TokenBudget', () => ({
+;(mock as any).module('../../src/context/TokenBudget', () => ({
   TokenBudget: class MockBudget {
     constructor() {}
   },
-}));
+}))
 
 let mockCheckpointInitCalled = false
 ;(mock as any).module('../../src/sandbox/Checkpoint', () => ({
   CheckpointManager: class MockCheckpoint {
     private enabled = true
     constructor() {}
-    init = async () => { mockCheckpointInitCalled = true }
+    init = async () => {
+      mockCheckpointInitCalled = true
+    }
     create = async () => null
     undo = async () => ''
     hasCheckpoints = () => false
     mergeToWorkBranch = async () => ({ success: true, message: 'ok' })
     getCurrentStep = () => 0
-    setEnabled = (enabled: boolean) => { this.enabled = enabled }
+    setEnabled = (enabled: boolean) => {
+      this.enabled = enabled
+    }
     isEnabled = () => this.enabled
   },
-}));
+}))
 
-(mock as any).module('../../src/context/Compressor', () => ({
-  compressHistory: () => ({ messages: [], compressedCount: 0, originalTokens: 0, compressedTokens: 0 }),
-}));
+;(mock as any).module('../../src/context/Compressor', () => ({
+  compressHistory: () => ({
+    messages: [],
+    compressedCount: 0,
+    originalTokens: 0,
+    compressedTokens: 0,
+  }),
+}))
 
 let mockDbCloseCalled = false
-let mockDbSessions: Array<{ id: string; start_time: number; message_count: number; total_cost: number }> = []
+let mockDbSessions: Array<{
+  id: string
+  start_time: number
+  message_count: number
+  total_cost: number
+}> = []
 let mockDbMessages: Array<{ role: string; content: string }> = []
 ;(mock as any).module('../../src/storage/db', () => ({
   NexusDB: class MockDB {
@@ -65,52 +85,55 @@ let mockDbMessages: Array<{ role: string; content: string }> = []
     createSession = () => {}
     addMessage = () => {}
     endSession = () => {}
-    close = () => { mockDbCloseCalled = true }
+    close = () => {
+      mockDbCloseCalled = true
+    }
     saveTodos = () => {}
-    getSession = (id: string) => mockDbSessions.find(s => s.id === id) ?? null
-    getLatestSession = () => mockDbSessions.length > 0 ? mockDbSessions[mockDbSessions.length - 1] : null
+    getSession = (id: string) => mockDbSessions.find((s) => s.id === id) ?? null
+    getLatestSession = () =>
+      mockDbSessions.length > 0 ? mockDbSessions[mockDbSessions.length - 1] : null
     getMessages = () => [...mockDbMessages]
     loadTodos = () => []
     listRecentSessions = (limit: number) => mockDbSessions.slice(0, limit)
   },
-}));
+}))
 
-(mock as any).module('../../src/tools/external', () => ({
+;(mock as any).module('../../src/tools/external', () => ({
   ExternalMCPManager: class MockMCP {
     register = () => {}
     connect = async () => true
     disconnectAll = async () => {}
     listAllTools = async () => []
   },
-}));
+}))
 
 let mockCodeGraphResult: any = { files: new Map() }
 ;(mock as any).module('../../src/context/CodeGraph', () => ({
   buildCodeGraph: async () => mockCodeGraphResult,
-}));
+}))
 
-(mock as any).module('fs/promises', () => ({
+;(mock as any).module('fs/promises', () => ({
   readFile: async () => '',
-}));
+}))
 
-(mock as any).module('smol-toml', () => ({
+;(mock as any).module('smol-toml', () => ({
   parse: () => ({}),
-}));
+}))
 
-(mock as any).module('../../src/tools/registry', () => ({
+;(mock as any).module('../../src/tools/registry', () => ({
   createToolRegistry: () => ({
     getAll: () => [],
     getForPhase: () => [],
     register: () => {},
     setSubAgentRunner: () => {},
   }),
-}));
-
+}))
 // callLLMWithRetry mock - 让 Planner 可以正常执行而不调用真实 LLM
 // 注意：这里 mock 的是 ReActLoop 而非 Planner，避免全局 mock 与 planner.test.ts 冲突
 ;(mock as any).module('../../src/agent/ReActLoop', () => ({
   callLLMWithRetry: async () => ({
-    streamedText: '```json\n{"summary":"测试计划","todos":[],"filesToModify":[],"estimatedSteps":0}\n```',
+    streamedText:
+      '```json\n{"summary":"测试计划","todos":[],"filesToModify":[],"estimatedSteps":0}\n```',
     usage: { promptTokens: 10, completionTokens: 5 },
     toolCalls: [],
   }),
@@ -122,10 +145,13 @@ let mockExecutorTodos: Todo[] = []
 let mockExecutorExecuteCalled = false
 ;(mock as any).module('../../src/agent/Executor', () => ({
   Executor: class MockExecutor {
-    execute = async () => { mockExecutorExecuteCalled = true; return mockExecutorResult }
+    execute = async () => {
+      mockExecutorExecuteCalled = true
+      return mockExecutorResult
+    }
     getTodos = () => mockExecutorTodos
   },
-}));
+}))
 
 // SubAgent 在 init() 中被创建，需要 mock 以避免依赖 generateText
 import { Orchestrator } from '../../src/agent/Orchestrator'
@@ -140,12 +166,23 @@ function createDefaultConfig(overrides: Partial<NexusConfig> = {}): NexusConfig 
       providers: {
         anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY', defaultModel: 'claude-sonnet-4-20250514' },
         openai: { apiKeyEnv: 'OPENAI_API_KEY', defaultModel: 'gpt-4o' },
-        deepseek: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com', defaultModel: 'deepseek-v4-flash' },
+        deepseek: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseUrl: 'https://api.deepseek.com',
+          defaultModel: 'deepseek-v4-flash',
+        },
         custom: { apiKeyEnv: 'CUSTOM_API_KEY', defaultModel: '' },
       },
     },
     permissions: { mode: 'ask' },
-    limits: { maxSessionCost: 5, bashTimeout: 30, maxReadLines: 2000, maxIterations: 50, maxOutputBytes: 102400, maxAutoRetries: 0 },
+    limits: {
+      maxSessionCost: 5,
+      bashTimeout: 30,
+      maxReadLines: 2000,
+      maxIterations: 50,
+      maxOutputBytes: 102400,
+      maxAutoRetries: 0,
+    },
     context: { budgetRatio: 0.8, recentTurnsKeep: 5 },
     checkpoint: { autoCheckpoint: true, branch: 'nexus/checkpoints' },
     ...overrides,
@@ -160,7 +197,9 @@ function createOrchestratorConfig(overrides: Record<string, unknown> = {}) {
     permissionMode: 'ask' as const,
     skipPlan: false,
     maxIterations: 10,
-    onEvent: (e: NexusEvent) => { events.push(e) },
+    onEvent: (e: NexusEvent) => {
+      events.push(e)
+    },
     requestApproval: async () => true,
     requestPlanApproval: async () => 'approve' as const,
     ...overrides,
@@ -214,7 +253,9 @@ describe('Orchestrator', () => {
 
   it('init() 不初始化 CheckpointManager（autoCheckpoint=false）', async () => {
     const cfg = createOrchestratorConfig()
-    cfg.config = createDefaultConfig({ checkpoint: { autoCheckpoint: false, branch: 'nexus/checkpoints' } })
+    cfg.config = createDefaultConfig({
+      checkpoint: { autoCheckpoint: false, branch: 'nexus/checkpoints' },
+    })
     const orch = new Orchestrator(cfg)
     await orch.init()
     await orch.startBackgroundInit()
@@ -426,7 +467,9 @@ describe('Orchestrator', () => {
     const orch = new Orchestrator(createOrchestratorConfig())
     await orch.init()
     await orch.startBackgroundInit()
-    mockDbSessions = [{ id: 'session-1', start_time: Date.now() - 3600000, message_count: 2, total_cost: 0.5 }]
+    mockDbSessions = [
+      { id: 'session-1', start_time: Date.now() - 3600000, message_count: 2, total_cost: 0.5 },
+    ]
     mockDbMessages = [
       { role: 'user', content: '你好' },
       { role: 'assistant', content: '你好，有什么可以帮助你的？' },
@@ -464,7 +507,9 @@ describe('Orchestrator', () => {
 
   it('mergeCheckpoints() autoCheckpoint=false 时安全跳过', async () => {
     const cfg = createOrchestratorConfig()
-    cfg.config = createDefaultConfig({ checkpoint: { autoCheckpoint: false, branch: 'nexus/checkpoints' } })
+    cfg.config = createDefaultConfig({
+      checkpoint: { autoCheckpoint: false, branch: 'nexus/checkpoints' },
+    })
     const orch = new Orchestrator(cfg)
     await orch.init()
     await orch.mergeCheckpoints()
@@ -474,10 +519,12 @@ describe('Orchestrator', () => {
 
   describe('planAndExecute 重规划循环', () => {
     it('计划被拒绝时立即返回拒绝消息', async () => {
-      const orch = new Orchestrator(createOrchestratorConfig({
-        skipPlan: false,
-        requestPlanApproval: async () => 'reject' as const,
-      }))
+      const orch = new Orchestrator(
+        createOrchestratorConfig({
+          skipPlan: false,
+          requestPlanApproval: async () => 'reject' as const,
+        }),
+      )
       await orch.init()
       await orch.startBackgroundInit()
       const result = await orch.submit('帮我修改代码')
@@ -487,14 +534,16 @@ describe('Orchestrator', () => {
 
     it('反馈重规划超过 MAX_REPLAN=3 后返回上限消息', async () => {
       let approvalCallCount = 0
-      const orch = new Orchestrator(createOrchestratorConfig({
-        skipPlan: false,
-        requestPlanApproval: async () => {
-          approvalCallCount++
-          // 始终返回反馈文本，触发重规划
-          return `需要调整方案 #${approvalCallCount}`
-        },
-      }))
+      const orch = new Orchestrator(
+        createOrchestratorConfig({
+          skipPlan: false,
+          requestPlanApproval: async () => {
+            approvalCallCount++
+            // 始终返回反馈文本，触发重规划
+            return `需要调整方案 #${approvalCallCount}`
+          },
+        }),
+      )
       await orch.init()
       await orch.startBackgroundInit()
       const result = await orch.submit('帮我修改代码')
@@ -506,15 +555,17 @@ describe('Orchestrator', () => {
 
     it('反馈重规划后批准则正常进入执行', async () => {
       let approvalCallCount = 0
-      const orch = new Orchestrator(createOrchestratorConfig({
-        skipPlan: false,
-        requestPlanApproval: async () => {
-          approvalCallCount++
-          // 前两次返回反馈，第三次批准
-          if (approvalCallCount <= 2) return `调整建议 #${approvalCallCount}`
-          return 'approve' as const
-        },
-      }))
+      const orch = new Orchestrator(
+        createOrchestratorConfig({
+          skipPlan: false,
+          requestPlanApproval: async () => {
+            approvalCallCount++
+            // 前两次返回反馈，第三次批准
+            if (approvalCallCount <= 2) return `调整建议 #${approvalCallCount}`
+            return 'approve' as const
+          },
+        }),
+      )
       await orch.init()
       await orch.startBackgroundInit()
       const result = await orch.submit('帮我修改代码')
@@ -524,14 +575,16 @@ describe('Orchestrator', () => {
     })
 
     it('重规划期间 abort 中断返回中断消息', async () => {
-      const orch = new Orchestrator(createOrchestratorConfig({
-        skipPlan: false,
-        requestPlanApproval: async () => {
-          // 在审批时触发 abort
-          orch.abort()
-          return '需要调整'
-        },
-      }))
+      const orch = new Orchestrator(
+        createOrchestratorConfig({
+          skipPlan: false,
+          requestPlanApproval: async () => {
+            // 在审批时触发 abort
+            orch.abort()
+            return '需要调整'
+          },
+        }),
+      )
       await orch.init()
       await orch.startBackgroundInit()
       const result = await orch.submit('帮我修改代码')

@@ -6,7 +6,7 @@
 import type { LanguageModel } from 'ai'
 import type { CostTracker } from '../router/CostTracker'
 import type { ToolContext, ToolRegistry } from '../tools/registry'
-import { toolSchemas } from '../tools/schemas'
+import { resolveToolParameters } from '../tools/schemas'
 import { consumePendingPlan, setPendingPlan } from '../tools/submitPlan'
 import { callLLMWithRetry } from './ReActLoop'
 import type { ChatMessage, ModelRole, NexusEvent, Plan, Todo } from './types'
@@ -68,6 +68,12 @@ export interface PlannerConfig {
    * 由 ProviderAdapter.getModelParameters() 生成，用于优化 DeepSeek 等模型的调用参数
    */
   modelParameters?: Record<string, unknown>
+  /**
+   * 中断信号获取器（Orchestrator.abort() 时触发）。
+   * 用懒获取而非静态 signal：replan 发生在新一轮 submit 中，
+   * 静态 signal 会携带上一轮的已中止状态。
+   */
+  getAbortSignal?: () => AbortSignal | undefined
 }
 
 export class Planner {
@@ -92,7 +98,7 @@ export class Planner {
     for (const tool of planTools) {
       toolsForAI[tool.definition.name] = {
         description: tool.definition.description,
-        parameters: toolSchemas[tool.definition.name] ?? tool.definition.inputSchema,
+        parameters: resolveToolParameters(tool.definition.name, tool.definition.inputSchema),
       }
     }
 
@@ -106,6 +112,8 @@ export class Planner {
 
     // ReAct loop for planning (只读探索)
     while (iterations < maxIterations) {
+      // 中断检查：用户 Ctrl+C 后不再发起新一轮 LLM 调用
+      if (this.config.getAbortSignal?.()?.aborted) break
       iterations++
 
       // 使用共享的 LLM 调用工具（统一 streamText + 重试 + 成本记录）
@@ -117,6 +125,7 @@ export class Planner {
           tools: toolsForAI,
           maxSteps: 1,
           modelParameters: this.config.modelParameters,
+          abortSignal: this.config.getAbortSignal?.(),
         },
         {
           onEvent,
@@ -129,6 +138,7 @@ export class Planner {
             costPer1kOutput: this.config.costPer1kOutput,
             costPer1kInputCached: this.config.costPer1kInputCached,
           },
+          abortSignal: this.config.getAbortSignal?.(),
         },
       )
 
@@ -138,8 +148,9 @@ export class Planner {
         messages.push({ role: 'assistant', content: streamedText || '' } as never)
 
         let planSubmitted = false
-        for (const toolCall of toolCalls) {
-          const callId = `plan-${iterations}-${toolCall.toolName}`
+        for (const [toolIndex, toolCall] of toolCalls.entries()) {
+          // callId 带索引：同一迭代内多个同名工具调用不会冲突（React key 唯一性）
+          const callId = `plan-${iterations}-${toolCall.toolName}-${toolIndex}`
           onEvent({
             type: 'tool_call',
             tool: toolCall.toolName,
@@ -217,7 +228,7 @@ export class Planner {
     for (const tool of planTools) {
       toolsForAI[tool.definition.name] = {
         description: tool.definition.description,
-        parameters: toolSchemas[tool.definition.name] ?? tool.definition.inputSchema,
+        parameters: resolveToolParameters(tool.definition.name, tool.definition.inputSchema),
       }
     }
 
@@ -239,6 +250,8 @@ export class Planner {
     let lastText = ''
 
     while (iterations < maxIterations) {
+      // 中断检查：用户 Ctrl+C 后不再发起新一轮 LLM 调用
+      if (this.config.getAbortSignal?.()?.aborted) break
       iterations++
 
       const { streamedText, toolCalls } = await callLLMWithRetry(
@@ -249,6 +262,7 @@ export class Planner {
           tools: toolsForAI,
           maxSteps: 1,
           modelParameters: this.config.modelParameters,
+          abortSignal: this.config.getAbortSignal?.(),
         },
         {
           onEvent,
@@ -261,6 +275,7 @@ export class Planner {
             costPer1kOutput: this.config.costPer1kOutput,
             costPer1kInputCached: this.config.costPer1kInputCached,
           },
+          abortSignal: this.config.getAbortSignal?.(),
         },
       )
 
@@ -268,8 +283,8 @@ export class Planner {
         messages.push({ role: 'assistant', content: streamedText || '' } as never)
 
         let planSubmitted = false
-        for (const toolCall of toolCalls) {
-          const callId = `replan-${iterations}-${toolCall.toolName}`
+        for (const [toolIndex, toolCall] of toolCalls.entries()) {
+          const callId = `replan-${iterations}-${toolCall.toolName}-${toolIndex}`
           onEvent({
             type: 'tool_call',
             tool: toolCall.toolName,

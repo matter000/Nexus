@@ -27,6 +27,94 @@ import type { ModelRole, NexusEvent } from './types'
 /** streamText 已知的顶层参数键，其余键收进 providerOptions.openai 透传 */
 const KNOWN_TOP_LEVEL_PARAMS = new Set(['temperature', 'topP', 'maxTokens'])
 
+/** 流停滞看门狗：连续无 chunk 超过该时长判定为连接挂起，中止并交由重试兜底 */
+const STREAM_STALL_TIMEOUT_MS =
+  Number.parseInt(process.env.NEXUS_STALL_TIMEOUT_MS ?? '', 10) || 90_000
+/** 单次 LLM 调用总超时（含建连+生成），防止服务端静默挂起导致 Agent 永久卡死 */
+const LLM_CALL_TIMEOUT_MS = Number.parseInt(process.env.NEXUS_LLM_TIMEOUT_MS ?? '', 10) || 600_000
+/**
+ * 流结束后 await usage/toolCalls 等的保护超时。
+ * 背景: @ai-sdk 对非流式错误响应（如 401）会静默吞错，textStream 空结束且
+ * result 正常 resolve，但 result.usage 等 Promise 永远不 settle。
+ * 独立脚本中事件循环空了进程直接退出，TUI 中则永久挂起。超时后降级为 undefined。
+ */
+const POST_STREAM_AWAIT_TIMEOUT_MS = 10_000
+
+/** 超时保护版 await：超时返回 undefined 而非永久挂起 */
+async function awaitWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/**
+ * 规范化消息为 AI SDK v4 输入格式。
+ * 内部历史用顶层 toolCalls 字段记录助手工具调用（streamText 返回值形状），
+ * 但 SDK 输入要求 tool-call 位于 content 部件数组中——否则发出的 assistant
+ * 消息不含 tool_calls，后续的 tool 消息会被 DeepSeek 以 400 拒绝
+ * （“Messages with role 'tool' must be a response to a preceding message with 'tool_calls'”）。
+ */
+function normalizeMessagesForSDK(messages: LLMCallConfig['messages']): unknown[] {
+  return messages.map((m) => {
+    const withCalls = m as {
+      role: string
+      content?: string
+      reasoning?: string
+      toolCalls?: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+    }
+    if (withCalls.role === 'assistant' && Array.isArray(withCalls.toolCalls)) {
+      return {
+        role: 'assistant',
+        content: [
+          ...(withCalls.content ? [{ type: 'text', text: withCalls.content }] : []),
+          ...(withCalls.reasoning ? [{ type: 'reasoning', text: withCalls.reasoning }] : []),
+          ...withCalls.toolCalls.map((tc) => ({
+            type: 'tool-call',
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            args: tc.args,
+          })),
+        ],
+      }
+    }
+    return m
+  })
+}
+
+/**
+ * 组合外部中断信号（用户 Ctrl+C）与调用级超时信号。
+ * 超时/停滞触发的 AbortError 消息带有明确关键词，isRetryable 会将其识别为可重试。
+ */
+function createTimeoutSignal(outer?: AbortSignal): {
+  controller: AbortController
+  signal: AbortSignal
+  dispose: () => void
+} {
+  const controller = new AbortController()
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`LLM 请求超时（${Math.round(LLM_CALL_TIMEOUT_MS / 1000)}s 未完成）`))
+  }, LLM_CALL_TIMEOUT_MS)
+  const onOuterAbort = () => controller.abort(outer?.reason)
+  outer?.addEventListener('abort', onOuterAbort, { once: true })
+  if (outer?.aborted) controller.abort(outer.reason)
+  return {
+    controller,
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer)
+      outer?.removeEventListener('abort', onOuterAbort)
+    },
+  }
+}
+
 /**
  * 拆分 provider 模型参数：
  * - temperature/topP/maxTokens 为 AI SDK streamText 的合法顶层参数
@@ -190,7 +278,7 @@ export async function callLLMWithRetry(
         const streamOptions: Record<string, unknown> = {
           model: m,
           system,
-          messages,
+          messages: normalizeMessagesForSDK(messages),
           tools,
           maxSteps,
           abortSignal,
@@ -205,62 +293,110 @@ export async function callLLMWithRetry(
         // 用 ALS 携带 thinking 参数包裹整个调用（含流式消费触发的延迟 fetch），
         // DeepSeek fetch 拦截器会将 thinking 注入请求体
         return withDeepSeekThinking(effectiveThinking, async () => {
-          const result = streamText(streamOptions as Parameters<typeof streamText>[0])
+          // 组合用户中断信号 + 调用总超时，防止任一方缺失时永久挂起
+          const {
+            controller: callController,
+            signal: callSignal,
+            dispose: disposeSignal,
+          } = createTimeoutSignal(abortSignal)
 
-          // 流式消费文本
-          let streamedText = ''
-          for await (const chunk of result.textStream) {
-            streamedText += chunk
-            onEvent({ type: 'llm_chunk', text: chunk })
+          // 流停滞看门狗：连接建立后服务端不再发送任何数据（半开连接/代理静默丢弃）
+          // 时，for-await 会无限等待。每收到一个 chunk 重置计时；到期 abort 触发重试。
+          let stallTimer: ReturnType<typeof setTimeout> | undefined
+          const armStallWatchdog = () => {
+            if (stallTimer) clearTimeout(stallTimer)
+            stallTimer = setTimeout(() => {
+              callController.abort(
+                new Error(
+                  `LLM 流停滞超过 ${Math.round(STREAM_STALL_TIMEOUT_MS / 1000)}s 无任何响应，连接可能已挂起`,
+                ),
+              )
+            }, STREAM_STALL_TIMEOUT_MS)
           }
+          // 首个 chunk 之前即启用看门狗（覆盖建连+首 token 全程静默挂起的场景）
+          armStallWatchdog()
 
-          // 流式结束后获取完整结果（含 toolCalls、usage、reasoning、providerMetadata）
-          const finalResult = await result
-          const usage = await finalResult.usage
-          const rawToolCalls = await finalResult.toolCalls
-          const reasoning = await finalResult.reasoning
-
-          // 提取 provider 元数据中的缓存/推理 token 统计（DeepSeek v4 支持）
-          // providerMetadata.openai.cachedPromptTokens 来自 prompt_tokens_details.cached_tokens
-          // providerMetadata.openai.reasoningTokens 来自 completion_tokens_details.reasoning_tokens
-          // DeepSeek API 还返回 prompt_cache_miss_tokens，但 OpenAI 格式不直接映射，
-          // 我们通过 usage.promptTokens - cacheHitTokens 计算得出。
-          let cacheHitTokens: number | undefined
-          let cacheMissTokens: number | undefined
-          let reasoningTokens: number | undefined
           try {
-            const providerMetadata = await finalResult.providerMetadata
-            if (providerMetadata?.openai) {
-              const openaiMeta = providerMetadata.openai as Record<string, unknown>
-              if (typeof openaiMeta.cachedPromptTokens === 'number') {
-                cacheHitTokens = openaiMeta.cachedPromptTokens as number
-              }
-              if (typeof openaiMeta.reasoningTokens === 'number') {
-                reasoningTokens = openaiMeta.reasoningTokens as number
-              }
+            const result = streamText({
+              ...(streamOptions as Parameters<typeof streamText>[0]),
+              abortSignal: callSignal,
+            })
+
+            // 流式消费文本
+            let streamedText = ''
+            for await (const chunk of result.textStream) {
+              streamedText += chunk
+              armStallWatchdog()
+              onEvent({ type: 'llm_chunk', text: chunk })
             }
-          } catch {
-            // providerMetadata 可能不可用，忽略
-          }
-          // 根据 usage 计算 cacheMissTokens（prompt_tokens = cache_hit + cache_miss）
-          if (cacheHitTokens !== undefined && usage) {
-            const miss = usage.promptTokens - cacheHitTokens
-            cacheMissTokens = miss >= 0 ? miss : 0
-          }
 
-          // 发射推理内容事件（DeepSeek 思考模式下可用）
-          if (reasoning) {
-            onEvent({ type: 'llm_reasoning', text: reasoning })
-          }
+            // 流式结束后获取完整结果（含 toolCalls、usage、reasoning、providerMetadata）
+            // 注意: 每个 await 都带超时保护——SDK 在吞掉非流式错误后这些 Promise 可能永不 settle。
+            // 并发等待共享单个超时预算（串行会叠加成 3 倍等待）
+            const finalResult = await result
+            const [usage, rawToolCalls, reasoning] = await Promise.all([
+              awaitWithTimeout(finalResult.usage, POST_STREAM_AWAIT_TIMEOUT_MS),
+              awaitWithTimeout(finalResult.toolCalls, POST_STREAM_AWAIT_TIMEOUT_MS),
+              awaitWithTimeout(finalResult.reasoning, POST_STREAM_AWAIT_TIMEOUT_MS),
+            ])
+            const toolCallList = rawToolCalls ?? []
 
-          return {
-            streamedText,
-            usage,
-            toolCalls: rawToolCalls ?? [],
-            reasoning,
-            cacheHitTokens,
-            cacheMissTokens,
-            reasoningTokens,
+            // 空响应检测: 无文本 + 无工具调用 + 无用量 = 请求实际失败或被服务端静默挂起
+            // （典型: 认证失败/服务端瞬时停滞）。抛错激活重试/降级/报错链路。
+            if (!streamedText && toolCallList.length === 0 && usage === undefined) {
+              throw new Error(
+                'LLM 返回空响应且无用量信息（通常为认证失败或服务端瞬时停滞），请通过 /config 检查 API Key 配置',
+              )
+            }
+
+            // 提取 provider 元数据中的缓存/推理 token 统计（DeepSeek v4 支持）
+            // providerMetadata.openai.cachedPromptTokens 来自 prompt_tokens_details.cached_tokens
+            // providerMetadata.openai.reasoningTokens 来自 completion_tokens_details.reasoning_tokens
+            // DeepSeek API 还返回 prompt_cache_miss_tokens，但 OpenAI 格式不直接映射，
+            // 我们通过 usage.promptTokens - cacheHitTokens 计算得出。
+            let cacheHitTokens: number | undefined
+            let cacheMissTokens: number | undefined
+            let reasoningTokens: number | undefined
+            try {
+              const providerMetadata = await awaitWithTimeout(
+                finalResult.providerMetadata,
+                POST_STREAM_AWAIT_TIMEOUT_MS,
+              )
+              if (providerMetadata?.openai) {
+                const openaiMeta = providerMetadata.openai as Record<string, unknown>
+                if (typeof openaiMeta.cachedPromptTokens === 'number') {
+                  cacheHitTokens = openaiMeta.cachedPromptTokens as number
+                }
+                if (typeof openaiMeta.reasoningTokens === 'number') {
+                  reasoningTokens = openaiMeta.reasoningTokens as number
+                }
+              }
+            } catch {
+              // providerMetadata 可能不可用，忽略
+            }
+            // 根据 usage 计算 cacheMissTokens（prompt_tokens = cache_hit + cache_miss）
+            if (cacheHitTokens !== undefined && usage) {
+              const miss = usage.promptTokens - cacheHitTokens
+              cacheMissTokens = miss >= 0 ? miss : 0
+            }
+
+            // 发射推理内容事件（DeepSeek 思考模式下可用）
+            if (reasoning) {
+              onEvent({ type: 'llm_reasoning', text: reasoning })
+            }
+
+            return {
+              streamedText,
+              usage,
+              toolCalls: toolCallList,
+              reasoning,
+              cacheHitTokens,
+              cacheMissTokens,
+              reasoningTokens,
+            }
+          } finally {
+            if (stallTimer) clearTimeout(stallTimer)
+            disposeSignal()
           }
         })
       },
@@ -268,10 +404,11 @@ export async function callLLMWithRetry(
         // 429/503 尊重服务端 Retry-After 响应头，无则回退指数退避
         getDelay: (error) => getRetryAfterDelay(error),
         onRetry: ({ attempt, delay, error }) => {
+          // 用 system_info 而非 error：重试时操作仍在继续，
+          // error 事件会解除 TUI 的 busy 锁导致误判为已结束
           onEvent({
-            type: 'error',
+            type: 'system_info',
             message: `流式请求重试 #${attempt}（${delay}ms 后）: ${error.message}`,
-            recoverable: true,
           })
         },
       },
@@ -294,9 +431,8 @@ export async function callLLMWithRetry(
     const parsed = parseDeepSeekError(primaryError as Error, costConfig.modelName)
     if (parsed.disableThinking) {
       onEvent({
-        type: 'error',
+        type: 'system_info',
         message: `${parsed.message}，自动关闭思考模式重试`,
-        recoverable: true,
       })
       try {
         result = await doCall(model, { type: 'disabled' })
@@ -308,9 +444,8 @@ export async function callLLMWithRetry(
     } else if (fallbackModel) {
       // 降级到备用模型（如果提供）
       onEvent({
-        type: 'error',
+        type: 'system_info',
         message: `主模型不可用 (${(primaryError as Error).message})，降级到备用模型`,
-        recoverable: true,
       })
       try {
         result = await doCall(fallbackModel)

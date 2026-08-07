@@ -74,8 +74,10 @@ export function ApprovalPrompt({ tool, description, diff }: ApprovalPromptProps)
 }
 
 function DiffSummaryLine({ line }: { line: string }) {
-  if (line.startsWith('+') && !line.startsWith('+++')) return <Text color="green">{line}</Text>
-  if (line.startsWith('-') && !line.startsWith('---')) return <Text color="red">{line}</Text>
-  if (line.startsWith('@@')) return <Text color="cyan">{line}</Text>
+  if (line.startsWith('+') && !line.startsWith('+++'))
+    return <Text color={theme.colors.success}>{line}</Text>
+  if (line.startsWith('-') && !line.startsWith('---'))
+    return <Text color={theme.colors.error}>{line}</Text>
+  if (line.startsWith('@@')) return <Text color={theme.colors.primary}>{line}</Text>
   return <Text color={theme.colors.muted}>{line}</Text>
 }

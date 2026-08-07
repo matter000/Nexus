@@ -11,6 +11,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { logError } from '../../utils/debugLog'
 
 /** 当前调用链携带的 thinking 参数（如 { type: 'disabled' }） */
 const thinkingStore = new AsyncLocalStorage<unknown>()
@@ -47,7 +48,22 @@ export function createDeepSeekFetch(baseFetch?: typeof fetch): typeof fetch {
         // body 非 JSON（不应发生），原样透传
       }
     }
-    return underlying(input, init)
+    const response = await underlying(input, init)
+    // 非 2xx 快速失败：@ai-sdk 的 streamText 对非流式错误响应（如 401）会静默吞掉错误，
+    // 导致后续 await result.usage 永远挂起（TUI 表现为永久卡在“规划中”）。
+    // 在 fetch 层抛出带状态码的错误，让重试/降级/报错链路正常激活。
+    if (!response.ok) {
+      let detail = ''
+      try {
+        detail = (await response.clone().text()).slice(0, 300)
+      } catch {
+        // 读取错误体失败不影响主流程
+      }
+      // 记录到调试日志：SDK 会吞掉 fetch 层错误，没有这条日志 400/401 等原因将无法追查
+      logError('deepseek-non-ok', new Error(`${response.status} ${detail}`)).catch(() => {})
+      throw new Error(`${response.status} ${response.statusText} ${detail}`.trim())
+    }
+    return response
   }
   // Bun 的 fetch 类型额外要求 preconnect 属性，透传底层实现（若存在）
   const preconnect = (underlying as { preconnect?: (...args: unknown[]) => unknown }).preconnect

@@ -91,9 +91,10 @@ export function InputBox({
 
   // 显示多行内容：将 \n 拆分为多行 Text
   const displayLines = value.split('\n')
+  const fieldBg = theme.surfaces.field
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width="70%">
       {/* 斜杠命令自动补全提示 */}
       {displayCommands.length > 0 && (
         <Box flexDirection="column" marginBottom={1}>
@@ -118,29 +119,36 @@ export function InputBox({
         </Box>
       )}
       <Box flexDirection="column">
-        <Box>
-          <Text
-            color={disabled ? theme.colors.muted : theme.colors.primary}
-            bold
-            dimColor={disabled}
-          >
-            {'> '}
-          </Text>
-          {value ? (
-            <Box flexDirection="column">
-              {displayLines.map((line, i) => (
-                <Text key={i}>
-                  {line}
-                  {i < displayLines.length - 1 ? '' : ''}
-                </Text>
-              ))}
-            </Box>
-          ) : (
-            <Text color={theme.colors.muted} dimColor>
-              {disabled ? '执行中，无法输入' : placeholder}
+        {/* 输入框：圆角边框 + 面背景，对齐画布 promptline 样式 */}
+        <Box borderStyle="round" borderColor={theme.colors.border}>
+          <Box>
+            <Text
+              color={disabled ? theme.colors.muted : theme.colors.primary}
+              bold
+              dimColor={disabled}
+              backgroundColor={fieldBg}
+            >
+              {' ❯ '}
             </Text>
-          )}
-          {!disabled && <Text color={theme.colors.primary}>▌</Text>}
+            {value ? (
+              <Box flexDirection="column">
+                {displayLines.map((line, i) => (
+                  <Text key={i} backgroundColor={fieldBg}>
+                    {line || ' '}
+                  </Text>
+                ))}
+              </Box>
+            ) : (
+              <Text color={theme.colors.muted} dimColor backgroundColor={fieldBg}>
+                {disabled ? '执行中，无法输入 ' : `${placeholder} `}
+              </Text>
+            )}
+            {!disabled && (
+              <Text color={theme.colors.primary} backgroundColor={fieldBg}>
+                ▌
+              </Text>
+            )}
+          </Box>
         </Box>
         {/* 多行提示 */}
         {value.includes('\n') && (

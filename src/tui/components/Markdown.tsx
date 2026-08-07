@@ -6,6 +6,7 @@
 
 import { Box, Text } from 'ink'
 import type React from 'react'
+import { theme } from '../theme'
 
 interface MarkdownProps {
   content: string
@@ -137,7 +138,7 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
     } else if (match[4]) {
       // 内联代码
       parts.push(
-        <Text key={`${keyPrefix}-${key++}`} color="yellow" backgroundColor="#1a1a2e">
+        <Text key={`${keyPrefix}-${key++}`} color={theme.colors.accent} backgroundColor="#11151d">
           {match[4]}
         </Text>,
       )
@@ -165,12 +166,17 @@ export function Markdown({ content, streaming = false }: MarkdownProps) {
             return (
               <Box key={i} flexDirection="column" marginY={0}>
                 {block.lang && block.lang !== '...' && (
-                  <Text color="gray" dimColor>{`  [${block.lang}]`}</Text>
+                  <Text color={theme.colors.muted} dimColor>{`  [${block.lang}]`}</Text>
                 )}
-                <Box borderStyle="single" borderColor="gray" paddingLeft={1} paddingRight={1}>
+                <Box
+                  borderStyle="single"
+                  borderColor={theme.colors.border}
+                  paddingLeft={1}
+                  paddingRight={1}
+                >
                   <Box flexDirection="column">
                     {block.lines.map((line, j) => (
-                      <Text key={j} color="green">
+                      <Text key={j} color={theme.colors.success}>
                         {line || ' '}
                       </Text>
                     ))}
@@ -182,7 +188,7 @@ export function Markdown({ content, streaming = false }: MarkdownProps) {
           case 'heading':
             return (
               <Box key={i} marginTop={i > 0 ? 1 : 0}>
-                <Text bold color="cyan">
+                <Text bold color={theme.colors.primary}>
                   {'#'.repeat(block.level)} {renderInline(block.text, `h${i}`)}
                 </Text>
               </Box>
@@ -193,7 +199,7 @@ export function Markdown({ content, streaming = false }: MarkdownProps) {
               <Box key={i} flexDirection="column">
                 {block.items.map((item, j) => (
                   <Box key={j} paddingLeft={1}>
-                    <Text color="gray">{block.ordered ? `${j + 1}.` : '•'}</Text>
+                    <Text color={theme.colors.muted}>{block.ordered ? `${j + 1}.` : '•'}</Text>
                     <Text> {renderInline(item, `li${i}-${j}`)}</Text>
                   </Box>
                 ))}

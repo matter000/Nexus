@@ -1,24 +1,46 @@
 /**
  * TUI 主题定义
+ *
+ * 配色与 Nexus 终端样式设计稿对齐（深色终端方案）：
+ *   seed-bg #0B0E14 · seed-surface #11151D · seed-fg #E6E9EF
+ *   seed-primary #4DA3FF（品牌主色）· seed-accent #E8B04B（复古琥珀点缀）
+ *   语义色：ok #3FB950 · warn #D29922 · danger #F47174
  */
 
 export const theme = {
   colors: {
-    primary: 'cyan',
-    secondary: 'green',
-    accent: 'magenta',
-    warning: 'yellow',
-    error: 'red',
-    muted: 'gray',
-    success: 'green',
-    border: 'gray',
-    user: 'blue',
-    assistant: 'cyan',
-    tool: 'yellow',
+    /** 品牌主色（蜘蛛蓝） */
+    primary: '#4DA3FF',
+    /** 次级强调，与 success 一致 */
+    secondary: '#3FB950',
+    /** 复古琥珀点缀（少量使用） */
+    accent: '#E8B04B',
+    /** 警示（审批/等待） */
+    warning: '#D29922',
+    /** 危险/报错 */
+    error: '#F47174',
+    /** 次要文本（fg 56% 派生） */
+    muted: '#878C98',
+    /** 成功/完成 */
+    success: '#3FB950',
+    /** 弱边框 */
+    border: '#3A4150',
+    /** 强前景文本 */
+    fg: '#E6E9EF',
+    /** 用户消息 */
+    user: '#E6E9EF',
+    /** assistant（品牌蓝） */
+    assistant: '#4DA3FF',
+    /** 工具名 */
+    tool: '#E6E9EF',
   },
-  /** Logo pixel art palette — spider blue */
+  /** Logo pixel art palette — node graph mark */
   logo: {
-    spider: '#0E76B0', // spider blue — pure single color silhouette
+    mark: '#4DA3FF', // brand primary — pure single color silhouette
+  },
+  /** 面背景（输入框等容器内衬，对应设计稿 seed-surface） */
+  surfaces: {
+    field: '#11151D',
   },
   symbols: {
     user: '◆',

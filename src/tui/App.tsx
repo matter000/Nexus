@@ -71,6 +71,8 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   const [forceExpandTools, setForceExpandTools] = useState(false)
   const autoApproveRef = useRef<Set<string>>(new Set())
   const msgIdRef = useRef(0)
+  /** Ctrl+C 中断状态：执行中首次按 Ctrl+C 中断操作，再按一次才退出 */
+  const interruptRequestedRef = useRef(false)
   // 面板回调 refs（由 App 的 useInput 统一调度，避免多组件 useInput 冲突）
   const approvalRef = useRef<ApprovalState | null>(null)
   const planApprovalRef = useRef<{
@@ -91,6 +93,11 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
     autoApproveRef.current = autoApproveTools
   }, [autoApproveTools])
 
+  // busy 解除时重置中断标记，下一轮任务重新支持单次 Ctrl+C 中断
+  useEffect(() => {
+    if (!busy) interruptRequestedRef.current = false
+  }, [busy])
+
   // 首次启动检测: 无任何 API Key 时自动进入配置向导
   useEffect(() => {
     loadSecrets(projectRoot).then((loaded) => {
@@ -105,8 +112,25 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   // 统一输入处理：所有交互式面板的输入均由 App 的 useInput 调度
   // 避免多个组件各自 useInput 导致的 Ink 输入冲突
   useInput((input, key) => {
-    // Ctrl+C 退出
+    // Ctrl+C：执行中先中断当前操作，再按一次才退出（避免挂起时无法自救）
     if (key.ctrl && input === 'c') {
+      if (busy) {
+        if (interruptRequestedRef.current) {
+          exit()
+          return
+        }
+        interruptRequestedRef.current = true
+        commandContext.interrupt()
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `sys-${msgIdRef.current++}`,
+            role: 'system',
+            content: '⏹ 正在中断当前操作...（再次按 Ctrl+C 直接退出）',
+          },
+        ])
+        return
+      }
       exit()
       return
     }
@@ -208,6 +232,9 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
     switch (event.type) {
       case 'llm_start':
         setPhase(event.phase === 'plan' ? 'planning' : 'executing')
+        // 每次 LLM 调用重置流式显示：避免跨阶段累积成巨型帧
+        // （帧高超过终端时 Ink 会在滚动区重打整帧，表现为“输出多遍”）
+        setStreamingText('')
         break
 
       case 'llm_chunk':
@@ -306,7 +333,10 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           ...prev,
           { id: `error-${msgIdRef.current++}`, role: 'system', content: `⚠️ ${event.message}` },
         ])
-        if (!event.recoverable) setBusy(false)
+        // 错误即表示本次操作已终止（含超时/中断），必须解除 busy 锁，
+        // 否则输入框会永久卡在“执行中，无法输入”状态
+        setBusy(false)
+        setStreamingText('')
         break
 
       case 'system_info':
@@ -336,7 +366,20 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
     error: '错误',
   }[phase]
 
+  const phaseColor = {
+    idle: theme.colors.success,
+    planning: theme.colors.primary,
+    awaiting_approval: theme.colors.warning,
+    executing: theme.colors.primary,
+    verifying: theme.colors.primary,
+    done: theme.colors.success,
+    error: theme.colors.error,
+  }[phase]
+
   const hasUserMessages = messages.some((m) => m.role === 'user' || m.role === 'assistant')
+
+  // 欢迎态：无对话内容且无面板覆盖时，展示居中欢迎屏
+  const showWelcome = !hasUserMessages && !streamingText && !showConfig && !showModelSelector
 
   return (
     <Box flexDirection="column">
@@ -352,7 +395,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           {' '}
           [{commandContext.getSkipPlan() ? 'Auto' : 'Plan'}]
         </Text>
-        <Text color={theme.colors.muted}> · {phaseLabel}</Text>
+        <Text color={phaseColor}> ● {phaseLabel}</Text>
       </Box>
 
       {/* API 配置面板 */}
@@ -412,12 +455,17 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
       )}
 
       {/* 欢迎面板（无用户消息时） */}
-      {!hasUserMessages && !streamingText && !showConfig && !showModelSelector && (
+      {showWelcome && (
         <LogoBanner version="0.1.0" model={commandContext.getModel()} projectRoot={projectRoot} />
       )}
 
-      {/* 主内容区 */}
-      <Box flexDirection="column" flexGrow={1} paddingX={1}>
+      {/* 主内容区（欢迎态居中，对话态左对齐） */}
+      <Box
+        flexDirection="column"
+        flexGrow={1}
+        paddingX={1}
+        alignItems={showWelcome ? 'center' : 'flex-start'}
+      >
         <MessageList messages={messages} />
 
         {/* 流式输出 */}
@@ -465,15 +513,15 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         {planApproval && <PlanApprovalPanel plan={planApproval.plan} />}
       </Box>
 
-      {/* 底部分隔线 */}
-      <Box paddingX={1}>
+      {/* 底部分隔线（欢迎态居中） */}
+      <Box paddingX={1} alignItems={showWelcome ? 'center' : 'flex-start'}>
         <Text color={theme.colors.muted} dimColor>
           {'─'.repeat(60)}
         </Text>
       </Box>
 
-      {/* 底部固定区域 */}
-      <Box flexDirection="column" paddingX={1}>
+      {/* 底部固定区域（欢迎态居中，对话态左对齐） */}
+      <Box flexDirection="column" paddingX={1} alignItems={showWelcome ? 'center' : 'flex-start'}>
         {/* 输入行 */}
         <InputBox
           onSubmit={handleSubmit}

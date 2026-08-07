@@ -13,7 +13,7 @@ import type { CheckpointManager } from '../sandbox/Checkpoint'
 import { requiresForcedApproval } from '../sandbox/CommandGuard'
 import { generateDiff } from '../tools/editFile'
 import type { ToolContext, ToolRegistry } from '../tools/registry'
-import { toolSchemas } from '../tools/schemas'
+import { resolveToolParameters } from '../tools/schemas'
 import { callWithRetry } from '../utils'
 import { callLLMWithRetry, splitModelParameters } from './ReActLoop'
 import type {
@@ -159,7 +159,7 @@ export class Executor {
     for (const tool of execTools) {
       toolsForAI[tool.definition.name] = {
         description: tool.definition.description,
-        parameters: toolSchemas[tool.definition.name] ?? tool.definition.inputSchema,
+        parameters: resolveToolParameters(tool.definition.name, tool.definition.inputSchema),
       }
     }
 
@@ -399,7 +399,7 @@ export class Executor {
     for (const tool of verifyTools) {
       verifyToolsForAI[tool.definition.name] = {
         description: tool.definition.description,
-        parameters: toolSchemas[tool.definition.name] ?? tool.definition.inputSchema,
+        parameters: resolveToolParameters(tool.definition.name, tool.definition.inputSchema),
       }
     }
 
