@@ -14,6 +14,9 @@ import { FileWatcher } from '../context/FileWatcher'
 import { loadRules } from '../context/RulesLoader'
 import { closeSemanticSearchEngine } from '../context/SemanticSearch'
 import { TokenBudget } from '../context/TokenBudget'
+import { LessonRetriever } from '../memory/LessonRetriever'
+import { MemoryStore } from '../memory/MemoryStore'
+import type { Experience } from '../memory/types'
 import { CostTracker } from '../router/CostTracker'
 import { ModelRouter } from '../router/ModelRouter'
 import { getProvider } from '../router/providers'
@@ -23,8 +26,12 @@ import { ExternalMCPManager, type ExternalServerConfig } from '../tools/external
 import { createToolRegistry, type ToolContext } from '../tools/registry'
 import { logError } from '../utils/debugLog'
 import { recordError } from '../utils/errorReport'
+import { AgentEngineRegistry } from './AgentEngine'
+import { loadAgentEngineConfigs } from './agentsConfig'
 import { Executor } from './Executor'
 import { Planner } from './Planner'
+import { Reflector } from './Reflector'
+import { SkillLibrary } from './SkillLibrary'
 import { SubAgent } from './SubAgent'
 import type {
   AgentPhase,
@@ -70,10 +77,15 @@ export class Orchestrator {
   private currentSessionId: string | null = null
   private shutdownCalled = false
   private subAgent: SubAgent | null = null
+  private engineRegistry: AgentEngineRegistry | null = null
   private mcpManager: ExternalMCPManager | null = null
   private codeGraph: CodeGraph | null = null
   private fileWatcher: FileWatcher | null = null
   private noProviderAvailable = false
+  /** 学习系统：经验存储 / 教训检索 / 技能库（异步旁路，失败仅告警） */
+  private memoryStore: MemoryStore | null = null
+  private lessonRetriever: LessonRetriever | null = null
+  private skillLibrary: SkillLibrary | null = null
   /** 是否跳过 Plan 阶段（运行时可切换） */
   private skipPlan: boolean
   /** 中断控制器（abort() 时触发，传递给 Executor/Planner 的 streamText） */
@@ -115,6 +127,15 @@ export class Orchestrator {
       recentTurnsKeep: this.cfg.config.context.recentTurnsKeep,
     })
 
+    // 构建子智能体引擎注册表（内置引擎 + .nexus/agents.toml 用户配置合并）
+    this.engineRegistry = new AgentEngineRegistry()
+    const userEngines = await loadAgentEngineConfigs(this.cfg.projectRoot)
+    const knownTools = new Set(this.toolRegistry.getAll().map((t) => t.definition.name))
+    const engineWarnings = this.engineRegistry.mergeUserConfig(userEngines, knownTools)
+    for (const warning of engineWarnings) {
+      console.warn(warning)
+    }
+
     // 创建 SubAgent 实例并注入工具注册表
     // 如果无可用 provider，推迟到首次 submit() 时创建
     if (this.router.hasAvailableProvider()) {
@@ -142,6 +163,19 @@ export class Orchestrator {
     } catch (err) {
       console.warn('[NexusDB] 数据库初始化失败，会话将不会持久化:', err)
       this.db = null
+    }
+
+    // 初始化学习系统（经验采集/教训检索/技能库，失败仅告警不阻塞）
+    try {
+      this.memoryStore = new MemoryStore(this.cfg.projectRoot)
+      this.lessonRetriever = new LessonRetriever(this.memoryStore)
+      this.skillLibrary = new SkillLibrary(this.cfg.projectRoot, this.memoryStore)
+      this.assembler?.setLessonRetriever(this.lessonRetriever)
+    } catch (err) {
+      console.warn('[Memory] 学习系统初始化失败，自主学习能力不可用:', err)
+      this.memoryStore = null
+      this.lessonRetriever = null
+      this.skillLibrary = null
     }
 
     // 构建代码图谱（后台异步，失败不阻塞）
@@ -290,6 +324,10 @@ export class Orchestrator {
         'executor',
       ),
       getAbortSignal: () => this.abortController?.signal,
+      engineRegistry: this.engineRegistry ?? undefined,
+      // 引擎差异化模型：按引擎指定的模型名走 ModelRouter 降级链
+      getEngineModel: (modelName) => router.getModelByName(modelName),
+      getEngineRouteInfo: (modelName) => router.getRouteInfoForModel(modelName),
     })
   }
 
@@ -317,6 +355,7 @@ export class Orchestrator {
       this.aborted = false
       this.abortController = new AbortController()
       this.emit({ type: 'user_input', text: userInput })
+      const submitStartTime = Date.now()
 
       // 创建持久化会话
       if (this.db && !this.currentSessionId) {
@@ -338,8 +377,8 @@ export class Orchestrator {
         }
       }
 
-      // 构建上下文
-      let systemPrompt = await this.assembler!.buildSystemPrompt(this.todos)
+      // 构建上下文（传入当前任务文本，供学习系统检索相关历史教训）
+      let systemPrompt = await this.assembler!.buildSystemPrompt(this.todos, userInput)
       // DeepSeek 深度适配：追加 provider 优化后的系统提示后缀（仅当非空）
       if (this.router) {
         const promptRoute = this.router.getRouteInfo('executor')
@@ -406,6 +445,8 @@ export class Orchestrator {
 
       this.phase = 'done'
       this.emit({ type: 'done', summary: result })
+      // 异步记录本次任务经验（旁路，不阻塞回复返回）
+      void this.recordExperienceAsync(userInput, submitStartTime)
       return result
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err)
@@ -425,6 +466,41 @@ export class Orchestrator {
       }).catch(() => {})
       return `执行出错: ${errorMessage}`
     }
+  }
+
+  /**
+   * 异步记录本次任务经验并更新命中教训评分（学习旁路，失败仅告警）。
+   * 经验是反思的原料；任务成功时对本任务检索命中的教训记一次成功命中，
+   * 支撑 candidate → active 转正与评分升降（验证闭环）。
+   */
+  private async recordExperienceAsync(userInput: string, startTime: number): Promise<void> {
+    try {
+      if (!this.memoryStore) return
+      const outcome = this.determineOutcome()
+      this.memoryStore.recordExperience({
+        id: crypto.randomUUID(),
+        sessionId: this.currentSessionId ?? 'unknown-session',
+        summary: userInput.slice(0, 200),
+        outcome,
+        cost: this.costTracker.getTotalCost(),
+        durationMs: Date.now() - startTime,
+        createdAt: Date.now(),
+      })
+      const hits = this.lessonRetriever?.lastHitIds ?? []
+      if (outcome === 'success') {
+        for (const id of hits) {
+          this.memoryStore.recordLessonOutcome(id, true)
+        }
+      }
+    } catch (err) {
+      console.warn('[Memory] 经验记录失败:', err)
+    }
+  }
+
+  /** 根据 todos 完成度判定任务结果：全部 complete = success，否则 partial */
+  private determineOutcome(): Experience['outcome'] {
+    if (this.todos.length === 0) return 'partial'
+    return this.todos.every((t) => t.status === 'complete') ? 'success' : 'partial'
   }
 
   /** Plan → Execute 双阶段（支持重规划循环） */
@@ -448,6 +524,8 @@ export class Orchestrator {
       costPer1kOutput: plannerRoute.costPer1kOutput,
       costPer1kInputCached: plannerRoute.costPer1kInputCached,
       modelParameters: plannerProvider?.getModelParameters?.(plannerRoute.model, 'planner'),
+      // 懒获取：Plan 阶段也支持 Ctrl+C 中断（此前仅 Executor 可中断）
+      getAbortSignal: () => this.abortController?.signal,
     })
 
     let currentPlan = await planner.plan(userInput, messages)
@@ -523,7 +601,7 @@ export class Orchestrator {
       costPer1kOutput: executorRoute.costPer1kOutput,
       costPer1kInputCached: executorRoute.costPer1kInputCached,
       maxSessionCost: this.cfg.config.limits.maxSessionCost,
-      getFallbackModel: () => this.router!.getModelWithFallback('executor'),
+      getFallbackModel: () => this.router!.getDistinctFallbackModel('executor'),
       fallbackModelName: this.router!.getFallbackModelName('executor') ?? undefined,
       abortSignal: this.abortController?.signal,
       modelParameters: executorProvider?.getModelParameters?.(executorRoute.model, 'executor'),
@@ -571,7 +649,7 @@ export class Orchestrator {
           costPer1kOutput: executorRoute.costPer1kOutput,
           costPer1kInputCached: executorRoute.costPer1kInputCached,
           maxSessionCost: this.cfg.config.limits.maxSessionCost,
-          getFallbackModel: () => this.router!.getModelWithFallback('executor'),
+          getFallbackModel: () => this.router!.getDistinctFallbackModel('executor'),
           fallbackModelName: this.router!.getFallbackModelName('executor') ?? undefined,
           abortSignal: this.abortController?.signal,
           modelParameters: executorProvider?.getModelParameters?.(executorRoute.model, 'executor'),
@@ -737,6 +815,9 @@ export class Orchestrator {
       console.warn('[Checkpoint] 合并检查点失败:', err)
     }
 
+    // 会话结束学习闭环：反思未反思经验、技能合并提议、记忆治理（失败仅告警）
+    await this.runEndOfSessionLearning()
+
     if (this.db && this.currentSessionId) {
       try {
         const cost = this.getCostSummary()
@@ -776,6 +857,60 @@ export class Orchestrator {
       closeSemanticSearchEngine()
     } catch (err) {
       console.warn('[SemanticSearch] 关闭失败:', err)
+    }
+  }
+
+  /** 会话结束时执行学习闭环：反思经验 → 教训入库 → 技能提议 → 容量治理 */
+  private async runEndOfSessionLearning(): Promise<void> {
+    try {
+      if (!this.memoryStore || !this.router) return
+
+      // a. 反思水位线之上的未反思经验，提炼为 candidate 教训
+      const pending = this.memoryStore.getUnreflectedExperiences()
+      if (pending.length > 0) {
+        const reflector = new Reflector(this.router.getModel('summarizer'))
+        const lessons = await reflector.reflect(pending)
+        for (const lesson of lessons) {
+          this.memoryStore.addLesson({ ...lesson, sourceExperienceId: pending[0].id })
+        }
+        // 推进反思水位线（只标记本次批次，避免重复反思）
+        this.memoryStore.markReflected(pending[pending.length - 1].createdAt)
+        if (lessons.length > 0) {
+          this.emit({
+            type: 'system_info',
+            message: `[Memory] 本次会话反思出 ${lessons.length} 条新教训（/memory 查看）`,
+          })
+        }
+      }
+
+      // b. 技能合并提议：同类高频教训聚簇，仅提示用户确认固化
+      if (this.skillLibrary) {
+        const proposals = this.skillLibrary.findConsolidationCandidates(
+          this.memoryStore.listLessons(),
+        )
+        if (proposals.length > 0) {
+          this.emit({
+            type: 'system_info',
+            message: `[Memory] 检测到 ${proposals.length} 个技能合并提议（/memory skills 查看）`,
+          })
+        }
+      }
+
+      // c. 容量治理：超过上限按评分淘汰低价值教训
+      const deleted = this.memoryStore.enforceLessonCap()
+      if (deleted > 0) {
+        this.emit({
+          type: 'system_info',
+          message: `[Memory] 教训库容量治理：淘汰 ${deleted} 条低价值教训`,
+        })
+      }
+    } catch (err) {
+      console.warn('[Memory] 会话结束学习失败:', err)
+    } finally {
+      this.memoryStore?.close()
+      this.memoryStore = null
+      this.lessonRetriever = null
+      this.skillLibrary = null
     }
   }
 
@@ -971,6 +1106,66 @@ export class Orchestrator {
       lines.push('')
     }
     lines.push('提示: 错误报告保存在 .nexus/error-log.jsonl')
+    return lines.join('\n')
+  }
+
+  /** 查看学习记忆统计与 top 教训（/memory） */
+  listMemory(): string {
+    if (!this.memoryStore) return '学习系统不可用（未完成初始化）'
+    const stats = this.memoryStore.getStats()
+    const lessons = this.memoryStore.listLessons(undefined, 5)
+    const skills = this.memoryStore.listSkills()
+    const lines: string[] = [
+      '── 学习记忆 ──',
+      `经验: ${stats.experienceCount} 条`,
+      `教训: candidate ${stats.lessonsByStatus.candidate} / active ${stats.lessonsByStatus.active} / archived ${stats.lessonsByStatus.archived}`,
+      `平均 active 评分: ${stats.avgActiveScore === null ? 'N/A' : stats.avgActiveScore.toFixed(3)}`,
+      `命中成功率: ${stats.hitSuccessRate === null ? 'N/A' : `${(stats.hitSuccessRate * 100).toFixed(1)}%`}`,
+      `技能: ${stats.skillCount} 个`,
+    ]
+    if (lessons.length > 0) {
+      lines.push('', 'top 教训：')
+      for (const lesson of lessons) {
+        const kind = lesson.kind === 'failure_pattern' ? '失败' : '成功'
+        lines.push(
+          `  [#${lesson.id}][${lesson.status}][${kind}][${lesson.score.toFixed(2)}] ${lesson.triggerDesc} → ${lesson.advice}`,
+        )
+      }
+    }
+    if (skills.length > 0) {
+      lines.push('', '技能：')
+      for (const skill of skills) {
+        lines.push(`  [#${skill.id}][${skill.status}] ${skill.name} — ${skill.description}`)
+      }
+    }
+    lines.push('', '提示: /memory delete lesson <id> 删除教训，/memory skills 查看技能文件')
+    return lines.join('\n')
+  }
+
+  /** 删除一条教训或技能（/memory delete lesson|skill <id>） */
+  deleteMemoryEntry(kind: 'lesson' | 'skill', id: number | string): string {
+    if (!this.memoryStore) return '学习系统不可用（未完成初始化）'
+    const numericId = typeof id === 'string' ? Number(id) : id
+    if (!Number.isFinite(numericId)) return `无效的 id: ${String(id)}`
+    if (kind === 'lesson') {
+      this.memoryStore.deleteLesson(numericId)
+    } else if (kind === 'skill') {
+      this.memoryStore.deleteSkill(numericId)
+    } else {
+      return `不支持的删除类型: ${kind}（仅支持 lesson / skill）`
+    }
+    return `已删除 ${kind} #${numericId}`
+  }
+
+  /** 列出技能文件（/memory skills） */
+  listSkills(): string {
+    if (!this.skillLibrary) return '技能库不可用（未完成初始化）'
+    const files = this.skillLibrary.listSkillFiles()
+    if (files.length === 0) return '暂无技能文件（.nexus/skills/）'
+    const lines: string[] = ['技能文件：']
+    for (const file of files) {
+      lines.push(`  [${file.status}] ${file.name} — ${file.description}`)
+    }
     return lines.join('\n')
   }
 

@@ -3,6 +3,7 @@
  * Vercel AI SDK 的 generateText 要求 parameters 为 Zod schema
  */
 
+import { jsonSchema } from 'ai'
 import { z } from 'zod'
 
 export const readFileSchema = z.object({
@@ -105,6 +106,58 @@ export const dispatchSubagentSchema = z.object({
   tools: z.array(z.string()).optional().describe('允许使用的工具列表(默认根据 writable 自动选择)'),
 })
 
+export const createFileSchema = z.object({
+  path: z.string().describe('要创建的文件路径（相对于项目根目录）'),
+  content: z.string().describe('文件内容'),
+})
+
+export const dispatchSubagentsSchema = z.object({
+  tasks: z
+    .array(
+      z.object({
+        description: z.string().describe('子任务的详细描述'),
+        writable: z.boolean().optional().describe('是否允许子 Agent 修改文件(默认 false)'),
+        tools: z.array(z.string()).optional().describe('允许使用的工具列表'),
+      }),
+    )
+    .describe('子任务数组，最多 3 个并行'),
+})
+
+export const dispatchAgentSchema = z.object({
+  engine: z.string().describe('子智能体引擎名（如 explorer/coder/reviewer/researcher）'),
+  description: z.string().describe('子任务的详细描述'),
+  writable: z.boolean().optional().describe('是否允许修改文件(覆盖引擎默认值)'),
+  tools: z.array(z.string()).optional().describe('允许使用的工具列表(覆盖引擎默认值)'),
+  input: z.string().optional().describe('可选的上游输入/上下文'),
+})
+
+export const dispatchAgentsSchema = z.object({
+  tasks: z
+    .array(
+      z.object({
+        engine: z.string().describe('子智能体引擎名'),
+        description: z.string().describe('子任务的详细描述'),
+        writable: z.boolean().optional().describe('是否允许修改文件(覆盖引擎默认值)'),
+        tools: z.array(z.string()).optional().describe('允许使用的工具列表(覆盖引擎默认值)'),
+      }),
+    )
+    .describe('引擎任务数组，最多 3 个并行'),
+})
+
+export const runPipelineSchema = z.object({
+  steps: z
+    .array(
+      z.object({
+        engine: z.string().describe('子智能体引擎名'),
+        description: z.string().describe('本步骤的任务描述'),
+        writable: z.boolean().optional().describe('是否允许修改文件(覆盖引擎默认值)'),
+        tools: z.array(z.string()).optional().describe('允许使用的工具列表(覆盖引擎默认值)'),
+      }),
+    )
+    .describe('流水线步骤数组，按顺序执行'),
+  input: z.string().optional().describe('初始输入（可选）'),
+})
+
 /** 工具名 → Zod Schema 映射 */
 export const toolSchemas: Record<string, z.ZodType> = {
   read_file: readFileSchema,
@@ -123,4 +176,19 @@ export const toolSchemas: Record<string, z.ZodType> = {
   git_commit: gitCommitSchema,
   git_push: gitPushSchema,
   web_search: webSearchSchema,
+  create_file: createFileSchema,
+  dispatch_subagents: dispatchSubagentsSchema,
+  dispatch_agent: dispatchAgentSchema,
+  dispatch_agents: dispatchAgentsSchema,
+  run_pipeline: runPipelineSchema,
+}
+
+/**
+ * 生成 AI SDK 接受的 tool parameters。
+ * 优先使用 zod schema；仅有裸 JSON Schema 的工具必须经 jsonSchema() 包装——
+ * 裸 JSON Schema 对象直接作为 parameters 传入时，AI SDK 会静默放弃整个请求
+ * （不发网络请求、不抛错、流空结束），表现为 Agent 永久“空响应”。
+ */
+export function resolveToolParameters(name: string, rawInputSchema: unknown): unknown {
+  return toolSchemas[name] ?? jsonSchema(rawInputSchema as Parameters<typeof jsonSchema>[0])
 }

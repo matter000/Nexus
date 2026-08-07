@@ -10,8 +10,17 @@ import type { CostTracker } from '../router/CostTracker'
 import { withDeepSeekThinking } from '../router/providers/deepseekFetch'
 import { requiresForcedApproval } from '../sandbox/CommandGuard'
 import type { ToolContext, ToolRegistry } from '../tools/registry'
+import { resolveToolParameters } from '../tools/schemas'
+import type { AgentEngineRegistry } from './AgentEngine'
 import { splitModelParameters } from './ReActLoop'
-import type { ModelRole, NexusEvent, PermissionMode, SubAgentResult, SubAgentTask } from './types'
+import type {
+  ModelRole,
+  ModelRoute,
+  NexusEvent,
+  PermissionMode,
+  SubAgentResult,
+  SubAgentTask,
+} from './types'
 
 export interface SubAgentConfig {
   model: LanguageModel
@@ -52,6 +61,12 @@ export interface SubAgentConfig {
    * 而 abortController 在 submit() 时才新建，getter 保证始终拿到最新的 signal。
    */
   getAbortSignal?: () => AbortSignal | undefined
+  /** 引擎注册表（解析 task.engine 的角色/工具/迭代上限） */
+  engineRegistry?: AgentEngineRegistry
+  /** 按模型名解析引擎差异化模型（Orchestrator 注入，走 ModelRouter 降级链） */
+  getEngineModel?: (modelName: string) => LanguageModel
+  /** 按模型名获取路由信息（引擎差异化模型的成本追踪） */
+  getEngineRouteInfo?: (modelName: string) => ModelRoute
 }
 
 export class SubAgent {
@@ -63,30 +78,95 @@ export class SubAgent {
 
   /** 执行子 Agent 任务 */
   async run(task: SubAgentTask): Promise<SubAgentResult> {
-    const { model, toolRegistry, toolContext, maxIterations, onEvent } = this.config
+    const { toolRegistry, toolContext, onEvent } = this.config
+
+    // ─── 引擎解析：task.engine 存在时从注册表取引擎定义 ────────────────────
+    const engineDef = task.engine ? this.config.engineRegistry?.get(task.engine) : undefined
+    if (task.engine && !engineDef) {
+      this.emitDone(task.engine, task.id, false, '')
+      return {
+        id: task.id,
+        success: false,
+        summary: '',
+        filesChanged: [],
+        error: `未知引擎: ${task.engine}`,
+      }
+    }
+    onEvent({ type: 'agent_start', engine: engineDef?.name ?? 'generic', taskId: task.id })
+
+    // 引擎差异化模型：引擎指定 model 时经 getEngineModel 闭包解析（含降级链）
+    const engineRoute = engineDef?.model
+      ? this.config.getEngineRouteInfo?.(engineDef.model)
+      : undefined
+    const model =
+      engineDef?.model && this.config.getEngineModel
+        ? this.config.getEngineModel(engineDef.model)
+        : this.config.model
+    const { providerName, modelName, costPer1kInput, costPer1kOutput, costPer1kInputCached } =
+      engineRoute
+        ? {
+            providerName: engineRoute.provider,
+            modelName: engineRoute.model,
+            costPer1kInput: engineRoute.costPer1kInput,
+            costPer1kOutput: engineRoute.costPer1kOutput,
+            costPer1kInputCached: engineRoute.costPer1kInputCached,
+          }
+        : {
+            providerName: this.config.providerName,
+            modelName: this.config.modelName,
+            costPer1kInput: this.config.costPer1kInput,
+            costPer1kOutput: this.config.costPer1kOutput,
+            costPer1kInputCached: this.config.costPer1kInputCached,
+          }
+
+    // 写权限：任务显式值优先，其次引擎默认值
+    const writable = task.writable ?? engineDef?.writable ?? false
 
     // 根据 writable 决定可用工具
-    const phase = task.writable ? 'execute' : 'plan'
+    const phase = writable ? 'execute' : 'plan'
     const availableTools = toolRegistry.getForPhase(phase)
 
-    // 如果指定了工具列表,进一步过滤
-    const filteredTools =
+    // 工具白名单：引擎 tools 为上限，任务 tools 为附加限制（引擎未配置时沿用任务列表）
+    const engineTools = engineDef?.tools ?? []
+    const requestedTools =
       task.tools.length > 0
-        ? availableTools.filter((t) => task.tools.includes(t.definition.name))
+        ? engineTools.length > 0
+          ? task.tools.filter((t) => engineTools.includes(t))
+          : task.tools
+        : engineTools
+    const filteredTools =
+      requestedTools.length > 0
+        ? availableTools.filter((t) => requestedTools.includes(t.definition.name))
         : availableTools
 
     const toolsForAI: Record<string, { description: string; parameters: unknown }> = {}
     for (const tool of filteredTools) {
       toolsForAI[tool.definition.name] = {
         description: tool.definition.description,
-        parameters: tool.definition.inputSchema as unknown,
+        parameters: resolveToolParameters(tool.definition.name, tool.definition.inputSchema),
       }
     }
 
+    // 迭代上限：引擎定义优先（引擎无定义时用任务参数）
+    const maxIterations = engineDef?.maxIterations ?? task.maxIterations
+
+    // 系统提示词：引擎角色提示词 + 任务描述 + 流水线前序输出
+    const systemPrefix = engineDef?.systemPrompt ?? task.systemPrompt ?? ''
+    const inputSection = task.input ? `\n\n上游输出（供参考）:\n${task.input}` : ''
     const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
       {
         role: 'user',
-        content: `你是一个子 Agent,负责完成以下子任务:\n\n${task.description}\n\n完成后输出简洁的结果摘要。`,
+        content: `${
+          systemPrefix
+            ? `${systemPrefix}
+
+`
+            : ''
+        }你是一个子 Agent,负责完成以下子任务:
+
+${task.description}
+
+完成后输出简洁的结果摘要。${inputSection}`,
       },
     ]
 
@@ -95,10 +175,11 @@ export class SubAgent {
     const filesChanged: string[] = []
 
     try {
-      while (iterations < task.maxIterations) {
+      while (iterations < maxIterations) {
         // 检查中断信号（与 Executor 行为一致）
         const abortSignal = this.config.getAbortSignal?.()
         if (abortSignal?.aborted) {
+          this.emitDone(engineDef?.name ?? 'generic', task.id, false, '')
           return {
             id: task.id,
             success: false,
@@ -125,18 +206,18 @@ export class SubAgent {
           } as Parameters<typeof generateText>[0]),
         )
 
-        // 记录成本
+        // 记录成本（引擎差异化模型时按该模型路由计费）
         const usage = await result.usage
         if (usage) {
           this.config.costTracker.record({
             role: this.config.modelRole,
-            provider: this.config.providerName,
-            model: this.config.modelName,
+            provider: providerName,
+            model: modelName,
             inputTokens: usage.promptTokens,
             outputTokens: usage.completionTokens,
-            costPer1kInput: this.config.costPer1kInput,
-            costPer1kOutput: this.config.costPer1kOutput,
-            costPer1kInputCached: this.config.costPer1kInputCached,
+            costPer1kInput,
+            costPer1kOutput,
+            costPer1kInputCached,
           })
         }
 
@@ -179,10 +260,11 @@ export class SubAgent {
         }
       }
 
-      if (iterations >= task.maxIterations && !summary) {
+      if (iterations >= maxIterations && !summary) {
         summary = '达到子 Agent 迭代上限,任务可能未完全完成。'
       }
 
+      this.emitDone(engineDef?.name ?? 'generic', task.id, true, summary)
       return {
         id: task.id,
         success: true,
@@ -191,6 +273,7 @@ export class SubAgent {
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
+      this.emitDone(engineDef?.name ?? 'generic', task.id, false, message)
       return {
         id: task.id,
         success: false,
@@ -228,6 +311,16 @@ export class SubAgent {
       default:
         return requestApproval(toolName, args)
     }
+  }
+
+  /** 引擎注册表（供工具层校验引擎名与构造 PipelineRunner） */
+  getEngineRegistry(): AgentEngineRegistry | undefined {
+    return this.config.engineRegistry
+  }
+
+  /** 发出 agent_done 事件（run 的所有出口统一调用） */
+  private emitDone(engine: string, taskId: string, success: boolean, summary: string): void {
+    this.config.onEvent({ type: 'agent_done', engine, taskId, success, summary })
   }
 }
 

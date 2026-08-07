@@ -49,6 +49,7 @@ Nexus 是一个运行在终端的 AI 编程助手，它能：
 | 多语言代码图谱 | 支持 TS/JS/Python/Go/Rust/Java 项目结构解析 |
 | 文件监听 | 外部编辑器修改文件后自动增量更新索引 |
 | 子 Agent 并行 | 多个独立子任务可并行执行 |
+| 多引擎协作 | 专用子智能体引擎：Supervisor / Fan-out / Pipeline 三种拓扑 |
 | 对话导出 | `/export` 导出完整会话为 Markdown |
 | 成本追踪 | 实时显示 token 用量和费用 |
 | 外部 MCP Server | 可接入任意 MCP 协议工具服务器 |
@@ -580,7 +581,7 @@ command = "bun test"
 ├─────────────────────────────────────────────────────┤
 │              Agent 编排层 (Orchestrator)              │
 │  Plan → Approve → Execute(ReAct Loop) → Verify      │
-│  SubAgent(并行分派) ← Checkpoint(自动回滚)           │
+│  SubAgent(多引擎: 单/并行/流水线) ← Checkpoint(自动回滚) │
 ├─────────────────────────────────────────────────────┤
 │              上下文工程层 (Context)                    │
 │  Assembler(L1/L2/L3) + CodeGraph(多语言AST)         │
@@ -588,11 +589,12 @@ command = "bun test"
 │  + TokenBudget + FileWatcher(增量索引)               │
 ├─────────────────────────────────────────────────────┤
 │              工具层 (ToolRegistry)                    │
-│  15个内置工具 + 统一安全检查 + 外部MCP工具           │
+│  21个内置工具 + 统一安全检查 + 外部MCP工具           │
 │  read_file / edit_file / create_file / bash /        │
 │  grep / glob / list_directory / search_symbol /      │
 │  fetch_url / semantic_search / update_todo /         │
-│  submit_plan / dispatch_subagent / dispatch_subagents│
+│  submit_plan / dispatch_agent / dispatch_agents /    │
+│  run_pipeline / dispatch_subagent / dispatch_subagents│
 ├─────────────────────────────────────────────────────┤
 │              模型路由层 (ModelRouter)                 │
 │  多Provider → 角色路由 → CostTracker → 降级链        │
@@ -631,6 +633,46 @@ command = "bun test"
   ↓
 返回结果
 ```
+
+## 多智能体引擎协作
+
+Nexus 内置多引擎协作体系：多个专用子智能体引擎可协同完成复杂任务，由主 Agent 按任务性质动态选择协作拓扑。
+
+### 内置引擎
+
+| 引擎 | 角色 | 写权限 | 工具范围 |
+|------|------|--------|----------|
+| `explorer` | 只读探索代码库 | 否 | read_file / grep / glob / list_directory / search_symbol / semantic_search |
+| `coder` | 可写编码实现 | 是 | 读写工具 + bash + git（受权限控制） |
+| `reviewer` | 只读代码审查 | 否 | 只读工具，输出分级审查报告 |
+| `researcher` | 联网调研 | 否 | web_search / fetch_url + 只读工具 |
+
+### 协作拓扑
+
+| 拓扑 | 工具 | 说明 |
+|------|------|------|
+| Supervisor | `dispatch_agent` | 单引擎调度，按引擎名路由（需审批） |
+| Fan-out | `dispatch_agents` | 多引擎并行（最多 3 个），写任务自动串行 |
+| Pipeline | `run_pipeline` | 引擎链式执行，前序输出作为后序输入（需审批） |
+
+所有引擎均有独立角色提示词、工具白名单与上下文窗口，只返回最终摘要；深度限制 1 层（引擎内不可再分派）。引擎可指定独立模型（缺省用 executor 模型），成本按该模型路由计费。
+
+### 自定义引擎
+
+通过 `.nexus/agents.toml` 覆盖内置引擎或新增自定义引擎（字段级合并，缺省字段沿用内置值）：
+
+```toml
+[[agents]]
+name = "translator"                     # 新增引擎名
+description = "翻译引擎：中英互译与术语统一"
+system_prompt = "你是翻译引擎，只读分析代码中的文案…"
+model = "deepseek-v4-flash"             # 可选：指定模型（缺省用 executor）
+tools = ["read_file", "grep", "glob"]   # 工具白名单
+writable = false
+max_iterations = 6
+```
+
+配置问题仅告警不阻塞；未知工具名会被跳过并提示。
 
 ---
 

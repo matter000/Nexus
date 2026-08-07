@@ -289,4 +289,34 @@ describe('ModelRouter', () => {
     const router = new ModelRouter(createDefaultConfig(), ct)
     expect(router.getCostTracker()).toBe(ct)
   })
+
+  it('getModelByName 对已知模型返回对应 modelId（子智能体引擎差异化模型用）', () => {
+    availableProviderNames = ['anthropic']
+    const router = new ModelRouter(createDefaultConfig(), new CostTracker())
+    const model = router.getModelByName('claude-sonnet-4-20250514') as any
+    expect(model.modelId).toBe('claude-sonnet-4-20250514')
+  })
+
+  it('getModelByName 对未知模型回退默认 provider', () => {
+    availableProviderNames = ['anthropic']
+    const router = new ModelRouter(createDefaultConfig(), new CostTracker())
+    const model = router.getModelByName('unknown-model') as any
+    expect(model.modelId).toBe('unknown-model')
+  })
+
+  it('getModelByName 在无可用 provider 时抛错', () => {
+    availableProviderNames = []
+    const router = new ModelRouter(createDefaultConfig(), new CostTracker())
+    expect(() => router.getModelByName('claude-sonnet-4-20250514')).toThrow()
+  })
+
+  it('getRouteInfoForModel 返回成本信息（role 记为 executor）', () => {
+    availableProviderNames = ['anthropic']
+    const router = new ModelRouter(createDefaultConfig(), new CostTracker())
+    const route = router.getRouteInfoForModel('claude-sonnet-4-20250514')
+    expect(route.role).toBe('executor')
+    expect(route.model).toBe('claude-sonnet-4-20250514')
+    expect(route.costPer1kInput).toBeGreaterThan(0)
+    expect(route.contextWindow).toBe(200000)
+  })
 })

@@ -27,7 +27,7 @@ Nexus 是一个运行在终端的 AI 编程助手（CLI Agent），采用 Bun + 
 
 | 模块 | 职责 | 入口文件 | 关联测试 |
 |------|------|----------|----------|
-| `src/agent` | Agent 编排核心：Orchestrator 协调 Plan/Execute 双阶段、子 Agent 分派、检查点管理；Executor 执行 ReAct Loop 逐步执行计划 | `src/agent/Orchestrator.ts` | `tests/unit/orchestrator.test.ts`, `tests/unit/executor.test.ts`, `tests/integration/agent.test.ts` |
+| `src/agent` | Agent 编排核心：Orchestrator 协调 Plan/Execute 双阶段、子 Agent 分派、检查点管理；Executor 执行 ReAct Loop 逐步执行计划；AgentEngine 多引擎协作（内置引擎 + agents.toml 配置、Supervisor/Fan-out/Pipeline 三种拓扑） | `src/agent/Orchestrator.ts` | `tests/unit/orchestrator.test.ts`, `tests/unit/executor.test.ts`, `tests/integration/agent.test.ts` |
 | `src/context` | 上下文管理：三层上下文组装(L1静态+L2任务+L3检索)、token 预算裁剪、历史压缩、代码图谱、语义搜索、规则加载 | `src/context/Assembler.ts` | `tests/unit/context.test.ts`, `tests/unit/codegraph.test.ts`, `tests/unit/treesitter.test.ts` |
 | `src/tools` | MCP 工具注册中心：管理所有内置工具(bash/editFile/grep/glob/git/webSearch等)的注册、查找和调用 | `src/tools/registry.ts` | `tests/integration/tools.test.ts`, `tests/integration/newTools.test.ts` |
 | `src/router` | 模型路由器：不同任务用不同模型，平衡能力与成本；支持降级、重试、多 Provider(DeepSeek/Anthropic/OpenAI) | `src/router/ModelRouter.ts` | `tests/unit/router.test.ts`, `tests/unit/providers.test.ts`, `tests/unit/costTracker.test.ts` |

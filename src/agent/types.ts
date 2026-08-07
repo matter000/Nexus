@@ -29,6 +29,8 @@ export type NexusEvent =
   | { type: 'error'; message: string; recoverable: boolean }
   | { type: 'config_updated' }
   | { type: 'system_info'; message: string }
+  | { type: 'agent_start'; engine: string; taskId: string }
+  | { type: 'agent_done'; engine: string; taskId: string; success: boolean; summary: string }
 
 // ─── Agent 状态 ───────────────────────────────────────────────────────────────
 
@@ -256,9 +258,16 @@ export interface Checkpoint {
 export interface SubAgentTask {
   id: string
   description: string
-  writable: boolean
+  /** 是否允许修改文件；缺省由引擎定义决定（无引擎时默认 false） */
+  writable?: boolean
   tools: string[]
   maxIterations: number
+  /** 引擎名；缺省时为通用行为（向后兼容） */
+  engine?: string
+  /** 引擎角色提示词（由 EngineRegistry 解析后注入） */
+  systemPrompt?: string
+  /** 流水线前序输出（注入上下文，Pipeline 模式用） */
+  input?: string
 }
 
 export interface SubAgentResult {

@@ -169,7 +169,15 @@ export class ModelRouter {
         this.providers.set(name, createAnthropic({ apiKey, baseURL }))
       } else {
         // openai 兼容（含旧 custom 与缺省情况）
-        this.providers.set(name, createOpenAI({ baseURL, apiKey }))
+        // 代理 DeepSeek 端点时挂载 fetch 拦截器，使 thinking 参数注入生效
+        this.providers.set(
+          name,
+          createOpenAI({
+            baseURL,
+            apiKey,
+            ...(baseURL.includes('api.deepseek.com') ? { fetch: createDeepSeekFetch() } : {}),
+          }),
+        )
       }
     }
   }
@@ -229,7 +237,7 @@ export class ModelRouter {
 
   /** 构建模型的路由信息（合并适配器能力数据 + 成本数据） */
   private buildModelRoute(modelName: string, role: ModelRole): ModelRoute | null {
-    const providerName = MODEL_PROVIDER_MAP[modelName] ?? this.resolveProviderForModel(modelName)
+    const providerName = this.resolveProviderName(modelName)
     if (!providerName) return null
 
     const adapter = getProvider(providerName, this.secrets)
@@ -251,6 +259,19 @@ export class ModelRouter {
     }
   }
 
+  /**
+   * 统一 provider 解析优先级:
+   * 1. 自定义条目显式声明该模型为 defaultModel（用户经自定义端点代理模型的典型场景）
+   * 2. 内置模型目录映射（MODEL_PROVIDER_MAP）
+   * 3. secrets 推断（defaultProvider / defaultModel 匹配）
+   */
+  private resolveProviderName(modelName: string): string | null {
+    for (const [name, secret] of Object.entries(this.secrets.providers)) {
+      if (secret.defaultModel === modelName && this.providers.has(name)) return name
+    }
+    return MODEL_PROVIDER_MAP[modelName] ?? this.resolveProviderForModel(modelName)
+  }
+
   /** 为未知模型推断 provider（基于 secrets 配置） */
   private resolveProviderForModel(modelName: string): string | null {
     // 如果用户设置了默认 provider，使用该 provider
@@ -269,7 +290,7 @@ export class ModelRouter {
   /** 获取指定角色的 LanguageModel 实例 */
   getModel(role: ModelRole): LanguageModel {
     const modelName = this.currentModels[role]
-    const providerName = MODEL_PROVIDER_MAP[modelName] ?? this.resolveProviderForModel(modelName)
+    const providerName = this.resolveProviderName(modelName)
 
     if (!providerName) {
       // 未知模型,尝试直接用默认 provider
@@ -345,6 +366,28 @@ export class ModelRouter {
     return FALLBACK_CHAIN[currentModel] ?? null
   }
 
+  /**
+   * 获取异于主模型的降级模型。
+   * getModelWithFallback 会先返回主模型本身，导致“降级”变成对同一模型的无意义重试；
+   * 此方法沿 FALLBACK_CHAIN 跳过主模型，返回第一个 provider 可用的不同模型。
+   */
+  getDistinctFallbackModel(role: ModelRole): LanguageModel | null {
+    let modelName = this.currentModels[role]
+    const visited = new Set<string>([modelName])
+    while (true) {
+      const fallbackName = FALLBACK_CHAIN[modelName]
+      if (!fallbackName || visited.has(fallbackName)) return null
+      visited.add(fallbackName)
+      const providerName =
+        MODEL_PROVIDER_MAP[fallbackName] ?? this.resolveProviderName(fallbackName)
+      if (providerName) {
+        const provider = this.providers.get(providerName)
+        if (provider) return provider(fallbackName) as LanguageModel
+      }
+      modelName = fallbackName
+    }
+  }
+
   /** 获取模型路由信息(用于成本计算) */
   getRouteInfo(role: ModelRole): ModelRoute {
     const modelName = this.currentModels[role]
@@ -355,6 +398,43 @@ export class ModelRouter {
       provider: 'anthropic',
       model: modelName,
       role,
+      costPer1kInput: 0.003,
+      costPer1kOutput: 0.015,
+      contextWindow: 200000,
+      supportsTools: true,
+      supportsStreaming: true,
+    }
+  }
+
+  /** 按模型名获取 LanguageModel（子智能体引擎指定模型时使用） */
+  getModelByName(modelName: string): LanguageModel {
+    const providerName = this.resolveProviderName(modelName)
+    if (!providerName) {
+      // 未知模型,尝试直接用默认 provider
+      const defaultProvider = this.providers.get('anthropic') ?? this.providers.get('openai')
+      if (defaultProvider) {
+        return defaultProvider(modelName) as LanguageModel
+      }
+      throw new Error(`模型 ${modelName} 不在已知目录中,且无可用 provider`)
+    }
+
+    const provider = this.providers.get(providerName)
+    if (!provider) {
+      throw new Error(`Provider ${providerName} 未配置或 API key 缺失`)
+    }
+
+    return provider(modelName) as LanguageModel
+  }
+
+  /** 按模型名获取路由信息（引擎差异化模型的成本追踪），role 记为 'executor' */
+  getRouteInfoForModel(modelName: string): ModelRoute {
+    const route = this.buildModelRoute(modelName, 'executor')
+    if (route) return route
+    // 未知模型,返回默认值
+    return {
+      provider: 'anthropic',
+      model: modelName,
+      role: 'executor',
       costPer1kInput: 0.003,
       costPer1kOutput: 0.015,
       contextWindow: 200000,

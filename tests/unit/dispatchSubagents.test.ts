@@ -115,3 +115,42 @@ describe('dispatch_subagents 结果保留', () => {
     expect(result.result).toContain('任务B')
   })
 })
+
+describe('run_pipeline 工具', () => {
+  it('未注入 runner 时返回错误', async () => {
+    const registry = createToolRegistry()
+    const handler = registry.get('run_pipeline')!
+    const result = await handler.execute(
+      { steps: [{ engine: 'explorer', description: '探索' }] },
+      createContext(),
+    )
+    expect(result.error).toContain('SubAgent 未初始化')
+  })
+
+  it('全流程成功时返回分步摘要', async () => {
+    const registry = createToolRegistry()
+    registry.setSubAgentRunner(new MockSubAgentRunner('all-succeed'))
+    const handler = registry.get('run_pipeline')!
+    const result = await handler.execute(
+      {
+        steps: [
+          { engine: 'explorer', description: '任务A' },
+          { engine: 'reviewer', description: '任务B' },
+        ],
+      },
+      createContext(),
+    )
+    expect(result.error).toBeUndefined()
+    expect(result.result).toContain('流水线完成（2 步）')
+    expect(result.result).toContain('[explorer]')
+    expect(result.result).toContain('[reviewer]')
+  })
+
+  it('步骤为空时返回错误', async () => {
+    const registry = createToolRegistry()
+    registry.setSubAgentRunner(new MockSubAgentRunner())
+    const handler = registry.get('run_pipeline')!
+    const result = await handler.execute({ steps: [] }, createContext())
+    expect(result.error).toContain('步骤列表为空')
+  })
+})

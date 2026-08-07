@@ -5,6 +5,7 @@
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test'
 import type { NexusEvent } from '../../src/agent/types'
+import { AgentEngineRegistry } from '../../src/agent/AgentEngine'
 
 // ─── mock 计数器：记录 generateText 被调用的次数 ──────────────────────────────
 let generateTextCallCount = 0
@@ -150,5 +151,119 @@ describe('SubAgent 中断信号', () => {
 
     expect(result.success).toBe(false)
     expect(callCount).toBeGreaterThanOrEqual(1) // 至少调用了首次
+  })
+})
+
+describe('SubAgent 引擎化', () => {
+  beforeEach(() => {
+    generateTextCallCount = 0
+  })
+
+  /** 带工具集的 mock 注册表（引擎白名单测试用） */
+  function createMockRegistryWithTools(names: string[]) {
+    return {
+      getForPhase: () => names.map((n) => ({ definition: { name: n } })),
+      getAll: () => names.map((n) => ({ definition: { name: n } })),
+      execute: async () => ({ result: '', error: undefined }),
+    } as never
+  }
+
+  it('engine 存在时注入引擎系统提示词', async () => {
+    let capturedMessages: Array<{ role: string; content: string }> = []
+    ;(mock as any).module('ai', () => ({
+      generateText: async (opts: any) => {
+        generateTextCallCount++
+        capturedMessages = opts.messages
+        return { text: '完成', toolCalls: [], usage: { promptTokens: 5, completionTokens: 3 } }
+      },
+    }))
+
+    const { config } = createBaseConfig({ engineRegistry: new AgentEngineRegistry() })
+    const sub = new SubAgent(config)
+    const result = await sub.run({
+      id: 'engine-1',
+      description: '测试引擎任务',
+      tools: [],
+      maxIterations: 3,
+      engine: 'explorer',
+    })
+
+    expect(result.success).toBe(true)
+    // 首条 user 消息包含引擎角色提示词
+    expect(capturedMessages[0].content).toContain('代码探索引擎')
+    expect(capturedMessages[0].content).toContain('测试引擎任务')
+  })
+
+  it('未知引擎返回失败且不调用 LLM', async () => {
+    const { config } = createBaseConfig({ engineRegistry: new AgentEngineRegistry() })
+    const sub = new SubAgent(config)
+    const result = await sub.run({
+      id: 'engine-2',
+      description: '任务',
+      tools: [],
+      maxIterations: 3,
+      engine: 'ghost',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('ghost')
+    expect(generateTextCallCount).toBe(0)
+  })
+
+  it('引擎工具白名单过滤超出范围的工具', async () => {
+    let capturedTools: Record<string, unknown> | undefined
+    ;(mock as any).module('ai', () => ({
+      generateText: async (opts: any) => {
+        generateTextCallCount++
+        capturedTools = opts.tools
+        return { text: '完成', toolCalls: [], usage: { promptTokens: 5, completionTokens: 3 } }
+      },
+    }))
+
+    const { config } = createBaseConfig({
+      engineRegistry: new AgentEngineRegistry(),
+      toolRegistry: createMockRegistryWithTools(['bash', 'read_file']),
+    })
+    const sub = new SubAgent(config)
+    const result = await sub.run({
+      id: 'engine-3',
+      description: '任务',
+      tools: ['bash', 'read_file'], // 请求包含 explorer 白名单外的 bash
+      maxIterations: 3,
+      engine: 'explorer', // explorer 白名单无 bash
+    })
+
+    expect(result.success).toBe(true)
+    expect(capturedTools).toBeDefined()
+    expect(capturedTools!['bash']).toBeUndefined() // bash 被白名单过滤
+    expect(capturedTools!['read_file']).toBeDefined()
+  })
+
+  it('agent_start/agent_done 事件在成功执行时发出', async () => {
+    ;(mock as any).module('ai', () => ({
+      generateText: async () => ({
+        text: '完成',
+        toolCalls: [],
+        usage: { promptTokens: 5, completionTokens: 3 },
+      }),
+    }))
+
+    const { config, events } = createBaseConfig({
+      engineRegistry: new AgentEngineRegistry(),
+    })
+    const sub = new SubAgent(config)
+    const result = await sub.run({
+      id: 'engine-4',
+      description: '任务',
+      tools: [],
+      maxIterations: 3,
+      engine: 'reviewer',
+    })
+
+    expect(result.success).toBe(true)
+    expect(events.some((e) => e.type === 'agent_start' && e.engine === 'reviewer')).toBe(true)
+    expect(
+      events.some((e) => e.type === 'agent_done' && e.engine === 'reviewer' && e.success),
+    ).toBe(true)
   })
 })

@@ -224,9 +224,9 @@ describe('ToolRegistry 新工具注册', () => {
     expect(names).toContain('fetch_url')
   })
 
-  it('总共注册 18 个工具', () => {
+  it('总共注册 21 个工具', () => {
     const tools = registry.getAll()
-    expect(tools.length).toBe(18)
+    expect(tools.length).toBe(21)
     // 显式列出工具名，新增/删除工具时此断言会失败，强制同步测试
     const names = tools.map((t) => t.definition.name)
     expect(names).toEqual([
@@ -247,7 +247,10 @@ describe('ToolRegistry 新工具注册', () => {
       'web_search',
       'semantic_search',
       'dispatch_subagent',
+      'dispatch_agent',
       'dispatch_subagents',
+      'dispatch_agents',
+      'run_pipeline',
     ])
   })
 })
