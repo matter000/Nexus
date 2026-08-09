@@ -47,7 +47,7 @@ interface ApprovalState {
   tool: string
   params: Record<string, unknown>
   diff?: string
-  resolve: (approved: boolean) => void
+  resolve: (approved: boolean, reason?: string) => void
 }
 
 interface AppProps {
@@ -62,6 +62,8 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   const [messages, setMessages] = useState<Message[]>([])
   const [toolCalls, setToolCalls] = useState<ToolCallDisplay[]>([])
   const [todos, setTodos] = useState<Todo[]>([])
+  /** 文件产物聚合：本轮任务写过的文件（file_artifact 事件去重累积，done 时汇总展示） */
+  const [fileArtifacts, setFileArtifacts] = useState<string[]>([])
   /** 子智能体执行状态（agent_start/agent_done 事件驱动，多智能体可见性） */
   const [agentRuns, setAgentRuns] = useState<AgentRun[]>([])
   /** 成本仪表盘渲染触发器：cost_update 时 +1，驱动状态栏命令式重读 getCost() */
@@ -73,16 +75,32 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   const [phase, setPhase] = useState<AgentPhase>('idle')
   const [streamingText, setStreamingText] = useState('')
   const [approval, setApproval] = useState<ApprovalState | null>(null)
+  /** 审批拒绝原因输入模式：x 键激活，Enter 提交 / Esc 取消 */
+  const [approvalReasonMode, setApprovalReasonMode] = useState(false)
+  const [approvalReasonDraft, setApprovalReasonDraft] = useState('')
   const [planApproval, setPlanApproval] = useState<{
     plan: Plan
     resolve: (result: 'approve' | 'reject' | string) => void
   } | null>(null)
+  /** 计划修改意见输入模式：e 键激活，Enter 提交（触发带反馈重规划）/ Esc 取消 */
+  const [planReasonMode, setPlanReasonMode] = useState(false)
+  const [planReasonDraft, setPlanReasonDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  /** busy ref 镜像（排队判断用 ref，避免 state 异步更新导致的闭包陈旧） */
+  const busyRef = useRef(false)
+  const updateBusy = useCallback((v: boolean) => {
+    busyRef.current = v
+    setBusy(v)
+  }, [])
+  /** 任务排队：busy 时可继续输入，Enter 入队（done/error 后自动执行）；ref 读写，state 仅驱动状态行 */
+  const queueRef = useRef<string[]>([])
   const [showConfig, setShowConfig] = useState(false)
   const [showModelSelector, setShowModelSelector] = useState(false)
   const [isFirstRun, setIsFirstRun] = useState(false)
+  /** 欢迎屏示例任务 → 输入框（数字键 1/2/3 填入） */
+  const [pendingInput, setPendingInput] = useState('')
   const [secrets, setSecrets] = useState<SecretsConfig>({ providers: {} })
-  const [renderTick, setRenderTick] = useState(0)
+  const [, setRenderTick] = useState(0)
   const [autoApproveTools, setAutoApproveTools] = useState<Set<string>>(new Set())
   const [forceExpandTools, setForceExpandTools] = useState(false)
   const autoApproveRef = useRef<Set<string>>(new Set())
@@ -136,6 +154,15 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
     if (!busy) interruptRequestedRef.current = false
   }, [busy])
 
+  // done/error 后自动执行排队任务（ref 方式避免 handleEvent 闭包陈旧）
+  const drainQueue = useCallback((handleSubmitFn: (t: string) => void) => {
+    if (queueRef.current.length === 0) return
+    const next = queueRef.current[0]
+    queueRef.current = queueRef.current.slice(1)
+    setStatusLine(`▶ 执行排队任务（剩余 ${queueRef.current.length} 个）`)
+    handleSubmitFn(next)
+  }, [])
+
   // 首次启动检测: 无任何 API Key 时自动进入配置向导
   useEffect(() => {
     loadSecrets(projectRoot).then((loaded) => {
@@ -176,6 +203,32 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
     // 工具审批面板（ApprovalPrompt）
     const aprv = approvalRef.current
     if (aprv) {
+      // 拒绝原因输入模式：字符累积，Enter 提交（带 reason 拒绝），Esc 取消回审批面板
+      if (approvalReasonMode) {
+        if (key.return) {
+          const reason = approvalReasonDraft.trim()
+          aprv.resolve(false, reason || undefined)
+          setApproval(null)
+          setApprovalReasonMode(false)
+          setApprovalReasonDraft('')
+          onApproval?.(aprv.resolve)
+          return
+        }
+        if (key.escape) {
+          setApprovalReasonMode(false)
+          setApprovalReasonDraft('')
+          return
+        }
+        if (key.backspace || key.delete) {
+          setApprovalReasonDraft((v) => v.slice(0, -1))
+          return
+        }
+        if (input && !key.shift && !key.ctrl) {
+          setApprovalReasonDraft((v) => v + input)
+          return
+        }
+        return
+      }
       if (input === 'y' || key.return) {
         aprv.resolve(true)
         setApproval(null)
@@ -195,12 +248,46 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         onApproval?.(aprv.resolve)
         return
       }
+      // x：拒绝并输入原因（反馈给 agent，避免盲目重试）
+      if (input === 'x' || input === 'X') {
+        setApprovalReasonMode(true)
+        setApprovalReasonDraft('')
+        return
+      }
       return // 审批面板激活时，不处理其他按键
     }
 
     // 计划审批面板（PlanApprovalPanel）
     const pAprv = planApprovalRef.current
     if (pAprv) {
+      // 修改意见输入模式：字符累积，Enter 提交（意见文本 → 带反馈重规划），Esc 取消
+      if (planReasonMode) {
+        if (key.return) {
+          const opinion = planReasonDraft.trim()
+          if (opinion) {
+            pAprv.resolve(opinion)
+            setPlanApproval(null)
+            setPlanReasonMode(false)
+            setPlanReasonDraft('')
+            return
+          }
+          return
+        }
+        if (key.escape) {
+          setPlanReasonMode(false)
+          setPlanReasonDraft('')
+          return
+        }
+        if (key.backspace || key.delete) {
+          setPlanReasonDraft((v) => v.slice(0, -1))
+          return
+        }
+        if (input && !key.shift && !key.ctrl) {
+          setPlanReasonDraft((v) => v + input)
+          return
+        }
+        return
+      }
       if (key.return) {
         pAprv.resolve('approve')
         setPlanApproval(null)
@@ -211,12 +298,29 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         setPlanApproval(null)
         return
       }
+      // e：输入修改意见（触发带反馈重规划）
+      if (input === 'e' || input === 'E') {
+        setPlanReasonMode(true)
+        setPlanReasonDraft('')
+        return
+      }
       return // 计划审批激活时，不处理其他按键
     }
 
     // 工具卡片全局展开/折叠（T 键）
     if (input === 'T' || input === 't') {
       setForceExpandTools((prev) => !prev)
+      return
+    }
+
+    // 欢迎屏示例任务：非 busy 且无面板时按 1/2/3 填入输入框
+    if (showWelcome && !busyRef.current && (input === '1' || input === '2' || input === '3')) {
+      const examples = [
+        '分析项目结构并生成一份 README 文档',
+        '运行测试并修复所有失败用例',
+        '检查代码质量（lint）并修复发现的问题',
+      ]
+      setPendingInput(examples[Number.parseInt(input, 10) - 1])
       return
     }
   })
@@ -248,21 +352,34 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         return
       }
 
+      // 任务排队：执行中提交 → 入队（状态行提示），完成后自动执行
+      if (busyRef.current) {
+        queueRef.current = [...queueRef.current, text]
+        setStatusLine(`⏳ 已排队 ${queueRef.current.length} 个任务（完成后自动执行）`)
+        return
+      }
+
+      // ! 前缀：快捷 shell 命令（转换为明确指令，走正常审批流）
+      if (text.startsWith('!')) {
+        text = `请执行 shell 命令并输出结果：\`${text.slice(1)}\``
+      }
+
       // 添加用户消息
       setMessages((prev) => [
         ...prev,
         { id: `user-${msgIdRef.current++}`, role: 'user', content: text },
       ])
-      setBusy(true)
+      updateBusy(true)
       setStreamingText('')
-      // 新一轮任务开始：重置任务时间线、子智能体卡片与状态行
+      // 新一轮任务开始：重置任务时间线、子智能体卡片、状态行与文件产物
       setToolCalls([])
       setTodos([])
       setAgentRuns([])
       setStatusLine(null)
+      setFileArtifacts([])
       onSubmit(text)
     },
-    [onSubmit, commandContext],
+    [onSubmit, commandContext, updateBusy],
   )
 
   /** 处理来自 Orchestrator 的事件 */
@@ -408,28 +525,70 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         case 'done':
           flushStream()
           stopStreamTimer()
-          setBusy(false)
+          updateBusy(false)
           setPhase('done')
           setStreamingText('') // 清除流式残留，防止重复显示
+          // 自动执行排队任务（如有）
+          drainQueue(handleSubmit)
+          // 文件写入汇总行：本轮修改的文件收敛为一条系统消息（截断 8 个 + 等 N 个）
+          if (fileArtifacts.length > 0) {
+            const shown = fileArtifacts.slice(0, 8).join(', ')
+            const rest = fileArtifacts.length > 8 ? ` 等 ${fileArtifacts.length} 个` : ''
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `sys-${msgIdRef.current++}`,
+                role: 'system',
+                content: `📝 修改: ${shown}${rest}`,
+              },
+            ])
+          }
           if (event.summary) {
             setMessages((prev) => [
               ...prev,
               { id: `assistant-${msgIdRef.current++}`, role: 'assistant', content: event.summary },
             ])
           }
+          // 任务完成建议：学习记忆有候选教训时提示 /memory（仅状态行，不刷屏；排队任务时让位）
+          if (queueRef.current.length === 0) {
+            try {
+              const mem = commandContext.listMemory()
+              if (mem.includes('candidate') && mem.includes('教训')) {
+                setStatusLine('💡 学习记忆有候选教训待确认 — /memory 查看')
+              }
+            } catch {
+              // 学习系统不可用则忽略
+            }
+          }
+          break
+
+        case 'file_artifact':
+          // 文件产物去重累积（todoId 无关，跨任务全局聚合到当前轮）
+          setFileArtifacts((prev) => (prev.includes(event.path) ? prev : [...prev, event.path]))
           break
 
         case 'error':
           flushStream()
           stopStreamTimer()
-          setMessages((prev) => [
-            ...prev,
-            { id: `error-${msgIdRef.current++}`, role: 'system', content: `⚠️ ${event.message}` },
-          ])
+          // 错误分级：可恢复错误（重试中）走状态行降噪；致命错误追加消息留痕
+          if (event.recoverable) {
+            setStatusLine(`可恢复错误: ${event.message}`)
+          } else {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `error-${msgIdRef.current++}`,
+                role: 'system',
+                content: `⚠️ ${event.message}`,
+              },
+            ])
+          }
           // 错误即表示本次操作已终止（含超时/中断），必须解除 busy 锁，
           // 否则输入框会永久卡在“执行中，无法输入”状态
-          setBusy(false)
+          updateBusy(false)
           setStreamingText('')
+          // 自动执行排队任务（如有）
+          drainQueue(handleSubmit)
           break
 
         case 'system_info':
@@ -439,7 +598,15 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           break
       }
     },
-    [flushStream, stopStreamTimer],
+    [
+      flushStream,
+      stopStreamTimer,
+      drainQueue,
+      handleSubmit,
+      updateBusy,
+      commandContext,
+      fileArtifacts,
+    ],
   )
 
   // 通过 eventBus 订阅来自 Orchestrator 的事件
@@ -485,49 +652,66 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           ? theme.colors.warning
           : theme.colors.muted
   const todosDone = todos.filter((t) => t.status === 'complete').length
+  // 上下文占用比例（0~1），驱动进度条阈值着色与 /compact 预警
+  const ctxRatio = ctxUsage && ctxUsage.window > 0 ? ctxUsage.prompt / ctxUsage.window : null
+  const ctxBarColor =
+    ctxRatio === null
+      ? theme.colors.muted
+      : ctxRatio >= 0.8
+        ? theme.progressBar.high
+        : ctxRatio >= 0.6
+          ? theme.progressBar.mid
+          : theme.progressBar.low
 
   // 欢迎态：无对话内容且无面板覆盖时，展示居中欢迎屏
   const showWelcome = !hasUserMessages && !streamingText && !showConfig && !showModelSelector
 
   return (
     <Box flexDirection="column">
-      {/* 顶部状态栏：模型名 · 模式 · 阶段 · 上下文占用 · 成本仪表盘 */}
-      <Box paddingX={1}>
-        <Text bold color={theme.colors.primary}>
-          {commandContext.getModel()}
-        </Text>
-        <Text
-          color={commandContext.getSkipPlan() ? theme.colors.accent : theme.colors.success}
-          bold
-        >
-          {' '}
-          [{commandContext.getSkipPlan() ? 'Auto' : 'Plan'}]
-        </Text>
-        <Text color={phaseColor}> ● {phaseLabel}</Text>
-        {ctxUsage && (
-          <Text
-            color={
-              ctxUsage.prompt / ctxUsage.window >= 0.8
-                ? theme.colors.error
-                : ctxUsage.prompt / ctxUsage.window >= 0.6
-                  ? theme.colors.warning
-                  : theme.colors.success
-            }
-          >
-            {` · ctx ${formatTokenCount(ctxUsage.prompt)}/${formatTokenCount(ctxUsage.window)} (${Math.round((ctxUsage.prompt / ctxUsage.window) * 100)}%)`}
+      {/* 顶部状态栏（仪表盘化，两行分块）：L1 模型/模式/阶段；L2 上下文进度条 + 成本/token/缓存/todo */}
+      <Box paddingX={1} flexDirection="column">
+        <Box>
+          <Text bold color={theme.colors.primary}>
+            {commandContext.getModel()}
           </Text>
-        )}
-        {/* 成本仪表盘：会话累计费用 / token / 缓存命中率（前缀缓存收益可见） */}
-        {cost.total > 0 && (
           <Text
-            color={theme.colors.muted}
-          >{` · ${costStr} · in ${formatTokenCount(cost.inputTokens)}/out ${formatTokenCount(cost.outputTokens)}`}</Text>
-        )}
-        {cacheRate !== undefined && cost.total > 0 && (
-          <Text color={cacheColor}>{` · cache ${Math.round(cacheRate * 100)}%`}</Text>
-        )}
-        {todos.length > 0 && (
-          <Text color={theme.colors.muted}>{` · todo ${todosDone}/${todos.length}`}</Text>
+            color={commandContext.getSkipPlan() ? theme.colors.accent : theme.colors.success}
+            bold
+          >
+            {' '}
+            [{commandContext.getSkipPlan() ? 'Auto' : 'Plan'}]
+          </Text>
+          <Text color={phaseColor}> ● {phaseLabel}</Text>
+          {/* 循环轮次（/goal /loop 运行时）：状态行已含，此处不重复 */}
+        </Box>
+        {(ctxUsage || cost.total > 0 || todos.length > 0) && (
+          <Box>
+            {/* 上下文占用进度条 + 百分比（阈值着色，>80% 追加 /compact 预警） */}
+            {ctxUsage && ctxRatio !== null && (
+              <Text color={theme.colors.muted}>
+                ctx <Text color={ctxBarColor}>{'▓'.repeat(Math.round(ctxRatio * 16))}</Text>
+                <Text color={theme.colors.muted}>
+                  {'░'.repeat(16 - Math.round(ctxRatio * 16))} {Math.round(ctxRatio * 100)}%
+                </Text>
+              </Text>
+            )}
+            {/* 成本仪表盘：会话累计费用 / token / 缓存命中率 */}
+            {cost.total > 0 && (
+              <Text color={theme.colors.muted}>
+                {` · ${costStr} · in ${formatTokenCount(cost.inputTokens)}/out ${formatTokenCount(cost.outputTokens)}`}
+              </Text>
+            )}
+            {cacheRate !== undefined && cost.total > 0 && (
+              <Text color={cacheColor}>{` · cache ${Math.round(cacheRate * 100)}%`}</Text>
+            )}
+            {todos.length > 0 && (
+              <Text color={theme.colors.muted}>{` · todo ${todosDone}/${todos.length}`}</Text>
+            )}
+            {/* 上下文水位预警：>80% 时提示 /compact（仅超阈值出现，降噪） */}
+            {ctxRatio !== null && ctxRatio >= 0.8 && (
+              <Text color={theme.colors.warning}> — 建议 /compact</Text>
+            )}
+          </Box>
         )}
       </Box>
 
@@ -591,7 +775,6 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
       {showWelcome && (
         <LogoBanner version="0.1.0" model={commandContext.getModel()} projectRoot={projectRoot} />
       )}
-
       {/* 已定稿消息：Ink <Static> 沉降区——渲染一次后进入终端滚动历史，
           不再参与动态帧重布局（长会话防闪烁/防全量重排的核心手段） */}
       <Static items={messages}>
@@ -615,13 +798,15 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         {/* 子智能体执行卡片（多智能体协作可见性） */}
         <AgentRunList runs={agentRuns} />
 
-        {/* 流式输出（Markdown 渲染，与定稿消息一致；已 80ms 节流批渲染） */}
+        {/* 流式输出（Markdown 渲染，与定稿消息一致；已 80ms 节流批渲染；assistant 竖线样式与 MessageItem 对齐） */}
         {streamingText && (
           <Box flexDirection="column" marginTop={messages.length > 0 ? 1 : 0}>
-            <Text color={theme.colors.assistant} bold>
-              {theme.symbols.assistant} Nexus
-            </Text>
-            <Box paddingLeft={2}>
+            <Box borderLeft borderColor={theme.colors.assistant} paddingLeft={1}>
+              <Text color={theme.colors.assistant} bold>
+                {theme.symbols.assistant} Nexus
+              </Text>
+            </Box>
+            <Box borderLeft borderColor={theme.colors.assistant} paddingLeft={1}>
               <Markdown content={streamingText} />
             </Box>
           </Box>
@@ -640,17 +825,25 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           </Box>
         )}
 
-        {/* 审批提示 — 输入由 App useInput 统一处理 */}
+        {/* 审批提示 — 输入由 App useInput 统一处理；x 进入拒绝原因输入模式 */}
         {approval && (
           <ApprovalPrompt
             tool={approval.tool}
             description={formatApprovalParams(approval.tool, approval.params)}
             diff={approval.diff}
+            reasonMode={approvalReasonMode}
+            reasonDraft={approvalReasonDraft}
           />
         )}
 
-        {/* 计划审批面板 — 输入由 App useInput 统一处理 */}
-        {planApproval && <PlanApprovalPanel plan={planApproval.plan} />}
+        {/* 计划审批面板 — 输入由 App useInput 统一处理；e 进入修改意见模式 */}
+        {planApproval && (
+          <PlanApprovalPanel
+            plan={planApproval.plan}
+            reasonMode={planReasonMode}
+            reasonDraft={planReasonDraft}
+          />
+        )}
       </Box>
 
       {/* 底部分隔线（欢迎态居中） */}
@@ -665,12 +858,14 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         {/* 输入行 */}
         <InputBox
           onSubmit={handleSubmit}
-          disabled={busy || !!approval || !!planApproval || showConfig || showModelSelector}
+          disabled={!!approval || !!planApproval || showConfig || showModelSelector}
+          externalValue={pendingInput}
         />
         {/* 快捷键提示行 */}
         <Box>
           <Text color={theme.colors.muted} dimColor>
-            [Ctrl+C 中断] [/ 命令] [Tab 补全] [↑ 历史] [T 工具展开] [Alt+Enter 换行]
+            [Ctrl+C 中断] [/ 命令] [Tab 补全] [↑ 历史] [Ctrl+R 搜索历史] [T 工具展开] [Alt+Enter
+            换行] [! 快捷命令]
           </Text>
         </Box>
       </Box>

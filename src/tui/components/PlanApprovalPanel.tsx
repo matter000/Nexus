@@ -9,9 +9,16 @@ import { theme } from '../theme'
 
 interface PlanApprovalPanelProps {
   plan: Plan
+  /** 修改意见输入模式（e 激活）：显示输入行 */
+  reasonMode?: boolean
+  reasonDraft?: string
 }
 
-export function PlanApprovalPanel({ plan }: PlanApprovalPanelProps) {
+export function PlanApprovalPanel({
+  plan,
+  reasonMode = false,
+  reasonDraft = '',
+}: PlanApprovalPanelProps) {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.colors.warning} paddingX={1}>
       <Box>
@@ -67,9 +74,24 @@ export function PlanApprovalPanel({ plan }: PlanApprovalPanelProps) {
         </Text>
         <Text color={theme.colors.muted}> · </Text>
         <Text color={theme.colors.accent} bold>
-          [F] 反馈重规划
+          [E] 修改意见（重规划）
         </Text>
       </Box>
+
+      {/* 修改意见输入行（e 激活）：Enter 提交触发带反馈重规划 */}
+      {reasonMode && (
+        <Box marginTop={1}>
+          <Text color={theme.colors.warning} bold>
+            修改意见:
+          </Text>
+          <Text color={theme.colors.fg}>{reasonDraft || ' '}</Text>
+          <Text color={theme.colors.primary}>▌</Text>
+          <Text color={theme.colors.muted} dimColor>
+            {' '}
+            [Enter 提交重规划 · Esc 取消]
+          </Text>
+        </Box>
+      )}
     </Box>
   )
 }

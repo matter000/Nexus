@@ -86,13 +86,27 @@ const CAPABILITIES: string[] = [
   'Git-aware diffs, commits and code review',
 ]
 
+/** 欢迎屏示例任务（按 1/2/3 填入输入框，降低新用户启动成本） */
+const EXAMPLES: Array<{ key: string; text: string }> = [
+  { key: '1', text: '分析项目结构并生成一份 README 文档' },
+  { key: '2', text: '运行测试并修复所有失败用例' },
+  { key: '3', text: '检查代码质量（lint）并修复发现的问题' },
+]
+
 interface LogoBannerProps {
   version?: string
   model?: string
   projectRoot?: string
+  /** 示例任务选择回调（App 层填入输入框） */
+  onPickExample?: (text: string) => void
 }
 
-export function LogoBanner({ version = '0.1.0', model, projectRoot }: LogoBannerProps) {
+export function LogoBanner({
+  version = '0.1.0',
+  model,
+  projectRoot,
+  onPickExample,
+}: LogoBannerProps) {
   const dirName = projectRoot ? projectRoot.split(/[\\/]/).pop() || projectRoot : ''
 
   return (
@@ -132,6 +146,21 @@ export function LogoBanner({ version = '0.1.0', model, projectRoot }: LogoBanner
         <Text color={theme.colors.muted} dimColor>
           /help · /model · /config · /cost · /clear
         </Text>
+      </Box>
+
+      {/* 示例任务（按 1/2/3 填入输入框） */}
+      <Box flexDirection="column" marginTop={2}>
+        <Text color={theme.colors.muted} dimColor>
+          ── 试试这些（按 1/2/3 选择）──
+        </Text>
+        {EXAMPLES.map((ex) => (
+          <Box key={ex.key}>
+            <Text color={theme.colors.accent} bold>
+              {ex.key})
+            </Text>
+            <Text> {ex.text}</Text>
+          </Box>
+        ))}
       </Box>
     </Box>
   )

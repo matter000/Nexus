@@ -11,6 +11,9 @@ interface ApprovalPromptProps {
   tool: string
   description: string
   diff?: string
+  /** 拒绝原因输入模式（x 激活）：显示输入行 */
+  reasonMode?: boolean
+  reasonDraft?: string
 }
 
 /**
@@ -54,7 +57,13 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max) + '…'
 }
 
-export function ApprovalPrompt({ tool, description, diff }: ApprovalPromptProps) {
+export function ApprovalPrompt({
+  tool,
+  description,
+  diff,
+  reasonMode = false,
+  reasonDraft = '',
+}: ApprovalPromptProps) {
   const [showFullDiff, setShowFullDiff] = useState(false)
   // D 键切换 diff 展开/折叠 — 仅在 App 未拦截时作为备用
 
@@ -97,6 +106,10 @@ export function ApprovalPrompt({ tool, description, diff }: ApprovalPromptProps)
         <Text color={theme.colors.error} bold>
           [N] 拒绝
         </Text>
+        <Text color={theme.colors.muted}> · </Text>
+        <Text color={theme.colors.error} bold>
+          [X] 拒绝并说明
+        </Text>
         {diff && (
           <>
             <Text color={theme.colors.muted}> · </Text>
@@ -110,6 +123,21 @@ export function ApprovalPrompt({ tool, description, diff }: ApprovalPromptProps)
           [A] 自动批准此类
         </Text>
       </Box>
+
+      {/* 拒绝原因输入行（x 激活）：实时显示已输入内容 */}
+      {reasonMode && (
+        <Box marginTop={1}>
+          <Text color={theme.colors.warning} bold>
+            拒绝原因:
+          </Text>
+          <Text color={theme.colors.fg}>{reasonDraft || ' '}</Text>
+          <Text color={theme.colors.primary}>▌</Text>
+          <Text color={theme.colors.muted} dimColor>
+            {' '}
+            [Enter 提交 · Esc 取消]
+          </Text>
+        </Box>
+      )}
     </Box>
   )
 }

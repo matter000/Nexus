@@ -7,6 +7,8 @@ export interface SlashCommand {
   name: string
   aliases: string[]
   description: string
+  /** 分组（/help 按组展示；缺省归入“系统”） */
+  group?: '模型' | '会话' | '循环' | '工具' | '系统'
   handler: (args: string, ctx: CommandContext) => Promise<string | void>
 }
 
@@ -129,6 +131,7 @@ const commands: SlashCommand[] = [
     name: 'model',
     aliases: ['m'],
     description: '查看或切换当前模型',
+    group: '模型',
     handler: async (args, ctx) => {
       if (!args.trim()) {
         const current = ctx.getModel()
@@ -159,6 +162,7 @@ const commands: SlashCommand[] = [
     name: 'config',
     aliases: ['api'],
     description: '打开交互式 API 配置面板（↑↓ 选择 Provider，输入 Key/URL/Model）',
+    group: '模型',
     handler: async () => {
       // 由 TUI 层（App.tsx）拦截并打开配置面板；此 handler 仅作非交互兜底
       return '交互模式下输入 /config 打开配置面板，按 ↑↓ 选择 Provider 并配置 API Key'
@@ -168,6 +172,7 @@ const commands: SlashCommand[] = [
     name: 'cost',
     aliases: [],
     description: '查看本次会话花费（含按模型分类、缓存命中与推理统计）',
+    group: '模型',
     handler: async (_args, ctx) => {
       const cost = ctx.getCost()
       const lines: string[] = [
@@ -207,6 +212,7 @@ const commands: SlashCommand[] = [
     name: 'clear',
     aliases: ['cls'],
     description: '清除当前对话上下文',
+    group: '会话',
     handler: async (_args, ctx) => {
       ctx.clearContext()
       return '对话上下文已清除'
@@ -216,6 +222,7 @@ const commands: SlashCommand[] = [
     name: 'compact',
     aliases: [],
     description: '触发上下文压缩，减少 token 使用',
+    group: '会话',
     handler: async (_args, ctx) => {
       const result = await ctx.compact()
       if (typeof result === 'string') {
@@ -228,6 +235,7 @@ const commands: SlashCommand[] = [
     name: 'undo',
     aliases: ['u'],
     description: '回滚到上一个 Git 检查点',
+    group: '会话',
     handler: async (_args, ctx) => {
       return await ctx.undo()
     },
@@ -236,6 +244,7 @@ const commands: SlashCommand[] = [
     name: 'resume',
     aliases: ['r'],
     description: '恢复历史会话（/resume 恢复最近一次，/resume <id> 恢复指定会话）',
+    group: '会话',
     handler: async (args, ctx) => {
       const sessionId = args.trim() || undefined
 
@@ -263,6 +272,7 @@ const commands: SlashCommand[] = [
     name: 'plan',
     aliases: [],
     description: '切换到 Plan 模式（规划→审批→执行）',
+    group: '会话',
     handler: async (_args, ctx) => {
       ctx.setSkipPlan(false)
       return '已切换到 Plan 模式（规划→审批→执行）'
@@ -272,6 +282,7 @@ const commands: SlashCommand[] = [
     name: 'auto',
     aliases: [],
     description: '切换到 Auto 模式（跳过规划，直接执行）',
+    group: '会话',
     handler: async (_args, ctx) => {
       ctx.setSkipPlan(true)
       return '已切换到 Auto 模式（跳过规划，直接执行）'
@@ -281,6 +292,7 @@ const commands: SlashCommand[] = [
     name: 'eval',
     aliases: [],
     description: '运行评估任务（nexus eval <dir> 的 TUI 入口）',
+    group: '工具',
     handler: async () => {
       return '请使用 CLI 命令: nexus eval <任务目录> [--mock] [--task <id>] [--json <file>]'
     },
@@ -289,6 +301,7 @@ const commands: SlashCommand[] = [
     name: 'status',
     aliases: ['st'],
     description: '显示各子系统健康状态（DB/CodeGraph/MCP/Watcher）',
+    group: '会话',
     handler: async (_args, ctx) => {
       const status = ctx.getStatus()
       const icon = (ok: boolean) => (ok ? '✅' : '❌')
@@ -308,6 +321,7 @@ const commands: SlashCommand[] = [
     name: 'export',
     aliases: ['e'],
     description: '导出当前会话为 Markdown 文件（/export [路径]）',
+    group: '会话',
     handler: async (args, ctx) => {
       const outputPath = args.trim() || undefined
       try {
@@ -322,6 +336,7 @@ const commands: SlashCommand[] = [
     name: 'search',
     aliases: ['s'],
     description: '搜索历史会话消息（/search <关键词>）',
+    group: '会话',
     handler: async (args, ctx) => {
       const query = args.trim()
       if (!query) {
@@ -334,6 +349,7 @@ const commands: SlashCommand[] = [
     name: 'autofix',
     aliases: ['af'],
     description: '查看或设置自动修复模式（/autofix 查看，/autofix <0-3> 设置重试次数）',
+    group: '循环',
     handler: async (args, ctx) => {
       const input = args.trim()
       if (!input) {
@@ -356,6 +372,7 @@ const commands: SlashCommand[] = [
     name: 'errors',
     aliases: ['err'],
     description: '查看最近错误报告（/errors [数量]）',
+    group: '会话',
     handler: async (args, ctx) => {
       const limit = args.trim() ? Number.parseInt(args.trim(), 10) || 10 : 10
       return ctx.getRecentErrors(limit)
@@ -365,6 +382,7 @@ const commands: SlashCommand[] = [
     name: 'plugins',
     aliases: ['plugin'],
     description: '查看已安装插件（.nexus/plugins/）',
+    group: '工具',
     handler: async (_args, ctx) => {
       return ctx.listPlugins()
     },
@@ -373,6 +391,7 @@ const commands: SlashCommand[] = [
     name: 'memory',
     aliases: ['mem'],
     description: '查看/管理学习记忆（/memory、/memory delete lesson <id>、/memory skills）',
+    group: '工具',
     handler: async (args, ctx) => {
       const [sub, kind, idStr] = args.trim().split(/\s+/)
       if (sub === 'delete' && kind && idStr) {
@@ -388,6 +407,7 @@ const commands: SlashCommand[] = [
     aliases: [],
     description:
       '目标驱动循环：重复执行直到验收条件满足（/goal <目标> [--max-rounds N] [--max-cost $]，如 /goal "让所有测试通过"）',
+    group: '循环',
     handler: async (args, ctx) => {
       const { prompt, maxRounds, maxCost } = parseGoalArgs(args)
       if (!prompt) {
@@ -420,6 +440,7 @@ const commands: SlashCommand[] = [
     aliases: [],
     description:
       '节拍循环：按间隔重复执行任务，状态持久化到 .nexus/loop-state.md（/loop <任务> [--interval 10m] [--max-rounds N] [--max-cost $]）',
+    group: '循环',
     handler: async (args, ctx) => {
       const { prompt, intervalMin, maxRounds, maxCost } = parseLoopArgs(args)
       if (!prompt) {
@@ -434,6 +455,7 @@ const commands: SlashCommand[] = [
     aliases: [],
     description:
       '本地 Automations：查看/管理 loops.toml 定时循环（/loops、/loops run-now <name>、/loops enable|disable <name>、/loops inbox）',
+    group: '循环',
     handler: async (args, ctx) => {
       if (!ctx.listLoops) return '本地 Automations 不可用（当前上下文未注入）'
       const [sub, name] = args.trim().split(/\s+/)
@@ -485,13 +507,21 @@ const commands: SlashCommand[] = [
     name: 'help',
     aliases: ['?'],
     description: '显示可用命令及其说明',
+    group: '系统',
     handler: async () => {
-      return commands
-        .map((cmd) => {
+      // 按分组渲染（每类一行，常用命令置顶），提升可发现性
+      const order: Array<SlashCommand['group']> = ['模型', '会话', '循环', '工具', '系统']
+      const sections: string[] = []
+      for (const g of order) {
+        const groupCmds = commands.filter((c) => (c.group ?? '系统') === g)
+        if (groupCmds.length === 0) continue
+        const lines = groupCmds.map((cmd) => {
           const aliasStr = cmd.aliases.length > 0 ? ` (别名: ${cmd.aliases.join(', ')})` : ''
-          return `/${cmd.name}${aliasStr} — ${cmd.description}`
+          return `  /${cmd.name}${aliasStr} — ${cmd.description}`
         })
-        .join('\n')
+        sections.push(`[${g}]\n${lines.join('\n')}`)
+      }
+      return sections.join('\n\n')
     },
   },
 ]
