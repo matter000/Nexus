@@ -90,81 +90,41 @@ Nexus 是一个运行在终端的 AI 编程助手，它能：
 
 ## 安装指南
 
-### 方式 A：直接下载独立可执行文件（无需 Bun，Windows）
+### 方式 A：一行命令安装（Windows，推荐）
 
-从 [Release v1.0.0](https://github.com/matter000/Nexus/releases/tag/v1.0.0) 下载 `nexus-windows-x64.exe`，放入 PATH 目录后即可使用：
+```powershell
+irm https://raw.githubusercontent.com/matter000/Nexus/main/install.ps1 | iex
+```
+
+脚本自动完成：下载 Release 安装包 → 安装到 `~/.nexus/bin` → 配置 PATH → 校验版本。
+
+可选参数：
+
+```powershell
+irm <url> | iex -Version 1.0.0        # 指定版本
+irm <url> | iex -InstallDir D:\tools   # 自定义安装目录
+```
+
+> 仓库转 public 后此命令对外可用；当前 private 期间可先下载脚本本地执行：`iex (irm https://raw.githubusercontent.com/matter000/Nexus/main/install.ps1)` 需认证，或直接下载 [Release 安装包](#方式-b直接下载安装包-windows)。
+> 国内网络：先开启加速器，或用代理前缀 `https://githubproxy.cc/<下载地址>`。
+
+### 方式 B：直接下载安装包（Windows）
+
+从 [Release v1.0.0](https://github.com/matter000/Nexus/releases/tag/v1.0.0) 下载 `nexus-windows-x64.exe`（约 108MB，独立可执行，无需 Bun），放入任意 PATH 目录即可：
 
 ```powershell
 nexus                      # 启动
 nexus --version            # Nexus v1.0.0
 ```
 
-> 独立 exe 已打包全部依赖（含 Ink devtools），无需安装 Bun。
-
-### 方式 B：bun link 全局安装（推荐开发使用）
-
-```bash
-cd Nexus
-bun install
-bun link                  # 全局 nexus 命令指向源码，改代码即时生效
-```
-
-### 方式 C：源码运行
-
-**第一步：安装 Bun**
-
-**Windows (PowerShell)**：
-```powershell
-irm bun.sh/install.ps1 | iex
-```
-
-安装后需要刷新 PATH（或重新打开终端）：
-```powershell
-# 临时生效（当前会话）
-$env:Path = "C:\Users\<你的用户名>\.bun\bin;" + $env:Path
-
-# 验证安装
-bun --version
-```
-
-**macOS / Linux**：
-```bash
-curl -fsSL https://bun.sh/install | bash
-
-# 重新加载 shell 配置
-source ~/.bashrc  # 或 source ~/.zshrc
-
-# 验证
-bun --version
-```
-
-**第二步：克隆项目**
+### 方式 C：bun link 全局安装（开发用）
 
 ```bash
 git clone https://github.com/matter000/Nexus.git
 cd Nexus
-```
-
-**第三步：安装依赖**
-
-```bash
 bun install
+bun link                  # 全局 nexus 命令指向源码，改代码即时生效
 ```
-
-**第四步：验证安装**
-
-```bash
-# 类型检查（确认环境正确）
-bun run lint
-
-# 运行测试
-bun test tests/unit/
-
-# 查看版本
-bun run start --version
-```
-
-如果以上命令都正常执行，安装完成。
 
 ---
 
