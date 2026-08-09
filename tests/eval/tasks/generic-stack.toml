@@ -1,0 +1,73 @@
+[id]
+name = "实现泛型 Stack"
+category = "create-file"
+difficulty = "medium"
+description = "实现泛型 Stack<T>，含 push/pop/peek/isEmpty/size，空栈 pop 抛错"
+
+[request]
+user_prompt = "在 src/stack.ts 中实现泛型 Stack<T> 类：push(item) 入栈、pop() 出栈（空栈时抛出 Error）、peek() 查看栈顶（空栈返回 undefined）、isEmpty() 判空、size 属性返回元素个数。只修改 src/stack.ts，使 tests/stack.test.ts 全部通过，不要修改测试文件"
+
+[[initial_files]]
+path = "src/stack.ts"
+content = """
+// TODO: 实现泛型 Stack<T>
+"""
+
+[[initial_files]]
+path = "tests/stack.test.ts"
+content = """
+import { describe, expect, it } from 'bun:test'
+import { Stack } from '../src/stack'
+
+describe('Stack<T>', () => {
+  it('push 后 size 增长且 peek 返回栈顶', () => {
+    const s = new Stack<number>()
+    s.push(1)
+    s.push(2)
+    expect(s.size).toBe(2)
+    expect(s.peek()).toBe(2)
+  })
+
+  it('pop 按后进先出返回', () => {
+    const s = new Stack<string>()
+    s.push('a')
+    s.push('b')
+    expect(s.pop()).toBe('b')
+    expect(s.pop()).toBe('a')
+    expect(s.isEmpty()).toBe(true)
+  })
+
+  it('空栈 pop 抛出错误', () => {
+    const s = new Stack<number>()
+    expect(() => s.pop()).toThrow()
+  })
+
+  it('空栈 peek 返回 undefined', () => {
+    const s = new Stack<number>()
+    expect(s.peek()).toBeUndefined()
+  })
+
+  it('支持任意类型（泛型）', () => {
+    const s = new Stack<{ id: number }>()
+    s.push({ id: 1 })
+    expect(s.pop()?.id).toBe(1)
+  })
+})
+"""
+
+[[validate]]
+type = "file_exists"
+path = "src/stack.ts"
+
+[[validate]]
+type = "file_contains"
+path = "src/stack.ts"
+pattern = "class Stack"
+
+[[validate]]
+type = "bash_pass"
+command = "bun test 2>&1"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/stack.ts", "tests/stack.test.ts"]

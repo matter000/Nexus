@@ -1,0 +1,78 @@
+[id]
+name = "修复配置解析崩溃"
+category = "bug-fix"
+difficulty = "medium"
+description = "parseConfig 对 null/缺字段输入崩溃，需改为返回默认值"
+
+[request]
+user_prompt = "src/config.ts 的 parseConfig 在收到 null 或缺少字段的输入时崩溃。修复它：null/undefined 输入返回默认配置；缺失字段用默认值补全；完整字段原样返回。只修改 src/config.ts，使 tests/config.test.ts 全部通过，不要修改测试文件"
+
+[[initial_files]]
+path = "src/config.ts"
+content = """
+export interface AppConfig {
+  timeout: number
+  retries: number
+  endpoint: string
+}
+
+export const DEFAULT_CONFIG: AppConfig = {
+  timeout: 30,
+  retries: 3,
+  endpoint: 'https://api.example.com',
+}
+
+export function parseConfig(raw: Record<string, unknown>): AppConfig {
+  return {
+    timeout: raw.timeout as number,
+    retries: raw.retries as number,
+    endpoint: raw.endpoint as string,
+  }
+}
+"""
+
+[[initial_files]]
+path = "tests/config.test.ts"
+content = """
+import { describe, expect, it } from 'bun:test'
+import { DEFAULT_CONFIG, parseConfig } from '../src/config'
+
+describe('parseConfig', () => {
+  it('null 输入返回默认配置', () => {
+    expect(parseConfig(null as unknown as Record<string, unknown>)).toEqual(DEFAULT_CONFIG)
+  })
+
+  it('空对象返回默认配置', () => {
+    expect(parseConfig({})).toEqual(DEFAULT_CONFIG)
+  })
+
+  it('部分字段用默认值补全', () => {
+    expect(parseConfig({ timeout: 5 })).toEqual({
+      timeout: 5,
+      retries: 3,
+      endpoint: 'https://api.example.com',
+    })
+  })
+
+  it('完整字段原样返回', () => {
+    expect(parseConfig({ timeout: 1, retries: 9, endpoint: 'x' })).toEqual({
+      timeout: 1,
+      retries: 9,
+      endpoint: 'x',
+    })
+  })
+})
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/config.ts"
+pattern = "null"
+
+[[validate]]
+type = "bash_pass"
+command = "bun test 2>&1"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/config.ts", "tests/config.test.ts"]

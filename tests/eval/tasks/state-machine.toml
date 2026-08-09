@@ -1,0 +1,70 @@
+[id]
+name = "订单状态机"
+category = "create-file"
+difficulty = "hard"
+description = "实现订单状态机：draft→paid→shipped→delivered，非法迁移抛错"
+
+[request]
+user_prompt = "在 src/order.ts 中实现 OrderMachine 类：state 初始为 'draft'；transition(event) 支持事件 pay/ship/deliver，分别将状态推进 draft→paid→shipped→delivered；非法迁移（如未支付直接 ship、重复支付、已交付后再操作）抛出 Error；getState() 返回当前状态；未知事件抛出 Error。只修改 src/order.ts，使 tests/order.test.ts 全部通过，不要修改测试文件"
+
+[[initial_files]]
+path = "src/order.ts"
+content = """
+// TODO: 实现订单状态机 OrderMachine
+"""
+
+[[initial_files]]
+path = "tests/order.test.ts"
+content = """
+import { describe, expect, it } from 'bun:test'
+import { OrderMachine } from '../src/order'
+
+describe('OrderMachine', () => {
+  it('合法迁移链路全部通过', () => {
+    const m = new OrderMachine()
+    expect(m.getState()).toBe('draft')
+    m.transition('pay')
+    expect(m.getState()).toBe('paid')
+    m.transition('ship')
+    expect(m.getState()).toBe('shipped')
+    m.transition('deliver')
+    expect(m.getState()).toBe('delivered')
+  })
+
+  it('未支付直接发货抛错', () => {
+    const m = new OrderMachine()
+    expect(() => m.transition('ship')).toThrow()
+  })
+
+  it('重复支付抛错', () => {
+    const m = new OrderMachine()
+    m.transition('pay')
+    expect(() => m.transition('pay')).toThrow()
+  })
+
+  it('已交付后再操作抛错', () => {
+    const m = new OrderMachine()
+    m.transition('pay')
+    m.transition('ship')
+    m.transition('deliver')
+    expect(() => m.transition('pay')).toThrow()
+  })
+
+  it('未知事件抛错', () => {
+    const m = new OrderMachine()
+    expect(() => m.transition('refund')).toThrow()
+  })
+})
+"""
+
+[[validate]]
+type = "file_exists"
+path = "src/order.ts"
+
+[[validate]]
+type = "bash_pass"
+command = "bun test 2>&1"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/order.ts", "tests/order.test.ts"]

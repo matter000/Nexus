@@ -174,3 +174,15 @@
 - 现状：`buildSystemPrompt` 每次 submit 调用一次，含 `git status` / `git ls-files` 等外部命令
 - 评估结论：调用频率低（每次用户输入一次，非每个 ReAct 迭代）；git 命令毫秒级开销相对 LLM 秒级延迟微不足道；缓存会引入"过期上下文"风险（用户编辑文件后 git 状态变化，缓存失效逻辑复杂）
 - 结论：暂不实施。若未来基准测试确认为瓶颈，可考虑结合 FileWatcher 对项目树做短 TTL 缓存，git status 不宜长缓存
+
+### eval 任务集扩充（已完成，2026-08）
+
+- 任务数 15 → 23：新增 8 个任务（generic-stack / error-path / json-parse-tolerance / perf-dedup / state-machine / backward-compat-rename / test-first-multiply / email-validation），覆盖泛型、错误处理、JSON 容错、性能重构、状态机、向后兼容重命名、测试先行等此前缺失的主题
+- 难度分布：easy 7 / medium 11 / hard 5；全部仅用现有 7 种验证规则（含 bash_pass 跑 fixture 内测试的真实行为验证），零 harness 代码变更
+- CI mock 门阈值同步 15 → 23（`.github/workflows/ci.yml`）
+
+### 云端调度模板（已完成，2026-08）
+
+- 交付 `.github/workflows/nexus-cloud-automation.yml`（模板，默认不启用）+ `docs/CLOUD_SCHEDULING.md`（映射表/启用 5 步/防失忆/多任务扩展/安全成本）
+- 复用 `--non-interactive --output json` CLI 入口，零运行时代码变更；prompt 与 workflow 解耦（.nexus/cloud-tasks/<name>.prompt）
+- 不实际启用任何定时 workflow；用户按文档自行启用（GitHub Actions cron 最小粒度 5 分钟）

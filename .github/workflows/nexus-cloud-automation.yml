@@ -1,0 +1,55 @@
+# Nexus Cloud Automation (template)
+# ────────────────────────────────────────────────────────────────
+# 云端调度模板：让 Nexus 任务在本地关机/合盖后照常运行。
+# 默认只支持手动触发（workflow_dispatch），不会自动运行。
+# 启用方法见 docs/CLOUD_SCHEDULING.md。
+#
+# 使用方法：
+#   1. 在仓库 Secrets 添加 NEXUS_API_KEY（Provider Key，与 NEXUS_EVAL_API_KEY 同通道）
+#   2. 创建任务 prompt 文件 .nexus/cloud-tasks/<name>.prompt（改文件即换任务，无需改本 workflow）
+#   3. 取消下方 schedule 注释（cron 为 UTC 时间）启用定时
+#   4. Actions → 本 workflow → Run workflow 手动试跑
+# 多任务：复制本 job 或改为 matrix（见 docs/CLOUD_SCHEDULING.md「多任务扩展」）
+
+name: Nexus Cloud Automation (template)
+
+on:
+  workflow_dispatch:
+  # schedule:               # 启用定时时取消注释（示例：每日 02:00 UTC）
+  #   - cron: '0 2 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  run-task:
+    runs-on: ubuntu-latest
+    env:
+      # Provider Key：Nexus 从环境变量读取（DEEPSEEK/ANTHROPIC/OPENAI 等）
+      DEEPSEEK_API_KEY: ${{ secrets.NEXUS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run Nexus task
+        # 任务 prompt 从仓库 .nexus/cloud-tasks/<name>.prompt 读取；
+        # --non-interactive 无审批运行，--output json 结构化结果；
+        # 成本由会话默认 max_session_cost（$5）兜底
+        run: |
+          bun run src/index.ts --non-interactive --output json "$(cat .nexus/cloud-tasks/ci-daily.prompt)"
+
+      - name: Commit loop state
+        # 防失忆：loop-state 文件写回仓库，下一轮从上次进度继续
+        run: |
+          git config user.name "nexus-bot"
+          git config user.email "nexus-bot@users.noreply.github.com"
+          git add .nexus/loop-state*.md 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "chore: update loop state [skip ci]"
+          git push

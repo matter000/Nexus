@@ -1,0 +1,65 @@
+[id]
+name = "去重性能优化"
+category = "refactor"
+difficulty = "hard"
+description = "O(n²) 的 indexOf 去重改为 Set 实现且保持顺序"
+
+[request]
+user_prompt = "src/dedupe.ts 的 dedupe 使用 indexOf 实现 O(n²) 去重。重构为使用 Set 的 O(n) 实现，且保持元素首次出现的顺序不变。只修改 src/dedupe.ts，使 tests/dedupe.test.ts 全部通过，不要修改测试文件"
+
+[[initial_files]]
+path = "src/dedupe.ts"
+content = """
+export function dedupe(items: number[]): number[] {
+  const result: number[] = []
+  for (const item of items) {
+    if (result.indexOf(item) === -1) {
+      result.push(item)
+    }
+  }
+  return result
+}
+"""
+
+[[initial_files]]
+path = "tests/dedupe.test.ts"
+content = """
+import { describe, expect, it } from 'bun:test'
+import { dedupe } from '../src/dedupe'
+
+describe('dedupe', () => {
+  it('去除重复元素', () => {
+    expect(dedupe([1, 2, 2, 3, 1])).toEqual([1, 2, 3])
+  })
+
+  it('保持首次出现顺序', () => {
+    expect(dedupe([3, 1, 3, 2, 1, 2])).toEqual([3, 1, 2])
+  })
+
+  it('空数组', () => {
+    expect(dedupe([])).toEqual([])
+  })
+
+  it('无重复原样返回', () => {
+    expect(dedupe([5, 4, 3])).toEqual([5, 4, 3])
+  })
+})
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/dedupe.ts"
+pattern = "Set"
+
+[[validate]]
+type = "file_not_contains"
+path = "src/dedupe.ts"
+pattern = "indexOf"
+
+[[validate]]
+type = "bash_pass"
+command = "bun test 2>&1"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/dedupe.ts", "tests/dedupe.test.ts"]

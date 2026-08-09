@@ -1,0 +1,80 @@
+[id]
+name = "向后兼容重命名"
+category = "multi-file"
+difficulty = "hard"
+description = "新增 formatDateV2 并保留 formatDate 旧名 alias，调用点更新"
+
+[request]
+user_prompt = "1) 在 src/format.ts 新增 formatDateV2(date)，输出 'YYYY/MM/DD' 斜杠格式；2) 保留 formatDate 作为 formatDateV2 的别名（旧调用方不破坏，名称仍可用）；3) 在 src/index.ts 中改用 formatDateV2 格式化日期。只修改 src/format.ts 与 src/index.ts，使 tests/format.test.ts 全部通过，不要修改测试文件"
+
+[[initial_files]]
+path = "src/format.ts"
+content = """
+export function formatDate(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+"""
+
+[[initial_files]]
+path = "src/index.ts"
+content = """
+import { formatDate } from './format'
+
+export function reportToday(date: Date): string {
+  return `Report for ${formatDate(date)}`
+}
+"""
+
+[[initial_files]]
+path = "tests/format.test.ts"
+content = """
+import { describe, expect, it } from 'bun:test'
+import { formatDate, formatDateV2 } from '../src/format'
+import { reportToday } from '../src/index'
+
+const d = new Date(2026, 7, 9)
+
+describe('formatDateV2', () => {
+  it('输出斜杠格式', () => {
+    expect(formatDateV2(d)).toBe('2026/08/09')
+  })
+})
+
+describe('formatDate（向后兼容别名）', () => {
+  it('旧函数名仍可用且输出新格式', () => {
+    expect(formatDate(d)).toBe('2026/08/09')
+  })
+})
+
+describe('reportToday', () => {
+  it('调用点使用新格式', () => {
+    expect(reportToday(d)).toBe('Report for 2026/08/09')
+  })
+})
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/format.ts"
+pattern = "formatDateV2"
+
+[[validate]]
+type = "file_contains"
+path = "src/format.ts"
+pattern = "formatDate"
+
+[[validate]]
+type = "file_contains"
+path = "src/index.ts"
+pattern = "formatDateV2"
+
+[[validate]]
+type = "bash_pass"
+command = "bun test 2>&1"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/format.ts", "src/index.ts", "tests/format.test.ts"]

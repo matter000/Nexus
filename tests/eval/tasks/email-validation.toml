@@ -1,0 +1,58 @@
+[id]
+name = "修复邮箱校验正则"
+category = "bug-fix"
+difficulty = "easy"
+description = "邮箱正则误匹配无域名邮箱（a@b），需修复校验逻辑"
+
+[request]
+user_prompt = "src/email.ts 的 isValidEmail 正则过于宽松，'a@b'（无顶级域名）被误判为合法。修复校验逻辑：必须包含 @ 且 @ 前后非空；@ 后必须包含 '.' 且点号不在首尾。只修改 src/email.ts，使 tests/email.test.ts 全部通过，不要修改测试文件"
+
+[[initial_files]]
+path = "src/email.ts"
+content = """
+export function isValidEmail(email: string): boolean {
+  return /^[^@\\s]+@[^@\\s]+$/.test(email)
+}
+"""
+
+[[initial_files]]
+path = "tests/email.test.ts"
+content = """
+import { describe, expect, it } from 'bun:test'
+import { isValidEmail } from '../src/email'
+
+describe('isValidEmail', () => {
+  it('合法邮箱', () => {
+    expect(isValidEmail('user@example.com')).toBe(true)
+  })
+
+  it('无 @ 返回 false', () => {
+    expect(isValidEmail('userexample.com')).toBe(false)
+  })
+
+  it('无顶级域名（a@b）返回 false', () => {
+    expect(isValidEmail('a@b')).toBe(false)
+  })
+
+  it('空字符串返回 false', () => {
+    expect(isValidEmail('')).toBe(false)
+  })
+
+  it('@ 后点号在末尾返回 false', () => {
+    expect(isValidEmail('a@b.')).toBe(false)
+  })
+})
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/email.ts"
+pattern = "isValidEmail"
+
+[[validate]]
+type = "bash_pass"
+command = "bun test 2>&1"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/email.ts", "tests/email.test.ts"]

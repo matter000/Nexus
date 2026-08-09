@@ -42,7 +42,7 @@ jobs:
       - name: Eval harness gate (mock mode)
         run: |
           bun run src/index.ts eval tests/eval/tasks --mock --json eval-report.json || true
-          bun -e "const r = JSON.parse(await Bun.file('eval-report.json').text()); if (!r || r.tasksTotal < 15) { console.error('Eval regression: only ' + (r ? r.tasksTotal : 0) + ' tasks loaded'); process.exit(1) } console.log('Eval harness OK: ' + r.tasksTotal + ' tasks executed end-to-end')"
+          bun -e "const r = JSON.parse(await Bun.file('eval-report.json').text()); if (!r || r.tasksTotal < 23) { console.error('Eval regression: only ' + (r ? r.tasksTotal : 0) + ' tasks loaded'); process.exit(1) } console.log('Eval harness OK: ' + r.tasksTotal + ' tasks executed end-to-end')"
 
       - name: Eval real-mode regression (easy tasks, gated by secret)
         if: ${{ env.NEXUS_EVAL_API_KEY != '' }}

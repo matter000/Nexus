@@ -1,0 +1,68 @@
+[id]
+name = "JSON 日志解析容错"
+category = "bug-fix"
+difficulty = "medium"
+description = "loadLogs 遇坏行整体抛错，需跳过坏行返回剩余行"
+
+[request]
+user_prompt = "src/logs.ts 的 loadLogs 在遇到任一行 JSON 解析失败时整体抛错。修复：跳过解析失败的行，只返回能解析的行；空输入与全坏行返回空数组。只修改 src/logs.ts，使 tests/logs.test.ts 全部通过，不要修改测试文件"
+
+[[initial_files]]
+path = "src/logs.ts"
+content = """
+export interface LogEntry {
+  level: string
+  message: string
+}
+
+export function loadLogs(raw: string): LogEntry[] {
+  const lines = raw.split('\\n').filter((l) => l.trim() !== '')
+  return lines.map((line) => JSON.parse(line) as LogEntry)
+}
+"""
+
+[[initial_files]]
+path = "tests/logs.test.ts"
+content = """
+import { describe, expect, it } from 'bun:test'
+import { loadLogs } from '../src/logs'
+
+describe('loadLogs', () => {
+  it('正常行全部解析', () => {
+    const raw = '{"level":"info","message":"start"}\\n{"level":"warn","message":"slow"}'
+    expect(loadLogs(raw)).toEqual([
+      { level: 'info', message: 'start' },
+      { level: 'warn', message: 'slow' },
+    ])
+  })
+
+  it('坏行被跳过，好行保留', () => {
+    const raw = '{"level":"info","message":"ok"}\\nnot-json\\n{"level":"error","message":"bad"}'
+    expect(loadLogs(raw)).toEqual([
+      { level: 'info', message: 'ok' },
+      { level: 'error', message: 'bad' },
+    ])
+  })
+
+  it('空输入返回空数组', () => {
+    expect(loadLogs('')).toEqual([])
+  })
+
+  it('全部坏行返回空数组', () => {
+    expect(loadLogs('garbage\\nalso-garbage')).toEqual([])
+  })
+})
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/logs.ts"
+pattern = "JSON.parse"
+
+[[validate]]
+type = "bash_pass"
+command = "bun test 2>&1"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/logs.ts", "tests/logs.test.ts"]

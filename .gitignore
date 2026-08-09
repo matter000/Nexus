@@ -34,6 +34,7 @@ Thumbs.db
 # Temp files
 *.nexus-tmp-*
 *.log
+eval-report*.json
 
 # Logo/image assets (binary files not uploaded)
 assets/*.png

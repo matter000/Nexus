@@ -1,0 +1,47 @@
+[id]
+name = "测试先行乘法修复"
+category = "add-test"
+difficulty = "medium"
+description = "先补全测试用例，再修复 multiply 的错误实现（返回 a+b 而非 a*b）"
+
+[request]
+user_prompt = "src/multiply.ts 的 multiply 实现有 bug（返回 a+b 而非 a*b）。请遵循测试先行：1) 先在 tests/multiply.test.ts 补全至少 4 个用例（正数相乘、负数相乘、乘以零、小数结果），删除占位用例；2) 再修复 src/multiply.ts 使所有测试通过"
+
+[[initial_files]]
+path = "src/multiply.ts"
+content = """
+export function multiply(a: number, b: number): number {
+  return a + b
+}
+"""
+
+[[initial_files]]
+path = "tests/multiply.test.ts"
+content = """
+import { describe, expect, it } from 'bun:test'
+import { multiply } from '../src/multiply'
+
+describe('multiply', () => {
+  it('占位用例：请在此补充至少 4 个用例后删除本用例', () => {
+    expect(true).toBe(true)
+  })
+})
+"""
+
+[[validate]]
+type = "file_contains"
+path = "tests/multiply.test.ts"
+pattern = "expect("
+
+[[validate]]
+type = "file_not_contains"
+path = "tests/multiply.test.ts"
+pattern = "占位用例"
+
+[[validate]]
+type = "bash_pass"
+command = "bun test 2>&1"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/multiply.ts", "tests/multiply.test.ts"]
