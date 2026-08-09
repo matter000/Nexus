@@ -8,6 +8,7 @@
 import { readdir, readFile } from 'fs/promises'
 import { extname, join, relative } from 'path'
 import ts from 'typescript'
+import { GraphCache, hashContent } from './GraphCache'
 import { getParserForFile, getSupportedExtensions } from './parsers/index'
 
 export interface CodeSymbol {
@@ -34,6 +35,8 @@ export interface CodeGraph {
   symbolIndex: Map<string, CodeSymbol[]>
   /** 文件 → 依赖的文件 */
   dependencyGraph: Map<string, string[]>
+  /** 磁盘缓存（可选）：内容哈希增量解析，避免每会话全量重建 */
+  cache?: GraphCache
 }
 
 // ─── GraphEngine 接口 (零改动迁移保证) ─────────────────────────────────────
@@ -76,8 +79,8 @@ export interface CodeGraph {
  * ```
  */
 export interface GraphEngine {
-  /** 构建全量代码图谱 */
-  buildGraph(projectRoot: string): Promise<CodeGraph>
+  /** 构建全量代码图谱（cache 可选：内容哈希增量缓存） */
+  buildGraph(projectRoot: string, cache?: GraphCache): Promise<CodeGraph>
 
   /** 查询符号定义(跨文件) */
   querySymbol(name: string): Promise<CodeSymbol[]>
@@ -314,6 +317,77 @@ function parseSourceFile(
   return { symbols, imports, lineCount }
 }
 
+// ─── 共享图谱写入辅助 ──────────────────────────────────────────────────────
+
+/** 解析 imports 为依赖列表（相对路径拼接，外部包记包名） */
+function resolveDependencies(relPath: string, imports: string[]): string[] {
+  const resolvedDeps: string[] = []
+  for (const imp of imports) {
+    if (imp.startsWith('.')) {
+      const dir = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : ''
+      resolvedDeps.push(join(dir, imp).replace(/\\/g, '/'))
+    } else {
+      resolvedDeps.push(imp)
+    }
+  }
+  return resolvedDeps
+}
+
+/** 把文件骨架应用到图谱（files + 符号索引 + 依赖图） */
+function applySkeletonToGraph(graph: CodeGraph, skeleton: FileSkeleton): void {
+  graph.files.set(skeleton.filePath, skeleton)
+  for (const symbol of skeleton.symbols) {
+    const existing = graph.symbolIndex.get(symbol.name) ?? []
+    existing.push(symbol)
+    graph.symbolIndex.set(symbol.name, existing)
+  }
+  graph.dependencyGraph.set(
+    skeleton.filePath,
+    resolveDependencies(skeleton.filePath, skeleton.imports),
+  )
+}
+
+/**
+ * 解析单个文件内容为骨架（TS/JS 用 Compiler API，其他语言优先 tree-sitter 后降级正则）。
+ * 不支持/解析失败时返回 null。
+ */
+async function parseFileSkeleton(content: string, relPath: string): Promise<FileSkeleton | null> {
+  const ext = extname(relPath)
+  let symbols: CodeSymbol[]
+  let imports: string[]
+  let lineCount: number
+
+  if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts'].includes(ext)) {
+    const parsed = parseSourceFile(content, relPath)
+    symbols = parsed.symbols
+    imports = parsed.imports
+    lineCount = parsed.lineCount
+  } else {
+    // 尝试 tree-sitter（懒加载 WASM grammar，失败降级正则）
+    let parsed: { symbols: CodeSymbol[]; imports: string[] } | null = null
+    try {
+      const { parseWithTreeSitter } = await import('./parsers/treesitter')
+      parsed = await parseWithTreeSitter(content, relPath)
+    } catch {
+      // tree-sitter 不可用（grammar 加载失败或模块不存在），降级
+    }
+    if (parsed) {
+      symbols = parsed.symbols
+      imports = parsed.imports
+      lineCount = content.split('\n').length
+    } else {
+      const parser = getParserForFile(relPath)
+      if (!parser) return null
+      const regexParsed = parser.parse(content, relPath)
+      symbols = regexParsed.symbols
+      imports = regexParsed.imports
+      lineCount = content.split('\n').length
+    }
+  }
+
+  return { filePath: relPath, symbols, imports, lineCount }
+}
+
 // ─── TypeScript 默认实现 ─────────────────────────────────────────────────
 
 /**
@@ -328,9 +402,12 @@ export class TypeScriptGraphEngine implements GraphEngine {
     dependencyGraph: new Map(),
   }
   private projectRoot: string = ''
+  /** 内容哈希增量缓存（可选，未提供时全量解析） */
+  private cache: GraphCache | null = null
 
-  async buildGraph(projectRoot: string): Promise<CodeGraph> {
+  async buildGraph(projectRoot: string, cache?: GraphCache): Promise<CodeGraph> {
     this.projectRoot = projectRoot
+    this.cache = cache ?? null
     this.graph = { files: new Map(), symbolIndex: new Map(), dependencyGraph: new Map() }
 
     const files = await collectFiles(projectRoot, projectRoot)
@@ -341,6 +418,8 @@ export class TypeScriptGraphEngine implements GraphEngine {
       await this.parseAndAddFile(relPath, isLargeProject)
     }
 
+    // 缓存挂到图谱上，供后续增量更新（updateCodeGraph）复用
+    this.graph.cache = this.cache ?? undefined
     return this.graph
   }
 
@@ -377,7 +456,7 @@ export class TypeScriptGraphEngine implements GraphEngine {
     return true
   }
 
-  /** 解析并添加单个文件到图谱 */
+  /** 解析并添加单个文件到图谱（优先命中内容哈希缓存，避免重复 AST 解析） */
   private async parseAndAddFile(relPath: string, topOnly: boolean): Promise<void> {
     const absPath = join(this.projectRoot, relPath)
     let content: string
@@ -387,66 +466,19 @@ export class TypeScriptGraphEngine implements GraphEngine {
       return // 文件不可读,跳过
     }
 
+    // 缓存命中：内容未变，直接复用已解析的骨架
+    const contentHash = hashContent(content)
+    const cached = this.cache?.get(relPath, contentHash)
+    if (cached) {
+      applySkeletonToGraph(this.graph, cached)
+      return
+    }
+
     try {
-      const ext = extname(relPath)
-      let symbols: CodeSymbol[]
-      let imports: string[]
-      let lineCount: number
-
-      // TS/JS 用精确 TypeScript Compiler API，其他语言优先 tree-sitter 后降级正则
-      if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts'].includes(ext)) {
-        const parsed = parseSourceFile(content, relPath)
-        symbols = parsed.symbols
-        imports = parsed.imports
-        lineCount = parsed.lineCount
-      } else {
-        // 尝试 tree-sitter（懒加载 WASM grammar，失败不阻塞）
-        let parsed: { symbols: CodeSymbol[]; imports: string[] } | null = null
-        try {
-          const { parseWithTreeSitter } = await import('./parsers/treesitter')
-          parsed = await parseWithTreeSitter(content, relPath)
-        } catch {
-          // tree-sitter 不可用（grammar 加载失败或模块不存在），降级
-        }
-        if (parsed) {
-          symbols = parsed.symbols
-          imports = parsed.imports
-          lineCount = content.split('\n').length
-        } else {
-          // 降级：回退到正则 parser
-          const parser = getParserForFile(relPath)
-          if (!parser) return
-          const regexParsed = parser.parse(content, relPath)
-          symbols = regexParsed.symbols
-          imports = regexParsed.imports
-          lineCount = content.split('\n').length
-        }
-      }
-
-      const skeleton: FileSkeleton = { filePath: relPath, symbols, imports, lineCount }
-      this.graph.files.set(relPath, skeleton)
-
-      // Build symbol index
-      for (const symbol of symbols) {
-        const existing = this.graph.symbolIndex.get(symbol.name) ?? []
-        existing.push(symbol)
-        this.graph.symbolIndex.set(symbol.name, existing)
-      }
-
-      // Build dependency graph (resolve relative imports)
-      const resolvedDeps: string[] = []
-      for (const imp of imports) {
-        if (imp.startsWith('.')) {
-          // Resolve relative import path
-          const dir = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : ''
-          const resolved = join(dir, imp).replace(/\\/g, '/')
-          resolvedDeps.push(resolved)
-        } else {
-          // External package - just record the package name
-          resolvedDeps.push(imp)
-        }
-      }
-      this.graph.dependencyGraph.set(relPath, resolvedDeps)
+      const skeleton = await parseFileSkeleton(content, relPath)
+      if (!skeleton) return
+      this.cache?.set(relPath, contentHash, skeleton)
+      applySkeletonToGraph(this.graph, skeleton)
     } catch {
       // 单个文件解析失败不阻塞整个图谱构建
     }
@@ -487,11 +519,19 @@ export function createGraphEngine(): GraphEngine {
 }
 
 /**
- * 构建代码图谱(便捷函数,委托给 GraphEngine)
+ * 构建代码图谱(便捷函数,委托给 GraphEngine)。
+ * 自动挂载 SQLite 内容哈希缓存：未变更文件跳过 AST 重解析，
+ * 大仓库会话启动不再全量重建；缓存不可用时静默回退全量解析。
  */
 export async function buildCodeGraph(projectRoot: string): Promise<CodeGraph> {
+  let cache: GraphCache | null = null
+  try {
+    cache = new GraphCache(projectRoot)
+  } catch {
+    cache = null // 缓存不可用不影响图谱构建
+  }
   const engine = createGraphEngine()
-  return engine.buildGraph(projectRoot)
+  return engine.buildGraph(projectRoot, cache ?? undefined)
 }
 
 /**
@@ -569,7 +609,7 @@ function removeFileFromGraph(graph: CodeGraph, filePath: string): void {
   graph.dependencyGraph.delete(filePath)
 }
 
-/** 解析单个文件并添加到 graph（文件不存在时静默跳过） */
+/** 解析单个文件并添加到 graph（优先命中内容哈希缓存；文件不存在时静默跳过） */
 async function parseAndAddToGraph(
   graph: CodeGraph,
   relPath: string,
@@ -583,62 +623,19 @@ async function parseAndAddToGraph(
     return // 文件不可读（可能已删除），静默跳过
   }
 
+  // 缓存命中：内容未变，直接复用骨架（增量更新场景下避免重复解析）
+  const contentHash = hashContent(content)
+  const cached = graph.cache?.get(relPath, contentHash)
+  if (cached) {
+    applySkeletonToGraph(graph, cached)
+    return
+  }
+
   try {
-    const ext = extname(relPath)
-    let symbols: CodeSymbol[]
-    let imports: string[]
-    let lineCount: number
-
-    if (['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts'].includes(ext)) {
-      const parsed = parseSourceFile(content, relPath)
-      symbols = parsed.symbols
-      imports = parsed.imports
-      lineCount = parsed.lineCount
-    } else {
-      // 尝试 tree-sitter（懒加载，失败降级正则）
-      let parsed: { symbols: CodeSymbol[]; imports: string[] } | null = null
-      try {
-        const { parseWithTreeSitter } = await import('./parsers/treesitter')
-        parsed = await parseWithTreeSitter(content, relPath)
-      } catch {
-        /* 降级 */
-      }
-      if (parsed) {
-        symbols = parsed.symbols
-        imports = parsed.imports
-        lineCount = content.split('\n').length
-      } else {
-        const parser = getParserForFile(relPath)
-        if (!parser) return
-        const regexParsed = parser.parse(content, relPath)
-        symbols = regexParsed.symbols
-        imports = regexParsed.imports
-        lineCount = content.split('\n').length
-      }
-    }
-
-    const skeleton: FileSkeleton = { filePath: relPath, symbols, imports, lineCount }
-    graph.files.set(relPath, skeleton)
-
-    // 重建符号索引
-    for (const symbol of symbols) {
-      const existing = graph.symbolIndex.get(symbol.name) ?? []
-      existing.push(symbol)
-      graph.symbolIndex.set(symbol.name, existing)
-    }
-
-    // 重建依赖图
-    const resolvedDeps: string[] = []
-    for (const imp of imports) {
-      if (imp.startsWith('.')) {
-        const dir = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : ''
-        const resolved = join(dir, imp).replace(/\\/g, '/')
-        resolvedDeps.push(resolved)
-      } else {
-        resolvedDeps.push(imp)
-      }
-    }
-    graph.dependencyGraph.set(relPath, resolvedDeps)
+    const skeleton = await parseFileSkeleton(content, relPath)
+    if (!skeleton) return
+    graph.cache?.set(relPath, contentHash, skeleton)
+    applySkeletonToGraph(graph, skeleton)
   } catch {
     // 单个文件解析失败不阻塞
   }

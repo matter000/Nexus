@@ -1,37 +1,47 @@
 /**
  * 外部 MCP Server 接入
- * 通过 stdio transport 连接外部 MCP Server
- * 使用 @modelcontextprotocol/sdk 的 Client + StdioClientTransport
+ * 支持两种 transport（截至 2026-08 MCP 生态现状）：
+ * - stdio：本地子进程（command + args），经典方式
+ * - Streamable HTTP：远程服务（url），2025 年后 MCP 远程接入的主流传输
+ * 使用 @modelcontextprotocol/sdk 的 Client + 对应 transport
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { ToolDefinition, ToolResult } from '../agent/types'
 import type { ToolContext, ToolHandler } from './registry'
 
 export interface ExternalServerConfig {
   name: string
-  command: string
-  args: string[]
+  /** stdio 模式：启动命令（与 url 二选一） */
+  command?: string
+  /** stdio 模式：命令参数 */
+  args?: string[]
   env?: Record<string, string>
+  /** HTTP 模式：远程 MCP 服务地址（与 command 二选一） */
+  url?: string
+  /** 是否启用（默认 true；false 时注册但跳过连接） */
+  enabled?: boolean
 }
 
 /** Server 状态信息 */
 export interface ServerStatus {
   name: string
-  command: string
-  args: string[]
+  /** 连接方式描述（stdio 命令或 HTTP URL） */
+  transport: string
   connected: boolean
   toolCount: number
+  enabled: boolean
 }
 
 /** 连接超时时间 (30 秒) */
 const CONNECT_TIMEOUT_MS = 30_000
 
-/** MCP Client 实例及其关联 transport */
+/** MCP Client 实例及其关联 transport（stdio 与 HTTP 两种） */
 interface ManagedConnection {
   client: Client
-  transport: StdioClientTransport
+  transport: StdioClientTransport | StreamableHTTPClientTransport
   config: ExternalServerConfig
 }
 
@@ -48,21 +58,21 @@ export class ExternalMCPManager {
     this.servers.set(config.name, config)
   }
 
-  /** 连接到外部 Server (通过 stdio JSON-RPC) */
+  /** 连接到外部 Server (stdio 或 Streamable HTTP) */
   async connect(name: string): Promise<boolean> {
     const config = this.servers.get(name)
     if (!config) return false
+    if (config.enabled === false) return false
 
     // 已连接则直接返回
     if (this.connections.has(name)) return true
 
     try {
-      const transport = new StdioClientTransport({
-        command: config.command,
-        args: config.args,
-        env: config.env ? ({ ...process.env, ...config.env } as Record<string, string>) : undefined,
-        stderr: 'pipe',
-      })
+      const transport = this.createTransport(config)
+      if (!transport) {
+        console.error(`[MCP] "${name}" 配置无效：需 command(stdio) 或 url(HTTP) 之一`)
+        return false
+      }
 
       const client = new Client({ name: 'nexus', version: '0.1.0' }, { capabilities: {} })
 
@@ -215,10 +225,10 @@ export class ExternalMCPManager {
       }
       statuses.push({
         name,
-        command: config.command,
-        args: config.args,
+        transport: config.url ?? `${config.command ?? ''} ${(config.args ?? []).join(' ')}`.trim(),
         connected,
         toolCount,
+        enabled: config.enabled !== false,
       })
     }
     return statuses
@@ -235,6 +245,24 @@ export class ExternalMCPManager {
     return Array.from(this.servers.values())
   }
 
+  /** 根据配置创建对应 transport：url → Streamable HTTP，command → stdio */
+  private createTransport(
+    config: ExternalServerConfig,
+  ): StdioClientTransport | StreamableHTTPClientTransport | null {
+    if (config.url) {
+      return new StreamableHTTPClientTransport(new URL(config.url))
+    }
+    if (config.command) {
+      return new StdioClientTransport({
+        command: config.command,
+        args: config.args ?? [],
+        env: config.env ? ({ ...process.env, ...config.env } as Record<string, string>) : undefined,
+        stderr: 'pipe',
+      })
+    }
+    return null
+  }
+
   isConnected(name: string): boolean {
     return this.connections.has(name)
   }
@@ -242,9 +270,13 @@ export class ExternalMCPManager {
   /** 根据错误信息给出排查建议 */
   private getConnectionHint(name: string, errorMsg: string): string {
     const hints: string[] = []
+    const config = this.servers.get(name)
+    const target = config?.url ?? config?.command ?? ''
     if (errorMsg.includes('ENOENT') || errorMsg.includes('not found')) {
-      hints.push(`排查: 命令 "${this.servers.get(name)?.command}" 可能未安装或不在 PATH 中`)
+      hints.push(`排查: 命令 "${target}" 可能未安装或不在 PATH 中`)
       hints.push('排查: 尝试在终端手动运行该命令确认可用性')
+    } else if (errorMsg.includes('Invalid URL') || errorMsg.includes('fetch failed')) {
+      hints.push(`排查: 远程 MCP 服务 "${target}" 不可达，检查 URL 与网络`)
     } else if (errorMsg.includes('timeout') || errorMsg.includes('超时')) {
       hints.push('排查: Server 启动过慢,可尝试增大 CONNECT_TIMEOUT_MS')
       hints.push('排查: 检查网络连接(npx 需要下载包时可能较慢)')
@@ -252,7 +284,7 @@ export class ExternalMCPManager {
       hints.push('排查: 权限不足,检查命令执行权限')
     } else {
       hints.push('排查: 在终端手动运行命令确认是否正常')
-      hints.push('排查: 检查 args 参数是否正确')
+      hints.push('排查: 检查 args/url 参数是否正确')
     }
     return hints.join('\n')
   }

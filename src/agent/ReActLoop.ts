@@ -15,7 +15,7 @@
  * - 429 重试尊重服务端 Retry-After 响应头
  */
 
-import { APICallError, type LanguageModel, streamText } from 'ai'
+import { APICallError, type LanguageModel, stepCountIs, streamText } from 'ai'
 import type { CostTracker } from '../router/CostTracker'
 import { parseDeepSeekError } from '../router/providers/deepseekErrors'
 import { withDeepSeekThinking } from '../router/providers/deepseekFetch'
@@ -24,8 +24,8 @@ import { callWithRetry } from '../utils'
 import { logLLMRequest, logLLMResponse } from '../utils/debugLog'
 import type { ModelRole, NexusEvent } from './types'
 
-/** streamText 已知的顶层参数键，其余键收进 providerOptions.openai 透传 */
-const KNOWN_TOP_LEVEL_PARAMS = new Set(['temperature', 'topP', 'maxTokens'])
+/** streamText 已知的顶层参数键，其余键收进 providerOptions.openai 透传（v6: maxTokens 已改名 maxOutputTokens） */
+const KNOWN_TOP_LEVEL_PARAMS = new Set(['temperature', 'topP', 'maxOutputTokens'])
 
 /** 流停滞看门狗：连续无 chunk 超过该时长判定为连接挂起，中止并交由重试兜底 */
 const STREAM_STALL_TIMEOUT_MS =
@@ -61,14 +61,37 @@ async function awaitWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T |
  * 但 SDK 输入要求 tool-call 位于 content 部件数组中——否则发出的 assistant
  * 消息不含 tool_calls，后续的 tool 消息会被 DeepSeek 以 400 拒绝
  * （“Messages with role 'tool' must be a response to a preceding message with 'tool_calls'”）。
+ *
+ * @param options.anthropicCacheBreakpoint 为 true 时给第一条 system 消息附
+ *   providerOptions.anthropic.cacheControl（Anthropic 显式前缀缓存断点，
+ *   API 已按 AI SDK v4 官方文档验证：stable 段按缓存读取价计费）
  */
-function normalizeMessagesForSDK(messages: LLMCallConfig['messages']): unknown[] {
+export function normalizeMessagesForSDK(
+  messages: LLMCallConfig['messages'],
+  options?: { anthropicCacheBreakpoint?: boolean },
+): unknown[] {
+  let cacheAttached = false
   return messages.map((m) => {
     const withCalls = m as {
       role: string
       content?: string
       reasoning?: string
       toolCalls?: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
+    }
+    // Anthropic 缓存断点：附在第一条 system 消息（stable 段）上，
+    // 断点前的前缀（system 参数 + stable）跨轮命中缓存
+    if (
+      options?.anthropicCacheBreakpoint &&
+      !cacheAttached &&
+      withCalls.role === 'system' &&
+      typeof withCalls.content === 'string'
+    ) {
+      cacheAttached = true
+      return {
+        role: 'system',
+        content: withCalls.content,
+        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+      }
     }
     if (withCalls.role === 'assistant' && Array.isArray(withCalls.toolCalls)) {
       return {
@@ -80,9 +103,25 @@ function normalizeMessagesForSDK(messages: LLMCallConfig['messages']): unknown[]
             type: 'tool-call',
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
-            args: tc.args,
+            input: tc.args,
           })),
         ],
+      }
+    }
+    // tool 消息：v6 部件字段 result → output（判别联合 {type:'text'|'json', value}）
+    if (withCalls.role === 'tool' && Array.isArray(withCalls.content)) {
+      return {
+        role: 'tool',
+        content: (withCalls.content as unknown as Array<Record<string, unknown>>).map((part) => ({
+          type: 'tool-result',
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          // v6 要求 output 为判别联合：字符串结果走 text，非字符串走 json
+          output:
+            typeof part.result === 'string'
+              ? { type: 'text', value: part.result }
+              : { type: 'json', value: part.result },
+        })),
       }
     }
     return m
@@ -134,6 +173,9 @@ export function splitModelParameters(modelParameters?: Record<string, unknown>):
   for (const [key, value] of Object.entries(modelParameters ?? {})) {
     if (key === 'thinking') {
       thinking = value
+    } else if (key === 'maxTokens') {
+      // v6: 旧键名 maxTokens 映射为顶层 maxOutputTokens（provider 层无需改键）
+      topLevel.maxOutputTokens = value
     } else if (KNOWN_TOP_LEVEL_PARAMS.has(key)) {
       topLevel[key] = value
     } else {
@@ -217,6 +259,8 @@ export interface CostRecordConfig {
   costPer1kOutput: number
   /** 缓存命中输入单价（每 1k），DeepSeek 分级计费用 */
   costPer1kInputCached?: number
+  /** 模型上下文窗口大小（token），随 cost_update 事件上报供利用率观测 */
+  contextWindow?: number
 }
 
 export interface ReActCallbacks {
@@ -275,15 +319,22 @@ export async function callLLMWithRetry(
         }
 
         // 构建 streamText 参数：合并 provider 特定参数
+        // Anthropic 前缀缓存：provider 为 anthropic 时给第一条 system 消息（stable 段）
+        // 附 cacheControl 断点；DeepSeek/OpenAI 为自动前缀缓存，无需显式标记
+        const anthropicCache = costConfig.providerName === 'anthropic'
+        // v6: 工具定义字段 parameters → inputSchema（resolveToolParameters 已统一 zod/jsonSchema 包装）
+        const toolsForSDK: Record<string, unknown> = {}
+        for (const [name, t] of Object.entries(tools)) {
+          toolsForSDK[name] = { description: t.description, inputSchema: t.parameters }
+        }
         const streamOptions: Record<string, unknown> = {
           model: m,
           system,
-          messages: normalizeMessagesForSDK(messages),
-          tools,
-          maxSteps,
+          messages: normalizeMessagesForSDK(messages, { anthropicCacheBreakpoint: anthropicCache }),
+          tools: toolsForSDK,
+          // v6: maxSteps 移除，改用 stopWhen: stepCountIs(n)（单步循环仍由外层审批/checkpoint 控制）
+          stopWhen: stepCountIs(Math.max(1, maxSteps)),
           abortSignal,
-          // 启用流式用量统计，确保在流式结束前获取完整 usage（含缓存命中/推理 token）
-          streamOptions: { include_usage: true },
           ...topLevel,
         }
         if (mergedProviderOptions) {
@@ -332,26 +383,52 @@ export async function callLLMWithRetry(
 
             // 流式结束后获取完整结果（含 toolCalls、usage、reasoning、providerMetadata）
             // 注意: 每个 await 都带超时保护——SDK 在吞掉非流式错误后这些 Promise 可能永不 settle。
-            // 并发等待共享单个超时预算（串行会叠加成 3 倍等待）
+            // 并发等待共享单个超时预算（串行会叠加成 3 倍等待）；v6 返回 PromiseLike，Promise.resolve 包装
             const finalResult = await result
             const [usage, rawToolCalls, reasoning] = await Promise.all([
-              awaitWithTimeout(finalResult.usage, POST_STREAM_AWAIT_TIMEOUT_MS),
-              awaitWithTimeout(finalResult.toolCalls, POST_STREAM_AWAIT_TIMEOUT_MS),
-              awaitWithTimeout(finalResult.reasoning, POST_STREAM_AWAIT_TIMEOUT_MS),
+              awaitWithTimeout(Promise.resolve(finalResult.usage), POST_STREAM_AWAIT_TIMEOUT_MS),
+              awaitWithTimeout(
+                Promise.resolve(finalResult.toolCalls),
+                POST_STREAM_AWAIT_TIMEOUT_MS,
+              ),
+              awaitWithTimeout(
+                Promise.resolve(finalResult.reasoning),
+                POST_STREAM_AWAIT_TIMEOUT_MS,
+              ),
             ])
-            const toolCallList = rawToolCalls ?? []
+            // v6 字段映射：usage inputTokens/outputTokens → 内部 promptTokens/completionTokens；
+            // toolCall args → input；reasoning ReasoningOutput[] → 拼接文本（保持下游形状不变）
+            const mappedUsage = usage
+              ? {
+                  promptTokens: (usage as { inputTokens?: number }).inputTokens ?? 0,
+                  completionTokens: (usage as { outputTokens?: number }).outputTokens ?? 0,
+                }
+              : undefined
+            const toolCallList = (rawToolCalls ?? []).map((tc) => ({
+              toolName: (tc as { toolName: string }).toolName,
+              args: ((tc as { input?: Record<string, unknown> }).input ?? {}) as Record<
+                string,
+                unknown
+              >,
+            }))
+            const reasoningText = Array.isArray(reasoning)
+              ? (reasoning as Array<{ text?: string }>)
+                  .map((p) => (typeof p.text === 'string' ? p.text : ''))
+                  .join('') || undefined
+              : undefined
 
             // 空响应检测: 无文本 + 无工具调用 + 无用量 = 请求实际失败或被服务端静默挂起
             // （典型: 认证失败/服务端瞬时停滞）。抛错激活重试/降级/报错链路。
-            if (!streamedText && toolCallList.length === 0 && usage === undefined) {
+            if (!streamedText && toolCallList.length === 0 && mappedUsage === undefined) {
               throw new Error(
                 'LLM 返回空响应且无用量信息（通常为认证失败或服务端瞬时停滞），请通过 /config 检查 API Key 配置',
               )
             }
 
-            // 提取 provider 元数据中的缓存/推理 token 统计（DeepSeek v4 支持）
+            // 提取 provider 元数据中的缓存/推理 token 统计（DeepSeek v4 / Anthropic 支持）
             // providerMetadata.openai.cachedPromptTokens 来自 prompt_tokens_details.cached_tokens
             // providerMetadata.openai.reasoningTokens 来自 completion_tokens_details.reasoning_tokens
+            // providerMetadata.anthropic.cacheReadInputTokens 来自 Anthropic 缓存读取 token
             // DeepSeek API 还返回 prompt_cache_miss_tokens，但 OpenAI 格式不直接映射，
             // 我们通过 usage.promptTokens - cacheHitTokens 计算得出。
             let cacheHitTokens: number | undefined
@@ -359,7 +436,7 @@ export async function callLLMWithRetry(
             let reasoningTokens: number | undefined
             try {
               const providerMetadata = await awaitWithTimeout(
-                finalResult.providerMetadata,
+                Promise.resolve(finalResult.providerMetadata),
                 POST_STREAM_AWAIT_TIMEOUT_MS,
               )
               if (providerMetadata?.openai) {
@@ -371,25 +448,38 @@ export async function callLLMWithRetry(
                   reasoningTokens = openaiMeta.reasoningTokens as number
                 }
               }
+              if (providerMetadata?.anthropic) {
+                const anthropicMeta = providerMetadata.anthropic as Record<string, unknown>
+                if (typeof anthropicMeta.cacheReadInputTokens === 'number') {
+                  cacheHitTokens = anthropicMeta.cacheReadInputTokens as number
+                }
+                // cacheCreationInputTokens（写入，1.25x 计费）不单独建模：
+                // 其 token 计入 cacheMissTokens 按标准输入价结算，轻微高估可接受
+              }
             } catch {
               // providerMetadata 可能不可用，忽略
             }
             // 根据 usage 计算 cacheMissTokens（prompt_tokens = cache_hit + cache_miss）
-            if (cacheHitTokens !== undefined && usage) {
-              const miss = usage.promptTokens - cacheHitTokens
+            if (cacheHitTokens !== undefined && mappedUsage) {
+              const miss = mappedUsage.promptTokens - cacheHitTokens
               cacheMissTokens = miss >= 0 ? miss : 0
+            }
+            // v6 usage 自带 reasoningTokens 时作为兜底（providerMetadata 未提供时）
+            if (reasoningTokens === undefined) {
+              const rt = (usage as { reasoningTokens?: number } | undefined)?.reasoningTokens
+              if (typeof rt === 'number') reasoningTokens = rt
             }
 
             // 发射推理内容事件（DeepSeek 思考模式下可用）
-            if (reasoning) {
-              onEvent({ type: 'llm_reasoning', text: reasoning })
+            if (reasoningText) {
+              onEvent({ type: 'llm_reasoning', text: reasoningText })
             }
 
             return {
               streamedText,
-              usage,
+              usage: mappedUsage,
               toolCalls: toolCallList,
-              reasoning,
+              reasoning: reasoningText,
               cacheHitTokens,
               cacheMissTokens,
               reasoningTokens,
@@ -489,6 +579,9 @@ export async function callLLMWithRetry(
       inputTokens: usage.promptTokens,
       outputTokens: usage.completionTokens,
       cost: costConfig.costTracker.getTotalCost(),
+      // 上下文利用率观测：本次 prompt token 与模型窗口大小
+      promptTokens: usage.promptTokens,
+      windowTokens: costConfig.contextWindow,
     })
   }
 

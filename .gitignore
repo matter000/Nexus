@@ -14,6 +14,9 @@ dist/
 .nexus/error-log.jsonl
 .nexus/exports/
 .nexus/models/
+.nexus/task-notes.md
+.nexus/loop-state.md
+.nexus/worktrees/
 
 # Secrets (API keys)
 .nexus/secrets.toml

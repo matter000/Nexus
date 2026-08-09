@@ -44,6 +44,13 @@ export const updateTodoSchema = z.object({
   content: z.string().optional().describe('新 todo 内容(add/update 时)'),
 })
 
+export const updateNotesSchema = z.object({
+  action: z
+    .enum(['read', 'append', 'replace'])
+    .describe('read=读取全部笔记; append=追加内容; replace=整体替换为精炼版'),
+  content: z.string().optional().describe('append/replace 时写入的内容'),
+})
+
 export const semanticSearchSchema = z.object({
   query: z.string().describe('搜索查询(自然语言或代码片段)'),
   top_k: z.number().optional().describe('返回结果数量(默认 5)'),
@@ -61,6 +68,15 @@ export const searchSymbolSchema = z.object({
     .enum(['definition', 'reference', 'all'])
     .optional()
     .describe('搜索类型: definition(定义), reference(引用), all(全部,默认)'),
+})
+
+export const lspSchema = z.object({
+  action: z
+    .enum(['definition', 'references', 'diagnostics'])
+    .describe('definition=定义跳转; references=引用查找; diagnostics=语义诊断'),
+  path: z.string().describe('目标文件路径（相对于项目根目录）'),
+  symbol: z.string().optional().describe('符号名（definition/references 用）'),
+  line: z.number().optional().describe('行号（1 起，可选替代 symbol）'),
 })
 
 export const fetchUrlSchema = z.object({
@@ -104,6 +120,12 @@ export const dispatchSubagentSchema = z.object({
   description: z.string().describe('子任务的详细描述'),
   writable: z.boolean().optional().describe('是否允许子 Agent 修改文件(默认 false)'),
   tools: z.array(z.string()).optional().describe('允许使用的工具列表(默认根据 writable 自动选择)'),
+  isolation: z
+    .enum(['worktree'])
+    .optional()
+    .describe(
+      '隔离模式：worktree = 在独立 git worktree 中执行（写任务并行防踩脚，完成后需审批合并）',
+    ),
 })
 
 export const createFileSchema = z.object({
@@ -118,6 +140,7 @@ export const dispatchSubagentsSchema = z.object({
         description: z.string().describe('子任务的详细描述'),
         writable: z.boolean().optional().describe('是否允许子 Agent 修改文件(默认 false)'),
         tools: z.array(z.string()).optional().describe('允许使用的工具列表'),
+        isolation: z.enum(['worktree']).optional().describe('worktree 隔离（写任务并行防踩脚）'),
       }),
     )
     .describe('子任务数组，最多 3 个并行'),
@@ -139,9 +162,27 @@ export const dispatchAgentsSchema = z.object({
         description: z.string().describe('子任务的详细描述'),
         writable: z.boolean().optional().describe('是否允许修改文件(覆盖引擎默认值)'),
         tools: z.array(z.string()).optional().describe('允许使用的工具列表(覆盖引擎默认值)'),
+        isolation: z.enum(['worktree']).optional().describe('worktree 隔离（写任务并行防踩脚）'),
       }),
     )
     .describe('引擎任务数组，最多 3 个并行'),
+})
+
+export const teamTaskListSchema = z.object({})
+
+export const teamTaskClaimSchema = z.object({
+  agent_id: z.string().describe('认领者 ID（主 Agent 用 lead）'),
+  task_id: z.string().optional().describe('指定认领的任务 ID（缺省认领第一条待认领任务）'),
+})
+
+export const sendMessageSchema = z.object({
+  from: z.string().describe('发送者 ID'),
+  to: z.string().describe('接收者 agent ID'),
+  content: z.string().describe('消息内容'),
+})
+
+export const readMessagesSchema = z.object({
+  agent_id: z.string().describe('要读取信箱的 agent ID'),
 })
 
 export const runPipelineSchema = z.object({
@@ -166,9 +207,11 @@ export const toolSchemas: Record<string, z.ZodType> = {
   grep: grepSchema,
   glob: globSchema,
   update_todo: updateTodoSchema,
+  update_notes: updateNotesSchema,
   semantic_search: semanticSearchSchema,
   list_directory: listDirectorySchema,
   search_symbol: searchSymbolSchema,
+  lsp: lspSchema,
   fetch_url: fetchUrlSchema,
   submit_plan: submitPlanSchema,
   dispatch_subagent: dispatchSubagentSchema,
@@ -181,6 +224,10 @@ export const toolSchemas: Record<string, z.ZodType> = {
   dispatch_agent: dispatchAgentSchema,
   dispatch_agents: dispatchAgentsSchema,
   run_pipeline: runPipelineSchema,
+  team_task_list: teamTaskListSchema,
+  team_task_claim: teamTaskClaimSchema,
+  send_message: sendMessageSchema,
+  read_messages: readMessagesSchema,
 }
 
 /**

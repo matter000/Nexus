@@ -28,12 +28,16 @@ export interface CliArgs {
   help: boolean
   /** 非交互模式(执行完即退出) */
   nonInteractive: boolean
+  /** 非交互模式输出格式：text（默认）或 json（结构化，供自动化消费） */
+  outputFormat: 'text' | 'json'
   /** eval 子命令：任务目录路径 */
   evalDir?: string
   /** eval 模式：mock 或 real */
   evalMock: boolean
   /** eval：只运行指定 ID 的任务 */
   evalTask?: string
+  /** eval：按难度过滤任务（easy | medium | hard） */
+  evalDifficulty?: 'easy' | 'medium' | 'hard'
   /** eval：输出 JSON 报告到文件 */
   evalJson?: string
   /** 恢复上次会话（可指定 sessionId） */
@@ -54,10 +58,17 @@ Nexus - 终端 AI 编程助手
   --skip-plan                跳过 Plan 阶段,直接执行
   --max-iterations <n>       最大迭代步数 (默认: 50)
   --non-interactive          非交互模式,执行完即退出
+  --output <format>          非交互输出格式: text | json (默认: text)
   --resume [sessionId]       恢复上次会话（或指定会话 ID）
   -v, --verbose              显示详细日志
   --version                  显示版本号
   -h, --help                 显示帮助
+
+交互模式斜杠命令:
+  /goal <目标> [--max-rounds N] [--max-cost $]   目标驱动循环（重复执行直到验收条件满足）
+  /loop <任务> [--interval 10m] [--max-rounds N] 节拍循环（按间隔重跑，状态持久化）
+  /loops [run-now|enable|disable <name>|inbox]   本地 Automations（.nexus/loops.toml 心跳）
+  输入 /help 查看全部斜杠命令
 
 示例:
   nexus                          启动交互式会话
@@ -75,6 +86,7 @@ export function parseArgs(argv: string[]): CliArgs {
     version: false,
     help: false,
     nonInteractive: false,
+    outputFormat: 'text',
     evalMock: false,
   }
 
@@ -121,6 +133,15 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--non-interactive':
         args.nonInteractive = true
         break
+      case '--output': {
+        const format = argv[++i]
+        if (format !== 'text' && format !== 'json') {
+          console.error(`错误: --output 仅支持 text | json，收到 "${format}"`)
+          process.exit(1)
+        }
+        args.outputFormat = format
+        break
+      }
       case '--resume': {
         // --resume 可带可不带参数：下一个参数如果不以 - 开头则视为 sessionId
         const next = argv[i + 1]
@@ -141,6 +162,15 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--task':
         args.evalTask = argv[++i]
         break
+      case '--difficulty': {
+        const d = argv[++i]
+        if (d !== 'easy' && d !== 'medium' && d !== 'hard') {
+          console.error(`错误: --difficulty 仅支持 easy | medium | hard，收到 "${d}"`)
+          process.exit(1)
+        }
+        args.evalDifficulty = d
+        break
+      }
       case '--json':
         args.evalJson = argv[++i]
         break

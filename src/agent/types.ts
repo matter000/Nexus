@@ -3,6 +3,8 @@
  * 定义事件流、工具、Agent 状态等所有共享类型
  */
 
+import type { EvidenceConfig, EvidenceResult } from './EvidenceGate'
+
 // ─── 事件流类型 ───────────────────────────────────────────────────────────────
 
 export type NexusEvent =
@@ -11,7 +13,13 @@ export type NexusEvent =
   | { type: 'llm_chunk'; text: string }
   | { type: 'llm_reasoning'; text: string }
   | { type: 'llm_done'; text: string }
-  | { type: 'tool_call'; tool: string; params: Record<string, unknown>; callId: string }
+  | {
+      type: 'tool_call'
+      tool: string
+      params: Record<string, unknown>
+      callId: string
+      todoId?: string
+    }
   | {
       type: 'tool_approval_request'
       callId: string
@@ -20,10 +28,27 @@ export type NexusEvent =
       diff?: string
     }
   | { type: 'plan_approval_request'; callId: string; plan: Plan }
-  | { type: 'tool_result'; callId: string; tool: string; result: string; error?: string }
+  | {
+      type: 'tool_result'
+      callId: string
+      tool: string
+      result: string
+      error?: string
+      /** 发起该调用的任务归属（TUI 按任务分组展示） */
+      todoId?: string
+    }
   | { type: 'todo_update'; todos: Todo[] }
   | { type: 'checkpoint'; step: number; message: string }
-  | { type: 'cost_update'; inputTokens: number; outputTokens: number; cost: number }
+  | {
+      type: 'cost_update'
+      inputTokens: number
+      outputTokens: number
+      cost: number
+      /** 本次调用的 prompt token 数（上下文利用率观测） */
+      promptTokens?: number
+      /** 当前模型的上下文窗口大小（token） */
+      windowTokens?: number
+    }
   | { type: 'phase_change'; phase: AgentPhase }
   | { type: 'done'; summary: string }
   | { type: 'error'; message: string; recoverable: boolean }
@@ -31,6 +56,8 @@ export type NexusEvent =
   | { type: 'system_info'; message: string }
   | { type: 'agent_start'; engine: string; taskId: string }
   | { type: 'agent_done'; engine: string; taskId: string; success: boolean; summary: string }
+  /** 文件产物：写文件工具成功时发出，TUI 按 todoId 归属展示在对应任务下方 */
+  | { type: 'file_artifact'; path: string; tool: string; todoId?: string }
 
 // ─── Agent 状态 ───────────────────────────────────────────────────────────────
 
@@ -211,11 +238,52 @@ export interface NexusConfig {
   context: {
     budgetRatio: number
     recentTurnsKeep: number
+    /** 执行循环内开始微压实（压缩旧工具结果）的水位，占上下文窗口比例 */
+    compactionThreshold: number
+    /** 触发紧急 LLM 压实的水位，占上下文窗口比例 */
+    emergencyThreshold: number
+    /** 压实时保持完整不压缩的最近工具结果条数 */
+    keepRecentResultsFull: number
   }
   checkpoint: {
     autoCheckpoint: boolean
     branch: string
   }
+  /**
+   * Loop Engineering 证据门禁配置（.nexus/config.toml 的 [evidence] 段）。
+   * 任务完成时运行确定性检查（lint/typecheck/test），结果作为验证与修复循环的证据
+   * （手册铁律：不基于置信度循环，基于证据循环）。未配置时探测项目 package.json scripts。
+   */
+  evidence?: EvidenceConfig
+  /** 工具钩子（可选）：为 CI/外部循环编排提供拦截与通知入口 */
+  hooks?: ToolHooks
+}
+
+/** 单轮执行（首次或修复轮次）的循环 trace（Loop Engineering 观测，供 L4 复用） */
+export interface LoopTraceRound {
+  /** 0 = 首次执行，1.. = 修复轮次 */
+  round: number
+  /** 本轮 ReAct 迭代数 */
+  iterations: number
+  /** 证据门禁是否通过（全部 skipped 视为通过） */
+  evidencePassed: boolean
+  evidence: EvidenceResult[]
+  /** 验证结论；未运行验证（纯查询）时为 null */
+  verifyPass: boolean | null
+  verifyFailures: number
+}
+
+/**
+ * 工具钩子配置（.nexus/config.toml 的 [hooks] 段）。
+ * 命令经 bash -c 执行，通过环境变量传递上下文：
+ * NEXUS_TOOL_NAME / NEXUS_TOOL_ARGS（JSON）/ NEXUS_PROJECT_ROOT；
+ * post_tool 额外携带 NEXUS_TOOL_OK / NEXUS_TOOL_RESULT（截断）。
+ */
+export interface ToolHooks {
+  /** 工具执行前钩子：退出码非 0 拦截该工具（stderr 作为拦截原因返回给 LLM） */
+  preTool?: string
+  /** 工具执行后钩子：仅通知，失败不影响工具结果 */
+  postTool?: string
 }
 
 export interface ProviderConfig {
@@ -240,6 +308,8 @@ export interface ProjectRules {
   context: {
     alwaysInclude: string[]
   }
+  /** 项目根 AGENTS.md 原文（截断后），作为结构化 rules.toml 的补充说明注入上下文 */
+  agentsMd?: string
 }
 
 // ─── 检查点类型 ───────────────────────────────────────────────────────────────
@@ -268,6 +338,12 @@ export interface SubAgentTask {
   systemPrompt?: string
   /** 流水线前序输出（注入上下文，Pipeline 模式用） */
   input?: string
+  /** 隔离模式：worktree = 在独立 git worktree 中执行（并行写防踩脚，业界首选方案） */
+  isolation?: 'worktree'
+  /** 内部字段：在既有目录执行（审查/修复子任务指向同一 worktree 用） */
+  runInDir?: string
+  /** 内部字段：跳过自动审查闭环（审查/修复任务自身不再触发，防递归成本失控） */
+  noReview?: boolean
 }
 
 export interface SubAgentResult {
@@ -276,6 +352,14 @@ export interface SubAgentResult {
   summary: string
   filesChanged: string[]
   error?: string
+  /** worktree 隔离任务：待合并的分支名（无变更时已自动清理，为 undefined） */
+  worktreeBranch?: string
+  /** worktree 工作目录 */
+  worktreePath?: string
+  /** worktree 变更摘要（审批合并与审查用） */
+  diffSummary?: string
+  /** 自动审查闭环的审查报告（触发过时附带） */
+  reviewReport?: string
 }
 
 // ─── 会话类型 ─────────────────────────────────────────────────────────────────

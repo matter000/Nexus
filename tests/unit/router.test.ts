@@ -86,6 +86,8 @@ let availableProviderNames: string[] = ['anthropic']
 ;(mock as any).module('@ai-sdk/openai', () => ({
   createOpenAI: (_opts: any) => {
     const factory = (model: string) => ({ modelId: model, provider: 'openai.mock' })
+    // v6: 兼容端点经 .chat() 路由（createOpenAICompatible 使用）
+    factory.chat = (model: string) => ({ modelId: model, provider: 'openai.mock.chat' })
     return factory
   },
 }))
@@ -127,7 +129,13 @@ function createDefaultConfig(): NexusConfig {
       maxOutputBytes: 102400,
       maxAutoRetries: 0,
     },
-    context: { budgetRatio: 0.8, recentTurnsKeep: 5 },
+    context: {
+      budgetRatio: 0.8,
+      recentTurnsKeep: 5,
+      compactionThreshold: 0.6,
+      emergencyThreshold: 0.9,
+      keepRecentResultsFull: 4,
+    },
     checkpoint: { autoCheckpoint: true, branch: 'nexus/checkpoints' },
   }
 }
@@ -231,8 +239,9 @@ describe('ModelRouter', () => {
     expect(route.model).toBe('deepseek-v4-flash')
     expect(route.provider).toBe('deepseek')
     // 应为 deepseek-v4-flash 的成本，而非硬编码的 anthropic 价格（0.003 / 0.015）
-    expect(route.costPer1kInput).toBe(0.000137)
-    expect(route.costPer1kOutput).toBe(0.000274)
+    // 2026-08 官方价：flash 输入 $0.14/M（0.00014/1k）、输出 $0.28/M（0.00028/1k）
+    expect(route.costPer1kInput).toBe(0.00014)
+    expect(route.costPer1kOutput).toBe(0.00028)
   })
 
   it('getContextWindow() 返回有效数值', () => {
@@ -318,5 +327,15 @@ describe('ModelRouter', () => {
     expect(route.model).toBe('claude-sonnet-4-20250514')
     expect(route.costPer1kInput).toBeGreaterThan(0)
     expect(route.contextWindow).toBe(200000)
+  })
+
+  it('Anthropic 模型含缓存读取单价（为基础输入价 0.1x，显式前缀缓存计费用）', () => {
+    availableProviderNames = ['anthropic']
+    const router = new ModelRouter(createDefaultConfig(), new CostTracker())
+    const sonnet = router.getRouteInfoForModel('claude-sonnet-4-20250514')
+    const haiku = router.getRouteInfoForModel('claude-haiku-3-5')
+    expect(sonnet.costPer1kInputCached).toBeDefined()
+    expect(sonnet.costPer1kInputCached).toBeCloseTo(sonnet.costPer1kInput * 0.1, 8)
+    expect(haiku.costPer1kInputCached).toBeCloseTo(haiku.costPer1kInput * 0.1, 8)
   })
 })

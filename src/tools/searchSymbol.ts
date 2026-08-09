@@ -13,7 +13,7 @@ import type { ToolContext, ToolHandler } from './registry'
 const definition: ToolDefinition = {
   name: 'search_symbol',
   description:
-    '搜索代码符号(函数、类、接口、类型、变量)的定义和引用。使用 TypeScript Compiler API 解析 AST,返回匹配的文件路径、行号和代码行。只读操作,不需要审批。',
+    '按符号名精确搜索函数/类/接口/类型/变量的定义与引用（AST 解析，适用 TS/JS），返回文件路径、行号和代码行。不知道确切名称时先用 grep 文本搜索。',
   inputSchema: {
     type: 'object',
     properties: {

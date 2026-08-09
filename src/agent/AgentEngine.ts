@@ -29,6 +29,8 @@ export interface AgentEngineDef {
   maxIterations?: number
   /** 是否需要审批（预留字段；当前审批由工具级控制：dispatch_agent/run_pipeline 统一要求审批） */
   requiresApproval?: boolean
+  /** 自动审查闭环：写任务成功且有变更时自动派 reviewer 审查，高危问题回传修复一轮（coder 默认开启） */
+  autoReview?: boolean
 }
 
 /** 内置默认引擎（用户可通过 agents.toml 覆盖或扩展） */
@@ -64,6 +66,7 @@ export const BUILTIN_ENGINES: AgentEngineDef[] = [
     writable: true,
     maxIterations: 12,
     requiresApproval: true,
+    autoReview: true,
   },
   {
     name: 'reviewer',

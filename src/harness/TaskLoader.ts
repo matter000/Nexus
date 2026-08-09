@@ -47,7 +47,7 @@ function parseRawTask(raw: Record<string, unknown>, filePath: string): EvalTask 
   const id = raw.id as Record<string, string> | undefined
   const request = raw.request as Record<string, string> | undefined
   const initialFiles = raw.initial_files as Array<Record<string, string>> | undefined
-  const validate = raw.validate as Array<Record<string, string>> | undefined
+  const validate = raw.validate as Array<Record<string, unknown>> | undefined
 
   if (!id?.name) {
     console.error(`[TaskLoader] ${filePath}: 缺少 id.name`)
@@ -75,24 +75,33 @@ function parseRawTask(raw: Record<string, unknown>, filePath: string): EvalTask 
 
   const rules: ValidateRule[] = validate
     .map((r): ValidateRule | null => {
-      const type = r.type
+      const type = r.type as string
       switch (type) {
         case 'file_exists':
-          return { type: 'file_exists', path: r.path }
+          return { type: 'file_exists', path: r.path as string }
         case 'file_not_exists':
-          return { type: 'file_not_exists', path: r.path }
+          return { type: 'file_not_exists', path: r.path as string }
         case 'file_contains':
           if (!r.pattern) return null
-          return { type: 'file_contains', path: r.path, pattern: r.pattern }
+          return { type: 'file_contains', path: r.path as string, pattern: r.pattern as string }
         case 'file_not_contains':
           if (!r.pattern) return null
-          return { type: 'file_not_contains', path: r.path, pattern: r.pattern }
+          return { type: 'file_not_contains', path: r.path as string, pattern: r.pattern as string }
         case 'bash_pass':
           if (!r.command) return null
-          return { type: 'bash_pass', command: r.command }
+          return { type: 'bash_pass', command: r.command as string }
         case 'bash_output_contains':
           if (!r.command || !r.pattern) return null
-          return { type: 'bash_output_contains', command: r.command, pattern: r.pattern }
+          return {
+            type: 'bash_output_contains',
+            command: r.command as string,
+            pattern: r.pattern as string,
+          }
+        case 'no_extra_files': {
+          const allowed = r.allowed ?? r.paths
+          if (!Array.isArray(allowed) || allowed.length === 0) return null
+          return { type: 'no_extra_files', allowed: allowed.map(String) }
+        }
         default:
           console.error(`[TaskLoader] ${filePath}: 未知验证类型 "${type}"`)
           return null

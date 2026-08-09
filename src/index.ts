@@ -92,6 +92,7 @@ async function main() {
     const engine = new HarnessEngine({
       tasksDir: args.evalDir,
       mode: args.evalMock ? 'mock' : 'real',
+      ...(args.evalDifficulty ? { difficulty: args.evalDifficulty } : {}),
       runner: async (task, workDir) => {
         if (args.evalMock) return { output: '', cost: 0 }
         try {
@@ -108,8 +109,10 @@ async function main() {
           await orch.init()
           const output = await orch.submit(task.userRequest)
           const cost = orch.getCostSummary().total
+          // 峰值上下文利用率：量化上下文利用优化效果
+          const peakUtilization = orch.getPeakContextUtilization()
           await orch.shutdown()
-          return { output, cost }
+          return { output, cost, peakUtilization }
         } catch (err) {
           return {
             output: `执行失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -135,13 +138,21 @@ async function main() {
         tasksFailed: 0,
         totalCost: 0,
         totalDurationMs: 0,
+        avgSteps: undefined,
+        avgPeakUtilization: undefined,
+        extraFilesViolations: 0,
         results: [await engine.runOne(task)],
         timestamp: Date.now(),
       }
-      report.tasksPassed = report.results[0].pass ? 1 : 0
-      report.tasksFailed = report.results[0].pass ? 0 : 1
-      report.totalCost = report.results[0].cost
-      report.totalDurationMs = report.results[0].durationMs
+      const single = report.results[0]
+      report.tasksPassed = single.pass ? 1 : 0
+      report.tasksFailed = single.pass ? 0 : 1
+      report.totalCost = single.cost
+      report.totalDurationMs = single.durationMs
+      // 单任务模式聚合字段与 runAll 语义一致（单样本即均值）
+      report.avgSteps = single.steps
+      report.avgPeakUtilization = single.peakContextUtilization
+      report.extraFilesViolations = single.extraFilesViolation ? 1 : 0
     } else {
       report = await engine.runAll()
     }
@@ -309,6 +320,36 @@ async function main() {
     listMemory: () => orchestrator.listMemory(),
     deleteMemoryEntry: (kind, id) => orchestrator.deleteMemoryEntry(kind, id),
     listSkills: () => orchestrator.listSkills(),
+    listPlugins: () => orchestrator.listPlugins(),
+    // L3 事件驱动循环：/goal 目标驱动 + /loop 节拍循环（Orchestrator 门面）
+    runGoal: (goal, opts) =>
+      orchestrator.runGoal({
+        goal,
+        acceptance: opts?.acceptance,
+        maxRounds: opts?.maxRounds,
+        maxCost: opts?.maxCost,
+      }),
+    runLoop: (prompt, opts) =>
+      orchestrator.runLoop(prompt, {
+        intervalMin: opts?.intervalMin,
+        maxRounds: opts?.maxRounds,
+        maxCost: opts?.maxCost,
+      }),
+    // 本地 Automations：/loops 命令委托
+    listLoops: () =>
+      orchestrator.listLoops().map((l) => ({
+        name: l.config.name,
+        scheduleMin: l.config.scheduleMin,
+        enabled: l.config.enabled,
+        nextRunAt: l.nextRunAt,
+        lastRunAt: l.lastRunAt,
+        lastResultSummary: l.lastResultSummary,
+        running: l.running,
+        pausedReason: l.pausedReason,
+      })),
+    runLoopNow: (name) => orchestrator.runLoopNow(name),
+    setLoopEnabled: (name, enabled) => orchestrator.setLoopEnabled(name, enabled),
+    getLoopInbox: (name) => orchestrator.getLoopInbox(name),
   }
 
   // 非交互模式
@@ -326,8 +367,29 @@ async function main() {
     }
 
     const result = await orchestrator.submit(args.prompt)
-    console.log(result)
     const cost = orchestrator.getCostSummary()
+
+    if (args.outputFormat === 'json') {
+      // 结构化输出：供 CI / 外部循环编排消费（含 todos/成本/阶段/退出语义）
+      const success = orchestrator.getPhase() === 'done'
+      const payload = {
+        success,
+        phase: orchestrator.getPhase(),
+        result,
+        todos: orchestrator.getTodos(),
+        cost: {
+          total: cost.total,
+          inputTokens: cost.inputTokens,
+          outputTokens: cost.outputTokens,
+        },
+        model: orchestrator.getCurrentModel(),
+      }
+      console.log(JSON.stringify(payload, null, 2))
+      await handleExit()
+      process.exit(success ? 0 : 1)
+    }
+
+    console.log(result)
     console.log(`\n--- 花费: $${cost.total.toFixed(4)} ---`)
     await handleExit()
     process.exit(0)

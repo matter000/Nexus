@@ -56,3 +56,7 @@ pattern = "function validate"
 type = "file_contains"
 path = "src/handlers.ts"
 pattern = "handleCreateUser"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/handlers.ts"]

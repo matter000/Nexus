@@ -1,0 +1,39 @@
+[id]
+name = "添加重试包装器"
+category = "single-file"
+difficulty = "medium"
+description = "为不稳定的请求函数添加带最大次数与退避的重试包装"
+
+[request]
+user_prompt = "在 src/client.ts 中新增 withRetry 函数：接收一个返回 Promise 的函数与 maxAttempts（默认 3），失败时按 2 的指数退避重试，耗尽次数后抛出最后一次错误；fetchUser 改为通过 withRetry 调用"
+
+[[initial_files]]
+path = "src/client.ts"
+content = """
+export async function rawFetch(url: string): Promise<string> {
+  if (Math.random() < 0.5) throw new Error('flaky')
+  return 'ok:' + url
+}
+
+export async function fetchUser(id: number): Promise<string> {
+  return rawFetch('/users/' + id)
+}
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/client.ts"
+pattern = "withRetry"
+
+[[validate]]
+type = "file_contains"
+path = "src/client.ts"
+pattern = "maxAttempts"
+
+[[validate]]
+type = "bash_pass"
+command = "grep -F 'withRetry' src/client.ts | grep -v 'function withRetry'"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/client.ts"]

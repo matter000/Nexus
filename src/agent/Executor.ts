@@ -4,9 +4,16 @@
  */
 
 import type { LanguageModel } from 'ai'
-import { generateText } from 'ai'
-import { readFile } from 'fs/promises'
-import { resolve } from 'path'
+import { generateText, stepCountIs } from 'ai'
+import { spawn } from 'child_process'
+import type { Dirent } from 'fs'
+import { readdir, readFile } from 'fs/promises'
+import { basename, join, resolve } from 'path'
+import {
+  compactionLevel,
+  emergencyCompactMessages,
+  microCompactMessages,
+} from '../context/Compactor'
 import type { CostTracker } from '../router/CostTracker'
 import { withDeepSeekThinking } from '../router/providers/deepseekFetch'
 import type { CheckpointManager } from '../sandbox/Checkpoint'
@@ -15,10 +22,22 @@ import { generateDiff } from '../tools/editFile'
 import type { ToolContext, ToolRegistry } from '../tools/registry'
 import { resolveToolParameters } from '../tools/schemas'
 import { callWithRetry } from '../utils'
-import { callLLMWithRetry, splitModelParameters } from './ReActLoop'
+import {
+  type EvidenceConfig,
+  EvidenceGate,
+  type EvidenceSet,
+  formatEvidenceSummary,
+} from './EvidenceGate'
+import {
+  callLLMWithRetry,
+  type LLMCallConfig,
+  normalizeMessagesForSDK,
+  splitModelParameters,
+} from './ReActLoop'
 import type {
   ChatMessage,
   ExecMessage,
+  LoopTraceRound,
   ModelRole,
   NexusEvent,
   PermissionMode,
@@ -40,11 +59,16 @@ const EXECUTE_SYSTEM_SUFFIX = `
 - 如果 edit 失败(未找到/不唯一),先 read_file 获取最新内容再重试
 - 每完成一个步骤,必须调用 update_todo(action="complete", id="...") 标记该步骤完成
 - 遇到无法解决的问题,诚实说明而不是强行修改
-- bash 命令的运行目录是项目根目录，不要 cd 到别处，直接用 python3 文件名 即可运行
+- bash 命令的运行目录是项目根目录，不要 cd 到别处；优先使用项目自身约定的测试/构建命令（如 rules 中声明的）
+- 总结中不要输出“产出文件/变更文件/修改的文件”等聚合文件清单：界面已把每个文件产物展示在对应任务下方，重复罗列只会干扰阅读
 
 ## Auto 模式（无预设 todo 时）
 - 如无预设 todo,请先用 update_todo(action="add", content="...") 拆解任务为 2-5 个步骤,再逐步执行
-- 每完成一个步骤后调用 update_todo(action="complete") 标记完成`
+- 每完成一个步骤后调用 update_todo(action="complete") 标记完成
+
+## 任务笔记（长任务必用）
+- 预计超过 10 步的任务：每完成一个里程碑就用 update_notes(action="append") 记录关键决策、已改文件与下一步计划
+- 当你感觉上下文被压缩、丢失了之前的细节时，先 update_notes(action="read") 回读笔记再继续`
 
 export interface ExecutorConfig {
   model: LanguageModel
@@ -62,6 +86,18 @@ export interface ExecutorConfig {
   ) => Promise<boolean>
   /** 成本追踪器 */
   costTracker: CostTracker
+  /** 验证阶段模型（verifier 角色）；未提供时回退主模型 */
+  verifyModel?: LanguageModel
+  /** 验证阶段的 provider 模型参数（与主 modelParameters 同结构） */
+  verifyModelParameters?: Record<string, unknown>
+  /** 验证阶段成本记录参数（verifier 定价）；未提供时沿用主模型参数 */
+  verifyCost?: {
+    providerName: string
+    modelName: string
+    costPer1kInput: number
+    costPer1kOutput: number
+    costPer1kInputCached?: number
+  }
   /** 当前模型角色（用于成本记录） */
   modelRole: ModelRole
   /** 当前 provider 名称（用于成本记录，内置为 ProviderName，自定义为任意键名） */
@@ -87,6 +123,27 @@ export interface ExecutorConfig {
    * 由 ProviderAdapter.getModelParameters() 生成，用于优化 DeepSeek 等模型的调用参数
    */
   modelParameters?: Record<string, unknown>
+  /** executor 模型的上下文窗口大小（token），用于自适应压实水位计算 */
+  contextWindow?: number
+  /** 压实策略（未配置时不做循环内压实） */
+  compaction?: {
+    compactionThreshold: number
+    emergencyThreshold: number
+    keepRecentResultsFull: number
+  }
+  /** 紧急压实用的摘要模型（summarizer 角色）；未提供时高水位降级为微压实 */
+  compactModel?: LanguageModel
+  /**
+   * 步级测试驱动闭环：edit 后自动跑受影响测试，失败喂回 LLM。
+   * 仅当项目 testCommand 形如 bun test 时由 Orchestrator 注入，其他框架保守跳过。
+   */
+  autoTest?: { runner: 'bun'; baseCommand: string }
+  /**
+   * Loop Engineering 证据门禁：完成时运行确定性检查（lint/typecheck/test），
+   * 结果注入验证提示词与修复循环（手册铁律：基于证据循环，非置信度）。
+   * 未提供时跳过全部门禁（退化现有行为）。
+   */
+  evidence?: EvidenceConfig
 }
 
 /**
@@ -117,6 +174,87 @@ class Semaphore {
   }
 }
 
+/** 验证失败项（todoId + 缺失说明 + 关联确定性证据） */
+export interface VerifyFailure {
+  todoId: string
+  detail: string
+  /** 关联的证据门禁失败（如 "test: exit 1"）；确定性失败由门禁直通，无需 verifier 复述 */
+  evidence?: string
+}
+
+/** 验证阶段的结构化结论 */
+export interface VerifyOutcome {
+  pass: boolean
+  failures: VerifyFailure[]
+}
+
+/**
+ * 解析验证输出末尾的 ```json 结论块。
+ * 解析失败返回 null（由调用方保守按通过处理，避免模糊信号误触发修复循环）。
+ */
+function parseVerifyVerdict(text: string): VerifyOutcome | null {
+  const blocks = [...text.matchAll(/```json\s*\n([\s\S]*?)\n```/g)]
+  // 从最后一个 JSON 块向前找，结论块约定在输出末尾
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(blocks[i][1]) as {
+        pass?: boolean
+        failures?: Array<{ todoId?: string; detail?: string }>
+      }
+      if (typeof parsed.pass === 'boolean') {
+        if (parsed.pass) return { pass: true, failures: [] }
+        const failures = Array.isArray(parsed.failures)
+          ? parsed.failures
+              .filter(
+                (f): f is { todoId?: string; detail: string; evidence?: string } =>
+                  !!f && typeof f.detail === 'string',
+              )
+              .map((f) => ({
+                todoId: f.todoId ?? '',
+                detail: f.detail,
+                evidence: typeof f.evidence === 'string' ? f.evidence : undefined,
+              }))
+          : []
+        return { pass: false, failures }
+      }
+    } catch {
+      // 非结论块（如计划 JSON），继续向前找
+    }
+  }
+  return null
+}
+
+/**
+ * 剥离总结文本中聚合式的“产出文件”区块（从匹配标题到下一个同级/更高级标题或文末）。
+ * 文件产物已由 TUI 按任务归属展示，模型在末尾重复罗列只会把产物堆在底部。
+ * 提示词已约束模型不输出此类区块，此处为兜底（不匹配的文本原样保留）。
+ */
+export function stripArtifactSection(text: string): string {
+  const ARTIFACT_HEADING = /^#{1,6}\s+.*(产出文件|变更文件|修改的文件|生成的文件|文件清单)/
+  const lines = text.split('\n')
+  const result: string[] = []
+  let skipping = false
+  let skipLevel = 0
+  for (const line of lines) {
+    const headingMatch = line.match(/^(#{1,6})\s/)
+    if (skipping) {
+      // 遇到同级或更高级标题时结束剥离（该标题本身保留）
+      if (headingMatch && headingMatch[1].length <= skipLevel) {
+        skipping = false
+      } else {
+        continue
+      }
+    }
+    if (ARTIFACT_HEADING.test(line)) {
+      skipping = true
+      skipLevel = (line.match(/^(#{1,6})\s/) as RegExpMatchArray)[1].length
+      continue
+    }
+    result.push(line)
+  }
+  return result.join('\n').replace(/\s+$/, '')
+}
+
 export class Executor {
   private config: ExecutorConfig
   private todos: Todo[] = []
@@ -134,6 +272,16 @@ export class Executor {
   /** 是否执行过 edit_file（仅在有代码变更时运行验证） */
   private hasCodeChanges = false
   private lastError: string | null = null
+  /** 验证阶段的结构化结论（未运行验证时为 null） */
+  private verifyOutcome: VerifyOutcome | null = null
+  /** 证据门禁结果（未运行/无证据配置时为 null） */
+  private evidenceResult: EvidenceSet | null = null
+  /** 步级自动测试：本次 execute 已跑过测试的文件（同文件去重，防反复触发） */
+  private autoTestedFiles = new Set<string>()
+  /** 步级自动测试累计次数（上限护栏，防修复循环烧钱） */
+  private autoTestCount = 0
+  /** 自动测试超限提示只发一次 */
+  private autoTestLimitNotified = false
 
   constructor(config: ExecutorConfig) {
     this.config = config
@@ -146,9 +294,15 @@ export class Executor {
     this.todos = [...plan.todos]
     this.iterations = 0
     this.hasCodeChanges = false
+    this.verifyOutcome = null
+    this.evidenceResult = null
     this.consecutiveEditFailures.clear()
     this.stuckWarnings = 0
     this.stepsSinceProgress = 0
+    // 步级自动测试状态重置（每次 execute 独立计数）
+    this.autoTestedFiles.clear()
+    this.autoTestCount = 0
+    this.autoTestLimitNotified = false
 
     onEvent({ type: 'llm_start', phase: 'execute' })
     onEvent({ type: 'todo_update', todos: this.todos })
@@ -188,6 +342,7 @@ export class Executor {
       // DeepSeek 思考模式返回 reasoning（思维链），需在后续轮次中回传（有工具调用时）
       let callResult: {
         streamedText: string
+        usage?: { promptTokens: number; completionTokens: number }
         toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>
         reasoning?: string
         cacheHitTokens?: number
@@ -215,6 +370,7 @@ export class Executor {
               costPer1kInput: this.config.costPer1kInput,
               costPer1kOutput: this.config.costPer1kOutput,
               costPer1kInputCached: this.config.costPer1kInputCached,
+              contextWindow: this.config.contextWindow,
             },
           },
           this.config.getFallbackModel?.() ?? undefined,
@@ -252,6 +408,12 @@ export class Executor {
       // 有工具调用（文本已在流式过程中通过 llm_chunk 发送）
       // 保存 LLM 的叙述文本，防止达到迭代上限时 finalText 为空
       finalText = streamedText || finalText
+
+      // 自适应压实：下一轮 LLM 调用前，按当前窗口占用分档压实
+      // （窗口充裕时全量保留，最大化上下文利用率）
+      if (callResult.usage && this.config.contextWindow && this.config.compaction) {
+        await this.applyCompaction(messages, callResult.usage.promptTokens)
+      }
 
       // 构建 assistant 消息（包含工具调用信息，让 LLM 知道“我调用了哪些工具”）
       const assistantMsg: ExecMessage = {
@@ -322,6 +484,12 @@ export class Executor {
           type: 'system_info',
           message: `已执行 ${this.stepsSinceProgress} 步但无 todo 进展，agent 可能在循环中。如果看起来卡住了，可以按 Ctrl+C 中断。`,
         })
+        // 纠偏 nudge 注入 LLM 消息流：只提示 UI 时模型无感知，会继续重复相同操作。
+        // 以 user 消息喂回当前 todo 状态与改道指令，让模型自行纠偏（Claude Code nudge 模式）
+        messages.push({
+          role: 'user',
+          content: `[系统提示·循环检测] 你已连续 ${this.stepsSinceProgress} 步工具调用但 todo 无任何进展，很可能在重复相同的无效操作。请立即停止当前做法：\n1. 回顾当前 todo 状态：\n${this.formatTodos()}\n2. 换一种方法（如重新 read_file 确认现状、缩小改动范围、或拆解步骤）\n3. 若确实无法推进，诚实说明阻塞原因并结束，不要继续空转`,
+        })
         this.stepsSinceProgress = 0
       }
     }
@@ -333,38 +501,46 @@ export class Executor {
       executionError = true
     }
 
-    // 正常完成时，自动将未完成的 todo 标记为 complete
-    // （LLM 可能忘记调 update_todo，如纯查询任务）
-    if (!executionError) {
-      for (const t of this.todos) {
-        if (t.status === 'pending' || t.status === 'in_progress') {
-          t.status = 'complete'
-        }
-      }
-    } else {
+    // 不强制把未完成 todo 标记为 complete：todo 状态是学习系统 outcome 判定的信号源，
+    // 篡改状态会让 determineOutcome 永远返回 success（LLM 忘调 update_todo 与任务真完成无法区分）。
+    // 纯查询任务无预设 todo 的情况由 Orchestrator.determineOutcome 单独识别。
+    if (executionError) {
       this.lastError = finalText || '执行过程中出现未知错误'
     }
 
     onEvent({ type: 'todo_update', todos: this.todos })
 
-    // ─── 验证阶段 ───
-    // 仅在正常完成且有代码修改时运行验证（纯查询/对话跳过）
+    // ─── 证据门禁 + 验证阶段 ───
+    // 仅在正常完成且有代码修改时运行（纯查询/对话跳过）
     if (!executionError && this.hasCodeChanges) {
       onEvent({ type: 'phase_change', phase: 'verifying' })
-      const verifyResult = await this.runVerification(plan, finalText, messages, toolsForAI)
-      if (verifyResult) {
+      // Loop Engineering 证据门禁：确定性检查（lint/typecheck/test）先行，
+      // 结果作为 verifier 与修复循环的证据（手册铁律：不基于置信度循环，基于证据循环）
+      const evidence = await this.runEvidenceGate()
+      this.evidenceResult = evidence
+      const verify = await this.runVerification(plan, finalText, messages, toolsForAI, evidence)
+      this.verifyOutcome = verify.outcome
+      if (verify.report) {
         finalText = finalText
-          ? `${finalText}\n\n## 验证\n${verifyResult}`
-          : `## 验证\n${verifyResult}`
+          ? `${finalText}\n\n## 验证\n${verify.report}`
+          : `## 验证\n${verify.report}`
+      }
+      if (!verify.outcome.pass) {
+        onEvent({
+          type: 'system_info',
+          message: `验证发现 ${verify.outcome.failures.length} 项未真正完成，交由编排层决定是否自动修复`,
+        })
       }
     }
 
-    return finalText
+    return stripArtifactSection(finalText)
   }
 
   /**
    * 执行后验证：mini ReAct loop，每步可执行工具（read_file/grep/bash）
-   * 最多 5 步，每步的工具调用对用户可见
+   * 最多 5 步，每步的工具调用对用户可见。
+   * 返回结构化结论（pass/failures）+ 人类可读报告；验证 LLM 调用按 verifier 角色计费。
+   * @param evidence 证据门禁结果（确定性检查先行）；未配置时为空集合
    */
   private async runVerification(
     plan: Plan,
@@ -387,8 +563,11 @@ export class Executor {
         }
     >,
     _toolsForAI: Record<string, { description: string; parameters: unknown }>,
-  ): Promise<string> {
-    const { model, toolRegistry, toolContext, onEvent } = this.config
+    evidence: EvidenceSet,
+  ): Promise<{ outcome: VerifyOutcome; report: string }> {
+    const { toolRegistry, toolContext, onEvent } = this.config
+    // 验证阶段优先用 verifier 角色模型（未配置时回退主模型）
+    const verifyModel = this.config.verifyModel ?? this.config.model
     const MAX_VERIFY_STEPS = 5
 
     // 验证阶段允许只读工具 + bash（跑测试），不允许 edit_file
@@ -404,6 +583,7 @@ export class Executor {
     }
 
     const todoStatus = this.formatTodos()
+    const evidenceText = this.formatEvidenceForPrompt(evidence)
     const verifyPrompt = `## 验证任务
 
 执行已完成。请逐项检查每个 todo 是否真正完成：
@@ -416,34 +596,42 @@ ${todoStatus}
 执行结果:
 ${executionResult || '(无文本输出)'}
 
+## 确定性证据（门禁结果）
+${evidenceText}
+
+## 判定规则
+- 证据失败项已列明命令与输出，按确定性失败处理，无需重复确认
+- 证据全部通过或跳过时，再对每个 todo 做语义检查（read_file 验证预期修改）
+- 失败项 detail 用 [缺失] 或 [行为不符] 开头说明、[建议] 结尾给修复方向；
+  若该失败项有对应确定性证据失败，附 evidence 字段（如 "test: exit 1"）
+
 ## 验证步骤
 1. 对每个状态为 "complete" 的 todo，用 read_file 验证目标文件是否包含预期修改
 2. 对每个状态为 "pending" 或 "in_progress" 的 todo，说明缺失了什么
 3. 如果有测试，用 bash 运行测试验证
-4. 输出格式：先列出结论（✅/❌ 各多少项），再对每个失败项给出具体修复建议
+4. 先列出结论（✅/❌ 各多少项），再对每个失败项给出具体修复建议
+5. 最后必须输出 JSON 结论块（严格 JSON，不加多余字段）：
+   全部通过:
+   \`\`\`json
+   {"pass": true, "failures": []}
+   \`\`\`
+   存在失败:
+   \`\`\`json
+   {"pass": false, "failures": [{"todoId": "1", "detail": "[缺失] ...；[建议] ...", "evidence": "test: exit 1"}]}
+   \`\`\`
 
 注意：验证阶段不允许修改文件（无 edit_file 工具）。`
 
-    // 构建验证专用的消息列表（不污染主 messages）
-    type VerifyMsg =
-      | { role: 'user' | 'assistant'; content: string }
-      | {
-          role: 'assistant'
-          content: string
-          toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }>
-        }
-      | {
-          role: 'tool'
-          content: Array<{
-            type: 'tool-result'
-            toolCallId: string
-            toolName: string
-            result: string
-          }>
-        }
-
-    const verifyMessages: VerifyMsg[] = [
-      ...messages.map((m) => ({ ...m })),
+    // 构建验证专用的消息列表（不污染主 messages）。
+    // 主执行消息必须先规范化为 SDK 输入格式（tool-call 位于 content 部件数组）：
+    // 内部形状的顶层 toolCalls 不会被 SDK 序列化，DeepSeek 会以 400 拒绝
+    // role:'tool' 消息（“must be a response to a preceding message with 'tool_calls'”）。
+    // Anthropic 验证模型同样附带缓存断点（首条 system 消息为 stable 段，跨步命中）
+    const verifyProvider = this.config.verifyCost?.providerName ?? this.config.providerName
+    const verifyMessages: unknown[] = [
+      ...normalizeMessagesForSDK(messages as LLMCallConfig['messages'], {
+        anthropicCacheBreakpoint: verifyProvider === 'anthropic',
+      }),
       { role: 'user', content: verifyPrompt },
     ]
 
@@ -459,34 +647,61 @@ ${executionResult || '(无文本输出)'}
           topLevel: verifyTopLevel,
           providerOptions: verifyProviderOptions,
           thinking: verifyThinking,
-        } = splitModelParameters(this.config.modelParameters)
+        } = splitModelParameters(this.config.verifyModelParameters ?? this.config.modelParameters)
         const genResult = await callWithRetry(
           async () => {
+            // v6: 工具字段 parameters → inputSchema；maxSteps → stopWhen
+            const verifyToolsSDK: Record<string, unknown> = {}
+            for (const [name, t] of Object.entries(verifyToolsForAI)) {
+              verifyToolsSDK[name] = { description: t.description, inputSchema: t.parameters }
+            }
             return await withDeepSeekThinking(verifyThinking, () =>
               generateText({
-                model,
+                model: verifyModel,
                 system:
                   '你是验证助手。只读检查执行结果（可用 read_file + grep + bash），不修改文件。每步先说明你要检查什么，然后调用工具。',
                 messages: verifyMessages as never,
-                tools: verifyToolsForAI,
-                maxSteps: 1,
+                tools: verifyToolsSDK,
+                stopWhen: stepCountIs(1),
                 abortSignal: this.config.abortSignal,
                 ...(verifyTopLevel as Record<string, never>),
                 ...(verifyProviderOptions ? { providerOptions: verifyProviderOptions } : {}),
-              } as Parameters<typeof generateText>[0]),
+              } as never),
             )
           },
           {
             maxRetries: 1,
             onRetry: ({ attempt, delay, error }) => {
+              // 用 system_info 而非 error：重试时验证仍在进行，
+              // error 事件会被 TUI 当作终态展示，与最终报告重复
               onEvent({
-                type: 'error',
+                type: 'system_info',
                 message: `验证请求重试 #${attempt}（${delay}ms 后）: ${error.message}`,
-                recoverable: true,
               })
             },
           },
         )
+
+        // 验证阶段的 LLM 调用也计入成本（按 verifier 定价，未配置时沿用主模型参数；v6 usage 字段 inputTokens/outputTokens）
+        if (genResult.usage) {
+          const vc = this.config.verifyCost
+          this.config.costTracker.record({
+            role: 'verifier',
+            provider: vc?.providerName ?? this.config.providerName,
+            model: vc?.modelName ?? this.config.modelName,
+            inputTokens: genResult.usage.inputTokens ?? 0,
+            outputTokens: genResult.usage.outputTokens ?? 0,
+            costPer1kInput: vc?.costPer1kInput ?? this.config.costPer1kInput,
+            costPer1kOutput: vc?.costPer1kOutput ?? this.config.costPer1kOutput,
+            costPer1kInputCached: vc?.costPer1kInputCached ?? this.config.costPer1kInputCached,
+          })
+          onEvent({
+            type: 'cost_update',
+            inputTokens: genResult.usage.inputTokens ?? 0,
+            outputTokens: genResult.usage.outputTokens ?? 0,
+            cost: this.config.costTracker.getTotalCost(),
+          })
+        }
 
         const text = genResult.text ?? ''
         const toolCalls = genResult.toolCalls ?? []
@@ -497,29 +712,33 @@ ${executionResult || '(无文本输出)'}
           break
         }
 
-        // 有工具调用：推入 assistant 消息 + 执行工具 + 推入 tool 结果
+        // 有工具调用：推入 assistant 消息（v6 部件形状：tool-call 用 input）
+        // + 执行工具 + 推入 tool 结果（tool-result 用 output）
         finalVerifyText = text || finalVerifyText
         verifyMessages.push({
           role: 'assistant',
-          content: text,
-          toolCalls: toolCalls.map((tc, idx) => ({
-            toolCallId: `verify-${step}-${tc.toolName}-${idx}`,
-            toolName: tc.toolName,
-            args: tc.args as Record<string, unknown>,
-          })),
+          content: [
+            ...(text ? [{ type: 'text', text }] : []),
+            ...toolCalls.map((tc, idx) => ({
+              type: 'tool-call',
+              toolCallId: `verify-${step}-${tc.toolName}-${idx}`,
+              toolName: tc.toolName,
+              input: (tc.input ?? {}) as Record<string, unknown>,
+            })),
+          ],
         })
 
-        // 执行工具并收集结果
+        // 执行工具并收集结果（v6: tool-result 的 output 为判别联合 {type:'text', value}）
         const toolResults: Array<{
           type: 'tool-result'
           toolCallId: string
           toolName: string
-          result: string
+          output: { type: 'text'; value: string }
         }> = []
         for (let idx = 0; idx < toolCalls.length; idx++) {
           const tc = toolCalls[idx]
           const callId = `verify-${step}-${tc.toolName}-${idx}`
-          const args = tc.args as Record<string, unknown>
+          const args = (tc.input ?? {}) as Record<string, unknown>
 
           onEvent({ type: 'tool_call', tool: tc.toolName, params: args, callId })
 
@@ -537,7 +756,7 @@ ${executionResult || '(无文本输出)'}
             type: 'tool-result',
             toolCallId: callId,
             toolName: tc.toolName,
-            result: resultText,
+            output: { type: 'text', value: resultText },
           })
         }
 
@@ -545,11 +764,15 @@ ${executionResult || '(无文本输出)'}
       }
 
       onEvent({ type: 'system_info', message: '验证完成' })
-      return finalVerifyText || '验证完成（无输出）'
+      const report = finalVerifyText || '验证完成（无输出）'
+      // 解析结构化结论；解析失败保守按通过处理（模糊信号不应触发修复循环）
+      const outcome = parseVerifyVerdict(report) ?? { pass: true, failures: [] }
+      return { outcome, report }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      onEvent({ type: 'error', message: `验证阶段失败: ${msg}`, recoverable: true })
-      return `验证失败: ${msg}`
+      // 验证自身失败不等于任务失败，保守按通过处理，仅报告错误。
+      // 不额外发 error 事件：报告会随 ## 验证 区块展示一次，避免 TUI 重复显示
+      return { outcome: { pass: true, failures: [] }, report: `验证失败: ${msg}` }
     }
   }
 
@@ -582,8 +805,10 @@ ${executionResult || '(无文本输出)'}
     const { toolRegistry, toolContext, onEvent } = this.config
     const callId = `exec-${this.iterations}-${toolCall.toolName}-${callIndex}`
     const args = toolCall.args as Record<string, unknown>
+    // 任务归属：取调用发起时刻的 in_progress todo（TUI 按任务分组展示）
+    const todoId = this.getCurrentTodoId()
 
-    onEvent({ type: 'tool_call', tool: toolCall.toolName, params: args, callId })
+    onEvent({ type: 'tool_call', tool: toolCall.toolName, params: args, callId, todoId })
 
     // 权限检查
     const approved = await this.checkPermission(toolCall.toolName, args)
@@ -602,6 +827,7 @@ ${executionResult || '(无文本输出)'}
         tool: toolCall.toolName,
         result: '',
         error: rejectMsg,
+        todoId,
       })
       return
     }
@@ -625,6 +851,7 @@ ${executionResult || '(无文本输出)'}
       tool: toolCall.toolName,
       result: toolResult.result,
       error: toolResult.error,
+      todoId,
     })
 
     // edit_file 成功后创建 checkpoint
@@ -636,6 +863,15 @@ ${executionResult || '(无文本输出)'}
       if (checkpoint) {
         onEvent({ type: 'checkpoint', step: checkpoint.step, message: checkpoint.message })
       }
+    }
+
+    // 步级测试驱动闭环：edit_file/create_file 成功后自动跑受影响测试，失败喂回 LLM
+    if (
+      (toolCall.toolName === 'edit_file' || toolCall.toolName === 'create_file') &&
+      !toolResult.error &&
+      typeof args.path === 'string'
+    ) {
+      await this.runAffectedTests(args.path, messages)
     }
 
     // 构建结果文本（包含错误提示）
@@ -669,15 +905,192 @@ ${executionResult || '(无文本输出)'}
     // 推入结果收集数组
     toolResults.push({ toolCallId: callId, toolName: toolCall.toolName, result: resultText })
 
-    // edit_file 成功时重置该文件的失败计数
-    if (toolCall.toolName === 'edit_file' && !toolResult.error) {
+    // edit_file / create_file 成功时重置失败计数并上报文件产物
+    // （file_artifact 携带当前 todo 归属，TUI 展示在对应任务下方而非底部聚合）
+    if (
+      (toolCall.toolName === 'edit_file' || toolCall.toolName === 'create_file') &&
+      !toolResult.error
+    ) {
       const path = (args.path as string) || ''
-      this.consecutiveEditFailures.set(path, 0)
+      if (toolCall.toolName === 'edit_file') {
+        this.consecutiveEditFailures.set(path, 0)
+      }
       this.hasCodeChanges = true
+      if (path) {
+        onEvent({
+          type: 'file_artifact',
+          path,
+          tool: toolCall.toolName,
+          todoId: this.getCurrentTodoId(),
+        })
+      }
     }
 
     // 更新 todo 状态
     this.updateTodoProgress(toolCall.toolName, args)
+  }
+
+  /**
+   * 自适应压实：按 prompt token 占窗口比例分档。
+   * micro：零成本压缩早期工具结果；emergency：summarizer 摘要前期迭代。
+   * 只替换内容或按完整轮次边界裁剪，不拆 tool-call/tool-result 配对。
+   */
+  private async applyCompaction(messages: ExecMessage[], promptTokens: number): Promise<void> {
+    const compaction = this.config.compaction
+    const contextWindow = this.config.contextWindow
+    if (!compaction || !contextWindow) return
+
+    const level = compactionLevel(promptTokens, {
+      contextWindow,
+      compactionThreshold: compaction.compactionThreshold,
+      emergencyThreshold: compaction.emergencyThreshold,
+      keepRecentResultsFull: compaction.keepRecentResultsFull,
+    })
+    if (level === 'none') return
+
+    const pct = Math.round((promptTokens / contextWindow) * 100)
+
+    if (level === 'emergency' && this.config.compactModel) {
+      try {
+        const result = await emergencyCompactMessages(
+          messages,
+          this.config.compactModel,
+          compaction.keepRecentResultsFull,
+        )
+        if (result.changed) {
+          messages.length = 0
+          messages.push(...result.messages)
+          // 压实后细节单向丢失：提示模型可回读任务笔记找回状态（结构化笔记外置模式）
+          messages.push({
+            role: 'user',
+            content:
+              '[系统提示·上下文压实] 前期执行历史已被摘要，具体细节可能丢失。继续前请先 update_notes(action="read") 检查任务笔记；若笔记为空且后续任务较长，建议把当前进度与关键决策用 update_notes(action="append") 记录下来。',
+          })
+          this.config.onEvent({
+            type: 'system_info',
+            message: `上下文紧急压实（水位 ${pct}%）：前期迭代已摘要，最近 ${compaction.keepRecentResultsFull} 条工具结果完整保留`,
+          })
+          return
+        }
+      } catch (err) {
+        // 紧急压实异常：降级微压实，不阻塞执行
+        this.config.onEvent({
+          type: 'system_info',
+          message: `紧急压实异常，降级为微压实: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
+    }
+
+    const result = microCompactMessages(messages, compaction.keepRecentResultsFull)
+    if (result.changed) {
+      messages.length = 0
+      messages.push(...result.messages)
+      this.config.onEvent({
+        type: 'system_info',
+        message: `上下文微压实（水位 ${pct}%）：早期工具结果已压缩，最近 ${compaction.keepRecentResultsFull} 条完整保留`,
+      })
+    }
+  }
+
+  /**
+   * 步级测试驱动闭环（2026 长任务稳定共识架构：每步测试反馈喂回）：
+   * 按路径约定映射候选测试（src/x/y.ts → tests/**⁄y.test.ts(x)），
+   * 命中则以 bun test 运行；失败结果注入 messages，LLM 下轮自然看到并修复。
+   * 护栏：同文件每轮 execute 只跑一次；累计上限 10 次（防修复循环烧钱）。
+   */
+  private async runAffectedTests(editedPath: string, messages: unknown[]): Promise<void> {
+    const autoTest = this.config.autoTest
+    if (!autoTest) return
+    if (this.autoTestedFiles.has(editedPath)) return
+    if (this.autoTestCount >= 10) {
+      if (!this.autoTestLimitNotified) {
+        this.autoTestLimitNotified = true
+        this.config.onEvent({
+          type: 'system_info',
+          message: '步级自动测试已达上限（10 次），后续编辑不再自动跑测试，请自行用 bash 验证',
+        })
+      }
+      return
+    }
+
+    const candidates = await this.findCandidateTests(editedPath)
+    if (candidates.length === 0) return
+
+    this.autoTestedFiles.add(editedPath)
+    this.autoTestCount++
+
+    const projectRoot = this.config.toolContext.projectRoot
+    const timeoutMs = this.config.toolContext.bashTimeout * 2 * 1000
+    const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
+      (resolvePromise) => {
+        const child = spawn(autoTest.runner, ['test', ...candidates], {
+          cwd: projectRoot,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: timeoutMs,
+          ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+        })
+        let stdout = ''
+        let stderr = ''
+        child.stdout?.on('data', (d: Buffer) => {
+          stdout += d.toString()
+        })
+        child.stderr?.on('data', (d: Buffer) => {
+          stderr += d.toString()
+        })
+        child.on('close', (code) => resolvePromise({ stdout, stderr, exitCode: code ?? 1 }))
+        child.on('error', (err) => resolvePromise({ stdout: '', stderr: err.message, exitCode: 1 }))
+      },
+    )
+
+    if (result.exitCode === 0) {
+      // 通过：零 token 开销，仅状态行
+      this.config.onEvent({
+        type: 'system_info',
+        message: `步级自动测试通过: ${candidates.join(', ')}`,
+      })
+      return
+    }
+
+    // 失败：截断输出（保留尾部，失败信息在尾部）后注入下轮上下文
+    const raw = `${result.stdout}\n${result.stderr}`.trim()
+    const output = raw.length > 1500 ? `...（已截断）\n${raw.slice(-1500)}` : raw
+    ;(messages as Array<{ role: string; content: string }>).push({
+      role: 'user',
+      content: `[自动测试反馈] 修改 ${editedPath} 后相关测试未通过（${candidates.join(', ')}），请先修复以下失败再继续:\n${output}`,
+    })
+    this.config.onEvent({
+      type: 'system_info',
+      message: `步级自动测试失败，已喂回 LLM: ${candidates.join(', ')}`,
+    })
+  }
+
+  /** 按路径约定映射候选测试文件：src/**⁄name.ts(x) → tests 下任意深度的 name.test.ts(x) */
+  private async findCandidateTests(editedPath: string): Promise<string[]> {
+    const name = basename(editedPath).replace(/\.(ts|tsx|js|jsx)$/, '')
+    const wanted = new Set([`${name}.test.ts`, `${name}.test.tsx`])
+    const testsRoot = join(this.config.toolContext.projectRoot, 'tests')
+    const results: string[] = []
+
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      if (depth > 5) return
+      let entries: Dirent[]
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          await walk(full, depth + 1)
+        } else if (wanted.has(entry.name)) {
+          results.push(full)
+        }
+      }
+    }
+    await walk(testsRoot, 0)
+    return results
   }
 
   /** 权限检查（edit_file 审批前生成 diff 预览） */
@@ -778,5 +1191,67 @@ ${executionResult || '(无文本输出)'}
   /** 获取最后一次执行错误（用于自动修复模式） */
   getLastError(): string | null {
     return this.lastError
+  }
+
+  /** 证据结果的人类可读文本（喂给 verifier 的 verifyPrompt 证据段） */
+  private formatEvidenceForPrompt(set: EvidenceSet): string {
+    if (set.results.every((r) => r.skipped)) {
+      return '（未配置确定性检查，全部跳过）'
+    }
+    return set.results
+      .map((r) => {
+        if (r.skipped) return `- ${r.gate}: 跳过（未配置命令）`
+        const head = `- ${r.gate}: ${r.passed ? '通过' : '失败'} (${r.command})`
+        return r.passed || !r.output ? head : `${head}\n${r.output}`
+      })
+      .join('\n')
+  }
+
+  /**
+   * Loop Engineering 证据门禁：完成时运行确定性检查（lint/typecheck/test）。
+   * 全部 skipped（未配置命令）时静默通过；有实际检查时 emit 摘要供观测。
+   */
+  private async runEvidenceGate(): Promise<EvidenceSet> {
+    const gate = new EvidenceGate(this.config.evidence, this.config.toolContext.projectRoot)
+    const result = await gate.runAll()
+    const ran = result.results.filter((r) => !r.skipped)
+    if (ran.length > 0) {
+      const failed = ran.filter((r) => !r.passed)
+      this.config.onEvent({
+        type: 'system_info',
+        message: `证据门禁: ${formatEvidenceSummary(result)}${
+          failed.length > 0 ? '（确定性失败，将进入修复判定）' : ''
+        }`,
+      })
+    }
+    return result
+  }
+
+  /** 获取验证结论（未运行验证时为 null） */
+  getVerifyOutcome(): VerifyOutcome | null {
+    return this.verifyOutcome
+  }
+
+  /** 获取证据门禁结果（未运行/无证据配置时为 null） */
+  getEvidenceResult(): EvidenceSet | null {
+    return this.evidenceResult
+  }
+
+  /** 获取本轮执行的循环 trace（Loop Engineering 观测；round 由编排层重写） */
+  getLoopTrace(): LoopTraceRound {
+    const failures = this.verifyOutcome?.pass ? 0 : (this.verifyOutcome?.failures.length ?? 0)
+    return {
+      round: 0,
+      iterations: this.iterations,
+      evidencePassed: this.evidenceResult?.passed ?? true,
+      evidence: this.evidenceResult?.results ?? [],
+      verifyPass: this.verifyOutcome?.pass ?? null,
+      verifyFailures: failures,
+    }
+  }
+
+  /** 本次执行是否产生过代码变更 */
+  getHasCodeChanges(): boolean {
+    return this.hasCodeChanges
   }
 }

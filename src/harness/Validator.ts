@@ -3,9 +3,12 @@
  */
 
 import { spawn } from 'child_process'
-import { access, readFile } from 'fs/promises'
-import { join } from 'path'
+import { access, readdir, readFile } from 'fs/promises'
+import { join, relative } from 'path'
 import type { EvalTask, ValidateRule } from './types'
+
+/** agent 运行时旁路文件（不计入 diff 干净度检查，非代码产物） */
+const RUNTIME_ARTIFACTS = new Set(['.nexus/task-notes.md'])
 
 export interface ValidateResult {
   pass: boolean
@@ -104,12 +107,42 @@ async function checkRule(
           reason: `命令输出未包含: ${rule.pattern}\n输出: ${output.stdout.slice(0, 200)}`,
         }
       }
+      case 'no_extra_files': {
+        // diff 干净度：工作目录内所有文件必须在 allowed 列表内（POSIX 风格路径比较）
+        // 豁免 agent 运行时旁路文件（任务笔记等，非代码产物，已 gitignore）
+        const allowed = new Set(rule.allowed.map((p) => p.replace(/\\/g, '/')))
+        const actual = await listAllFiles(dir)
+        const extras = actual.filter((p) => !allowed.has(p) && !RUNTIME_ARTIFACTS.has(p))
+        if (extras.length === 0) return { pass: true }
+        return {
+          pass: false,
+          reason: `存在任务范围外的文件: ${extras.slice(0, 5).join(', ')}${extras.length > 5 ? ` 等 ${extras.length} 个` : ''}`,
+        }
+      }
       default:
         return { pass: false, reason: `未知验证类型: ${(rule as ValidateRule).type}` }
     }
   } catch (err) {
     return { pass: false, reason: `验证异常: ${err instanceof Error ? err.message : String(err)}` }
   }
+}
+
+/** 递归列出目录内所有文件的相对路径（POSIX 分隔符） */
+async function listAllFiles(root: string): Promise<string[]> {
+  const results: string[] = []
+  const walk = async (current: string): Promise<void> => {
+    const entries = await readdir(current, { withFileTypes: true })
+    for (const entry of entries) {
+      const fullPath = join(current, entry.name)
+      if (entry.isDirectory()) {
+        await walk(fullPath)
+      } else if (entry.isFile()) {
+        results.push(relative(root, fullPath).replace(/\\/g, '/'))
+      }
+    }
+  }
+  await walk(root)
+  return results.sort()
 }
 
 function runCommand(

@@ -13,6 +13,47 @@ interface ApprovalPromptProps {
   diff?: string
 }
 
+/**
+ * 审批参数可读格式化（替代 JSON.stringify 裸输出）：
+ * 按工具类型提取关键参数，未知工具退化为紧凑 key=value 拼接。
+ */
+export function formatApprovalParams(tool: string, params: Record<string, unknown>): string {
+  switch (tool) {
+    case 'git_merge': {
+      const n = typeof params.branchCount === 'number' ? params.branchCount : 0
+      return `合并 ${n} 个 worktree 分支`
+    }
+    case 'bash':
+      return truncate(String(params.command ?? ''), 80)
+    case 'edit_file':
+    case 'read_file':
+    case 'create_file':
+      return String(params.path ?? '')
+    case 'team_task_claim':
+      return `认领任务${params.task_id ? ` #${params.task_id}` : ''} (${params.agent_id ?? ''})`
+    case 'send_message':
+      return `${params.from ?? '?'} → ${params.to ?? '?'}: ${truncate(String(params.content ?? ''), 50)}`
+    case 'fetch_url':
+      return String(params.url ?? '')
+    case 'git_commit':
+      return truncate(String(params.message ?? ''), 60)
+    case 'git_push':
+      return `${params.remote ?? 'origin'}${params.branch ? `/${params.branch}` : ''}${params.force ? ' (force)' : ''}`
+    default: {
+      // 紧凑 key=value：长值截断，避免裸 JSON 刷屏
+      const parts = Object.entries(params).map(([k, v]) => {
+        const s = typeof v === 'string' ? v : JSON.stringify(v)
+        return `${k}=${truncate(s, 40)}`
+      })
+      return truncate(parts.join(' '), 100)
+    }
+  }
+}
+
+function truncate(text: string, max: number): string {
+  return text.length <= max ? text : text.slice(0, max) + '…'
+}
+
 export function ApprovalPrompt({ tool, description, diff }: ApprovalPromptProps) {
   const [showFullDiff, setShowFullDiff] = useState(false)
   // D 键切换 diff 展开/折叠 — 仅在 App 未拦截时作为备用

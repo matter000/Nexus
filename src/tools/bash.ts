@@ -13,7 +13,7 @@ import type { ToolContext, ToolHandler } from './registry'
 const definition: ToolDefinition = {
   name: 'bash',
   description:
-    '在项目目录中执行 shell 命令。有超时限制和输出大小限制。危险命令会被拦截。工作目录锁定在项目根目录。',
+    '在项目根目录执行 shell 命令（运行测试/构建/安装依赖/git 操作）。文件读写请用 read_file/edit_file 而非 cat/sed。有超时与输出大小限制，危险命令会被拦截要求审批。',
   inputSchema: {
     type: 'object',
     properties: {

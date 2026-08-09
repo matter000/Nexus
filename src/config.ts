@@ -44,11 +44,16 @@ const DEFAULT_CONFIG: NexusConfig = {
     maxReadLines: 2000,
     maxIterations: 50,
     maxOutputBytes: 102400,
-    maxAutoRetries: 0,
+    // Loop Engineering L2 反馈循环：执行错误/验证失败/证据门禁失败时自动重试 1 次
+    // （手册：反馈回传重试是验证循环核心；设为 0 可关闭）
+    maxAutoRetries: 1,
   },
   context: {
     budgetRatio: 0.8,
     recentTurnsKeep: 5,
+    compactionThreshold: 0.6,
+    emergencyThreshold: 0.9,
+    keepRecentResultsFull: 4,
   },
   checkpoint: {
     autoCheckpoint: true,
@@ -93,6 +98,20 @@ function validateConfig(config: NexusConfig): void {
     warnings.push('limits.max_read_lines 不能小于 100，已重置为默认值 2000')
     config.limits.maxReadLines = 2000
   }
+  if (config.limits.maxAutoRetries < 0) {
+    warnings.push('limits.max_auto_retries 不能为负数，已重置为默认值 1')
+    config.limits.maxAutoRetries = 1
+  }
+
+  // evidence 检查
+  if (
+    config.evidence &&
+    config.evidence.timeoutMs !== undefined &&
+    config.evidence.timeoutMs < 10
+  ) {
+    warnings.push('evidence.timeout_ms 不能小于 10 秒，已重置为默认值 180')
+    config.evidence.timeoutMs = 180
+  }
 
   // context 检查
   if (config.context.budgetRatio <= 0 || config.context.budgetRatio > 1) {
@@ -102,6 +121,24 @@ function validateConfig(config: NexusConfig): void {
   if (config.context.recentTurnsKeep < 1) {
     warnings.push('context.recent_turns_keep 必须至少为 1，已重置为默认值 5')
     config.context.recentTurnsKeep = 5
+  }
+  if (
+    config.context.compactionThreshold <= 0 ||
+    config.context.compactionThreshold >= 1 ||
+    config.context.compactionThreshold >= config.context.emergencyThreshold
+  ) {
+    warnings.push(
+      'context.compaction_threshold 必须在 0~1 之间且小于 emergency_threshold，已重置为默认值 0.6',
+    )
+    config.context.compactionThreshold = 0.6
+  }
+  if (config.context.emergencyThreshold <= 0 || config.context.emergencyThreshold > 1) {
+    warnings.push('context.emergency_threshold 必须在 0~1 之间，已重置为默认值 0.9')
+    config.context.emergencyThreshold = 0.9
+  }
+  if (config.context.keepRecentResultsFull < 1) {
+    warnings.push('context.keep_recent_results_full 必须至少为 1，已重置为默认值 4')
+    config.context.keepRecentResultsFull = 4
   }
 
   // permissions 检查
@@ -197,6 +234,11 @@ function mergeConfig(raw: Record<string, unknown>): NexusConfig {
   if (context) {
     if (context.budget_ratio) config.context.budgetRatio = context.budget_ratio
     if (context.recent_turns_keep) config.context.recentTurnsKeep = context.recent_turns_keep
+    if (context.compaction_threshold)
+      config.context.compactionThreshold = context.compaction_threshold
+    if (context.emergency_threshold) config.context.emergencyThreshold = context.emergency_threshold
+    if (context.keep_recent_results_full)
+      config.context.keepRecentResultsFull = context.keep_recent_results_full
   }
 
   // checkpoint
@@ -205,6 +247,29 @@ function mergeConfig(raw: Record<string, unknown>): NexusConfig {
     if (typeof checkpoint.auto_checkpoint === 'boolean')
       config.checkpoint.autoCheckpoint = checkpoint.auto_checkpoint
     if (typeof checkpoint.branch === 'string') config.checkpoint.branch = checkpoint.branch
+  }
+
+  // hooks（工具钩子，供 CI/外部循环编排）
+  const hooks = raw.hooks as Record<string, unknown> | undefined
+  if (hooks) {
+    const toolHooks: { preTool?: string; postTool?: string } = {}
+    if (typeof hooks.pre_tool === 'string') toolHooks.preTool = hooks.pre_tool
+    if (typeof hooks.post_tool === 'string') toolHooks.postTool = hooks.post_tool
+    if (toolHooks.preTool || toolHooks.postTool) {
+      config.hooks = toolHooks
+    }
+  }
+
+  // evidence（Loop Engineering 证据门禁：确定性检查命令，未配置时探测 package.json scripts）
+  const evidence = raw.evidence as Record<string, unknown> | undefined
+  if (evidence) {
+    const merged: NonNullable<NexusConfig['evidence']> = {}
+    if (typeof evidence.lint_command === 'string') merged.lintCommand = evidence.lint_command
+    if (typeof evidence.typecheck_command === 'string')
+      merged.typecheckCommand = evidence.typecheck_command
+    if (typeof evidence.test_command === 'string') merged.testCommand = evidence.test_command
+    if (typeof evidence.timeout_ms === 'number') merged.timeoutMs = evidence.timeout_ms
+    config.evidence = merged
   }
 
   return config

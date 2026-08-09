@@ -12,7 +12,6 @@ import type { NexusConfig, NexusEvent, Todo } from '../../src/agent/types'
 
 // 不 mock @ai-sdk/anthropic 和 @ai-sdk/openai，避免与 planner/executor 测试的 ai mock 冲突
 // init() 不实际调用 LLM，provider 工厂仅被创建但不会被调用
-
 ;(mock as any).module('../../src/context/RulesLoader', () => ({
   loadRules: async () => ({
     project: {
@@ -31,8 +30,11 @@ import type { NexusConfig, NexusEvent, Todo } from '../../src/agent/types'
   ContextAssembler: class MockAssembler {
     setCodeGraph = () => {}
     setLessonRetriever = () => {}
+    setSkillProvider = () => {}
     buildSystemPrompt = async () => 'system prompt'
+    buildSystemPromptParts = async () => ({ stable: 'system prompt', dynamic: '' })
     assembleMessages = () => []
+    assembleMessagesSplit = () => []
   },
 }))
 
@@ -126,6 +128,12 @@ let mockCodeGraphResult: any = { files: new Map() }
     getForPhase: () => [],
     register: () => {},
     setSubAgentRunner: () => {},
+    setHooks: () => {},
+    setSkillReader: () => {},
+    setWorktreeManager: () => {},
+    setTaskBoard: () => {},
+    setMailbox: () => {},
+    setMergeApprovalHandler: () => {},
   }),
 }))
 // callLLMWithRetry mock - 让 Planner 可以正常执行而不调用真实 LLM
@@ -143,13 +151,75 @@ let mockCodeGraphResult: any = { files: new Map() }
 let mockExecutorResult = '执行结果'
 let mockExecutorTodos: Todo[] = []
 let mockExecutorExecuteCalled = false
+/** 每次 execute 后返回的验证结论序列（按执行次数索引，超出取最后一个） */
+let mockExecutorVerifyOutcomeSeq: Array<{
+  pass: boolean
+  failures: Array<{ todoId: string; detail: string }>
+} | null> = []
+let mockExecutorLastErrorSeq: Array<string | null> = []
+/** 每次 execute 后返回的证据门禁结果序列（缺省 null=未运行） */
+let mockExecutorEvidenceSeq: Array<{
+  passed: boolean
+  results: Array<{
+    gate: string
+    command: string
+    exitCode: number | null
+    passed: boolean
+    skipped: boolean
+    output: string
+  }>
+} | null> = []
+let mockExecutorExecuteCount = 0
 ;(mock as any).module('../../src/agent/Executor', () => ({
   Executor: class MockExecutor {
     execute = async () => {
       mockExecutorExecuteCalled = true
+      mockExecutorExecuteCount++
       return mockExecutorResult
     }
     getTodos = () => mockExecutorTodos
+    getLastError = () =>
+      mockExecutorLastErrorSeq.length > 0
+        ? mockExecutorLastErrorSeq[
+            Math.min(mockExecutorExecuteCount - 1, mockExecutorLastErrorSeq.length - 1)
+          ]
+        : null
+    getVerifyOutcome = () =>
+      mockExecutorVerifyOutcomeSeq.length > 0
+        ? mockExecutorVerifyOutcomeSeq[
+            Math.min(mockExecutorExecuteCount - 1, mockExecutorVerifyOutcomeSeq.length - 1)
+          ]
+        : null
+    getEvidenceResult = () =>
+      mockExecutorEvidenceSeq.length > 0
+        ? mockExecutorEvidenceSeq[
+            Math.min(mockExecutorExecuteCount - 1, mockExecutorEvidenceSeq.length - 1)
+          ]
+        : null
+    getLoopTrace = () => {
+      // 与 getEvidenceResult/getVerifyOutcome 同源序列（按执行次数索引）
+      const evidence =
+        mockExecutorEvidenceSeq.length > 0
+          ? mockExecutorEvidenceSeq[
+              Math.min(mockExecutorExecuteCount - 1, mockExecutorEvidenceSeq.length - 1)
+            ]
+          : null
+      const verify =
+        mockExecutorVerifyOutcomeSeq.length > 0
+          ? mockExecutorVerifyOutcomeSeq[
+              Math.min(mockExecutorExecuteCount - 1, mockExecutorVerifyOutcomeSeq.length - 1)
+            ]
+          : null
+      return {
+        round: 0,
+        iterations: 0,
+        evidencePassed: evidence?.passed ?? true,
+        evidence: evidence?.results ?? [],
+        verifyPass: verify?.pass ?? null,
+        verifyFailures: verify && !verify.pass ? verify.failures.length : 0,
+      }
+    }
+    getHasCodeChanges = () => false
   },
 }))
 
@@ -183,7 +253,13 @@ function createDefaultConfig(overrides: Partial<NexusConfig> = {}): NexusConfig 
       maxOutputBytes: 102400,
       maxAutoRetries: 0,
     },
-    context: { budgetRatio: 0.8, recentTurnsKeep: 5 },
+    context: {
+      budgetRatio: 0.8,
+      recentTurnsKeep: 5,
+      compactionThreshold: 0.6,
+      emergencyThreshold: 0.9,
+      keepRecentResultsFull: 4,
+    },
     checkpoint: { autoCheckpoint: true, branch: 'nexus/checkpoints' },
     ...overrides,
   }
@@ -221,6 +297,10 @@ describe('Orchestrator', () => {
     mockExecutorExecuteCalled = false
     mockExecutorResult = '执行结果'
     mockExecutorTodos = []
+    mockExecutorVerifyOutcomeSeq = []
+    mockExecutorLastErrorSeq = []
+    mockExecutorEvidenceSeq = []
+    mockExecutorExecuteCount = 0
     mockDbSessions = []
     mockDbMessages = []
   })
@@ -397,6 +477,305 @@ describe('Orchestrator', () => {
     expect(mockExecutorExecuteCalled).toBe(true)
     expect(orch.getPhase()).toBe('done')
   })
+
+  it('验证失败时自动触发修复重试（Verify→Fix 闭环）', async () => {
+    // 第一次执行验证失败，重试后验证通过
+    mockExecutorVerifyOutcomeSeq = [
+      { pass: false, failures: [{ todoId: '1', detail: '缺少 email 验证' }] },
+      null,
+    ]
+    const config = createDefaultConfig()
+    config.limits.maxAutoRetries = 2
+    const events: NexusEvent[] = []
+    const orch = new Orchestrator(
+      createOrchestratorConfig({
+        skipPlan: true,
+        config,
+        onEvent: (e: NexusEvent) => events.push(e),
+      }),
+    )
+    await orch.init()
+    await orch.startBackgroundInit()
+    const result = await orch.submit('帮我修改代码')
+
+    expect(result).toBe('执行结果')
+    expect(mockExecutorExecuteCount).toBe(2) // 首次执行 + 1 次修复重试
+    const sysEvents = events.filter((e) => e.type === 'system_info') as Array<{ message: string }>
+    expect(sysEvents.some((e) => e.message.includes('验证未通过'))).toBe(true)
+    expect(sysEvents.some((e) => e.message.includes('自动修复成功'))).toBe(true)
+  })
+
+  it('验证驱动的修复最多 2 次，超出后停止重试', async () => {
+    // 验证始终失败
+    mockExecutorVerifyOutcomeSeq = [{ pass: false, failures: [{ todoId: '1', detail: '缺失项' }] }]
+    const config = createDefaultConfig()
+    config.limits.maxAutoRetries = 3
+    const orch = new Orchestrator(createOrchestratorConfig({ skipPlan: true, config }))
+    await orch.init()
+    await orch.startBackgroundInit()
+    await orch.submit('帮我修改代码')
+
+    // 首次执行 + 2 次验证修复（封顶），第 3 次预算不再使用
+    expect(mockExecutorExecuteCount).toBe(3)
+  })
+
+  it('执行错误时自动触发修复重试，修复成功后返回重试结果', async () => {
+    // 首次执行报错，重试后正常
+    mockExecutorLastErrorSeq = ['LLM 调用超时', null]
+    const config = createDefaultConfig()
+    config.limits.maxAutoRetries = 2
+    const events: NexusEvent[] = []
+    const orch = new Orchestrator(
+      createOrchestratorConfig({
+        skipPlan: true,
+        config,
+        onEvent: (e: NexusEvent) => events.push(e),
+      }),
+    )
+    await orch.init()
+    await orch.startBackgroundInit()
+    const result = await orch.submit('帮我修改代码')
+
+    expect(result).toBe('执行结果')
+    expect(mockExecutorExecuteCount).toBe(2)
+    const sysEvents = events.filter((e) => e.type === 'system_info') as Array<{ message: string }>
+    expect(sysEvents.some((e) => e.message.includes('检测到执行错误'))).toBe(true)
+    expect(sysEvents.some((e) => e.message.includes('自动修复成功'))).toBe(true)
+  })
+
+  it('证据门禁失败（确定性）时即使验证通过也进入修复循环', async () => {
+    // 首次执行：verifier 通过但 lint 门禁失败；重试后全绿
+    mockExecutorVerifyOutcomeSeq = [
+      { pass: true, failures: [] },
+      { pass: true, failures: [] },
+    ]
+    mockExecutorEvidenceSeq = [
+      {
+        passed: false,
+        results: [
+          {
+            gate: 'lint',
+            command: 'bun run lint',
+            exitCode: 1,
+            passed: false,
+            skipped: false,
+            output: 'error: unused variable x',
+          },
+          {
+            gate: 'test',
+            command: 'bun test',
+            exitCode: 0,
+            passed: true,
+            skipped: false,
+            output: '',
+          },
+        ],
+      },
+      {
+        passed: true,
+        results: [
+          {
+            gate: 'lint',
+            command: 'bun run lint',
+            exitCode: 0,
+            passed: true,
+            skipped: false,
+            output: '',
+          },
+          {
+            gate: 'test',
+            command: 'bun test',
+            exitCode: 0,
+            passed: true,
+            skipped: false,
+            output: '',
+          },
+        ],
+      },
+    ]
+    const config = createDefaultConfig()
+    config.limits.maxAutoRetries = 2
+    const events: NexusEvent[] = []
+    const orch = new Orchestrator(
+      createOrchestratorConfig({
+        skipPlan: true,
+        config,
+        onEvent: (e: NexusEvent) => events.push(e),
+      }),
+    )
+    await orch.init()
+    await orch.startBackgroundInit()
+    const result = await orch.submit('帮我修改代码')
+
+    expect(result).toBe('执行结果')
+    expect(mockExecutorExecuteCount).toBe(2) // 首次执行 + 1 次修复重试
+    const sysEvents = events.filter((e) => e.type === 'system_info') as Array<{ message: string }>
+    expect(sysEvents.some((e) => e.message.includes('证据门禁未通过'))).toBe(true)
+    expect(sysEvents.some((e) => e.message.includes('自动修复成功'))).toBe(true)
+  })
+
+  it('修复循环结束后发出循环报告汇总（轮次/证据/验证/成本）', async () => {
+    mockExecutorVerifyOutcomeSeq = [
+      { pass: false, failures: [{ todoId: '1', detail: '缺少实现' }] },
+      { pass: true, failures: [] },
+    ]
+    mockExecutorEvidenceSeq = [
+      {
+        passed: false,
+        results: [
+          {
+            gate: 'test',
+            command: 'bun test',
+            exitCode: 1,
+            passed: false,
+            skipped: false,
+            output: 'FAIL',
+          },
+          { gate: 'lint', command: '', exitCode: null, passed: false, skipped: true, output: '' },
+        ],
+      },
+      {
+        passed: true,
+        results: [
+          {
+            gate: 'test',
+            command: 'bun test',
+            exitCode: 0,
+            passed: true,
+            skipped: false,
+            output: '',
+          },
+          { gate: 'lint', command: '', exitCode: null, passed: false, skipped: true, output: '' },
+        ],
+      },
+    ]
+    const config = createDefaultConfig()
+    config.limits.maxAutoRetries = 2
+    const events: NexusEvent[] = []
+    const orch = new Orchestrator(
+      createOrchestratorConfig({
+        skipPlan: true,
+        config,
+        onEvent: (e: NexusEvent) => events.push(e),
+      }),
+    )
+    await orch.init()
+    await orch.startBackgroundInit()
+    await orch.submit('帮我修改代码')
+
+    const sysEvents = events.filter((e) => e.type === 'system_info') as Array<{ message: string }>
+    const report = sysEvents.find((e) => e.message.includes('循环报告'))
+    expect(report).toBeDefined()
+    expect(report!.message).toContain('共 2 轮')
+    expect(report!.message).toContain('证据门禁 1 过 1 败')
+    expect(report!.message).toContain('验证 1/2 轮通过')
+  })
+
+  it('runGoal 门面：验收未通过时重跑，通过后返回达成（L3 目标驱动）', async () => {
+    // 第 1 轮 test 门禁失败，第 2 轮全绿
+    mockExecutorVerifyOutcomeSeq = [
+      { pass: false, failures: [{ todoId: '1', detail: '缺实现' }] },
+      { pass: true, failures: [] },
+    ]
+    mockExecutorEvidenceSeq = [
+      {
+        passed: false,
+        results: [
+          {
+            gate: 'test',
+            command: 'bun test',
+            exitCode: 1,
+            passed: false,
+            skipped: false,
+            output: 'FAIL',
+          },
+        ],
+      },
+      {
+        passed: true,
+        results: [
+          {
+            gate: 'test',
+            command: 'bun test',
+            exitCode: 0,
+            passed: true,
+            skipped: false,
+            output: '',
+          },
+        ],
+      },
+    ]
+    const config = createDefaultConfig()
+    const orch = new Orchestrator(createOrchestratorConfig({ skipPlan: true, config }))
+    await orch.init()
+    await orch.startBackgroundInit()
+
+    const result = await orch.runGoal({ goal: '让所有测试通过', maxRounds: 3 })
+
+    expect(result.achieved).toBe(true)
+    expect(result.rounds).toBe(2)
+    expect(mockExecutorExecuteCount).toBe(2) // 每轮一次 execute
+  })
+
+  it('runGoal 门面：轮次耗尽后返回未达成（预算护栏）', async () => {
+    mockExecutorVerifyOutcomeSeq = [{ pass: false, failures: [{ todoId: '1', detail: '缺实现' }] }]
+    mockExecutorEvidenceSeq = [
+      {
+        passed: false,
+        results: [
+          {
+            gate: 'test',
+            command: 'bun test',
+            exitCode: 1,
+            passed: false,
+            skipped: false,
+            output: 'FAIL',
+          },
+        ],
+      },
+    ]
+    const config = createDefaultConfig()
+    const orch = new Orchestrator(createOrchestratorConfig({ skipPlan: true, config }))
+    await orch.init()
+    await orch.startBackgroundInit()
+
+    const result = await orch.runGoal({ goal: '让所有测试通过', maxRounds: 2 })
+
+    expect(result.achieved).toBe(false)
+    expect(result.rounds).toBe(2)
+  })
+
+  it('runLoop 门面：节拍执行一轮并写状态文件，abort 中断等待', async () => {
+    const config = createDefaultConfig()
+    const orch = new Orchestrator(createOrchestratorConfig({ skipPlan: true, config }))
+    await orch.init()
+    await orch.startBackgroundInit()
+
+    // 第一轮完成后进入间隔等待：触发 abort 提前结束（避免 60s 真实等待）
+    setTimeout(() => orch.abort(), 100)
+    const result = await orch.runLoop('检查依赖更新', { maxRounds: 3, intervalMin: 1 })
+
+    expect(mockExecutorExecuteCount).toBeGreaterThanOrEqual(1)
+    expect(result).toContain('/loop 结束')
+  })
+
+  it('本地 Automations 门面：无配置时列表为空、手动触发提示未知、收件箱提示未配置', async () => {
+    const config = createDefaultConfig()
+    const orch = new Orchestrator(createOrchestratorConfig({ skipPlan: true, config }))
+    await orch.init()
+    await orch.startBackgroundInit()
+
+    // 注：本文件 mock 了 fs/promises.readFile（返回空串），loops.toml 读取为空 → 无 loop 加载
+    expect(orch.listLoops()).toEqual([])
+    const now = await orch.runLoopNow('ci-triage')
+    expect(now).toBe('未知 loop: ci-triage')
+    expect(await orch.getLoopInbox()).toContain('未配置本地 Automations')
+    expect(await orch.getLoopInbox('ci-triage')).toContain('未知 loop')
+  })
+
+  // 注：stopRequested 分支不在本文件测试——本文件全局 mock 了 fs/promises.readFile（返回空串，
+  // bun mock.module 无法恢复），预写状态文件无法读回；LoopState 的停止信号读写已由
+  // loopState.test.ts 全覆盖，runLoop 对该分支的消费逻辑与 abort/预算停止路径同构。
 
   it('submit() 无可用 provider 时返回错误信息', async () => {
     delete process.env.ANTHROPIC_API_KEY
@@ -593,3 +972,7 @@ describe('Orchestrator', () => {
     })
   })
 })
+
+// 注意：本文件 mock 了 13 个模块，bun 的 mock.module 为全局且无法恢复
+// （已知限制 oven-sh/bun#7823）。依赖真实模块的测试文件（pluginLoader/skillLibrary）
+// 必须独立进程运行，见 package.json test:unit:skillplugin 与 CI 对应步骤。

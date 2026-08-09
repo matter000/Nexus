@@ -21,6 +21,10 @@ export function InputBox({
 }: InputBoxProps) {
   const [value, setValue] = useState('')
   const [completionIndex, setCompletionIndex] = useState(-1)
+  /** 会话级输入历史栈（提交时入栈，↑/↓ 回溯） */
+  const historyRef = useRef<string[]>([])
+  /** 历史浏览索引：-1 表示不在浏览状态 */
+  const historyIndexRef = useRef(-1)
 
   // 当输入以 / 开头时，计算匹配的命令补全列表
   const completions = useMemo(() => {
@@ -52,10 +56,44 @@ export function InputBox({
     // Enter 提交
     if (key.return) {
       if (value.trim()) {
+        // 入历史栈（连续重复不叠加）并重置浏览索引
+        const history = historyRef.current
+        if (history[history.length - 1] !== value.trim()) {
+          history.push(value.trim())
+        }
+        historyIndexRef.current = -1
         onSubmit(value.trim())
         setValue('')
         setCompletionIndex(-1)
       }
+      return
+    }
+
+    // ↑ 回溯历史（从最新一条开始）；↓ 向新方向移动，越界回到空输入
+    if (key.upArrow) {
+      const history = historyRef.current
+      if (history.length === 0) return
+      const nextIndex =
+        historyIndexRef.current === -1
+          ? history.length - 1
+          : Math.max(0, historyIndexRef.current - 1)
+      historyIndexRef.current = nextIndex
+      setValue(history[nextIndex])
+      setCompletionIndex(-1)
+      return
+    }
+    if (key.downArrow) {
+      const history = historyRef.current
+      if (historyIndexRef.current === -1) return
+      const nextIndex = historyIndexRef.current + 1
+      if (nextIndex >= history.length) {
+        historyIndexRef.current = -1
+        setValue('')
+      } else {
+        historyIndexRef.current = nextIndex
+        setValue(history[nextIndex])
+      }
+      setCompletionIndex(-1)
       return
     }
 
@@ -79,13 +117,15 @@ export function InputBox({
       return
     }
 
-    // 忽略带修饰键的输入（Shift+P 留给 TodoProgress 折叠等全局快捷键）
+    // 忽略带修饰键的输入（Shift 等组合键留给全局快捷键）
     // 但允许 Alt（meta）在 Alt+Enter 中已处理
     if (key.shift || key.ctrl) return
 
     if (input) {
       setValue((v) => v + input)
       setCompletionIndex(-1)
+      // 手动编辑后退出历史浏览状态（再按 ↑ 从最新一条重新开始）
+      historyIndexRef.current = -1
     }
   })
 

@@ -1,0 +1,35 @@
+[id]
+name = "空值防护"
+category = "bug-fix"
+difficulty = "easy"
+description = "为嵌套对象访问添加空值防护，避免 undefined 解引用"
+
+[request]
+user_prompt = "修复 getUserName 在 user 或 user.profile 为 undefined 时抛出 TypeError 的问题，缺失时应返回 'anonymous'"
+
+[[initial_files]]
+path = "src/user.ts"
+content = """
+export interface User {
+  profile?: {
+    name?: string
+  }
+}
+
+export function getUserName(user: User | undefined): string {
+  return user.profile.name ?? 'anonymous'
+}
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/user.ts"
+pattern = "anonymous"
+
+[[validate]]
+type = "bash_pass"
+command = "grep -F '?.' src/user.ts || grep -F 'if (!user' src/user.ts"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/user.ts"]

@@ -50,7 +50,13 @@ describe('CLI args --model / --provider 覆盖逻辑', () => {
       },
       permissions: { mode: 'ask' as const },
       limits: { maxSessionCost: 5.0, bashTimeout: 30, maxReadLines: 2000, maxIterations: 50, maxOutputBytes: 102400 },
-      context: { budgetRatio: 0.8, recentTurnsKeep: 5 },
+      context: {
+        budgetRatio: 0.8,
+        recentTurnsKeep: 5,
+        compactionThreshold: 0.6,
+        emergencyThreshold: 0.9,
+        keepRecentResultsFull: 4,
+      },
       checkpoint: { autoCheckpoint: true, branch: 'nexus/checkpoints' },
     }
   }

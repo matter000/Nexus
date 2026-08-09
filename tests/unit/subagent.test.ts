@@ -22,7 +22,7 @@ let generateTextCallCount = 0
     return {
       text: '子任务完成',
       toolCalls: [],
-      usage: { promptTokens: 10, completionTokens: 5 },
+      usage: { inputTokens: 10, outputTokens: 5 },
     }
   },
 }))
@@ -117,8 +117,8 @@ describe('SubAgent 中断信号', () => {
           // 首次：返回一个 toolCall 让循环继续
           return {
             text: '调用工具',
-            toolCalls: [{ toolName: 'read_file', args: { path: 'a.ts' } }],
-            usage: { promptTokens: 10, completionTokens: 5 },
+            toolCalls: [{ toolName: 'read_file', input: { path: 'a.ts' } }],
+            usage: { inputTokens: 10, outputTokens: 5 },
           }
         }
         // 第二次：此时应已被 abort，模拟 AbortError
@@ -127,7 +127,7 @@ describe('SubAgent 中断信号', () => {
           ;(err as any).name = 'AbortError'
           throw err
         }
-        return { text: '完成', toolCalls: [], usage: { promptTokens: 5, completionTokens: 3 } }
+        return { text: '完成', toolCalls: [], usage: { inputTokens: 5, outputTokens: 3 } }
       },
     }))
 
@@ -174,7 +174,7 @@ describe('SubAgent 引擎化', () => {
       generateText: async (opts: any) => {
         generateTextCallCount++
         capturedMessages = opts.messages
-        return { text: '完成', toolCalls: [], usage: { promptTokens: 5, completionTokens: 3 } }
+        return { text: '完成', toolCalls: [], usage: { inputTokens: 5, outputTokens: 3 } }
       },
     }))
 
@@ -216,7 +216,7 @@ describe('SubAgent 引擎化', () => {
       generateText: async (opts: any) => {
         generateTextCallCount++
         capturedTools = opts.tools
-        return { text: '完成', toolCalls: [], usage: { promptTokens: 5, completionTokens: 3 } }
+        return { text: '完成', toolCalls: [], usage: { inputTokens: 5, outputTokens: 3 } }
       },
     }))
 
@@ -244,7 +244,7 @@ describe('SubAgent 引擎化', () => {
       generateText: async () => ({
         text: '完成',
         toolCalls: [],
-        usage: { promptTokens: 5, completionTokens: 3 },
+        usage: { inputTokens: 5, outputTokens: 3 },
       }),
     }))
 

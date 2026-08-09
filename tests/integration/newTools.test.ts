@@ -198,6 +198,70 @@ describe('fetch_url tool', () => {
   })
 })
 
+describe('update_notes tool', () => {
+  let tempDir: string
+  let registry: ReturnType<typeof createToolRegistry>
+  let context: ToolContext
+
+  beforeAll(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'nexus-notes-'))
+    registry = createToolRegistry()
+    context = {
+      projectRoot: tempDir,
+      callId: 'test-notes-1',
+      maxReadLines: 2000,
+      maxOutputBytes: 102400,
+      bashTimeout: 10,
+      todos: [],
+    }
+  })
+
+  afterAll(async () => {
+    await rm(tempDir, { recursive: true, force: true })
+  })
+
+  it('笔记不存在时 read 返回引导文本', async () => {
+    const result = await registry.execute('update_notes', { action: 'read' }, context)
+    expect(result.error).toBeUndefined()
+    expect(result.result).toContain('笔记为空')
+  })
+
+  it('append 后 read 能读回内容', async () => {
+    const w = await registry.execute(
+      'update_notes',
+      { action: 'append', content: '- [步骤1] 已修改 src/a.ts' },
+      context,
+    )
+    expect(w.error).toBeUndefined()
+    const r = await registry.execute('update_notes', { action: 'read' }, context)
+    expect(r.result).toContain('已修改 src/a.ts')
+  })
+
+  it('多次 append 追加而非覆盖', async () => {
+    await registry.execute('update_notes', { action: 'append', content: '- [步骤2] 测试通过' }, context)
+    const r = await registry.execute('update_notes', { action: 'read' }, context)
+    expect(r.result).toContain('步骤1')
+    expect(r.result).toContain('步骤2')
+  })
+
+  it('replace 整体替换笔记', async () => {
+    await registry.execute('update_notes', { action: 'replace', content: '精炼版笔记' }, context)
+    const r = await registry.execute('update_notes', { action: 'read' }, context)
+    expect(r.result).toContain('精炼版笔记')
+    expect(r.result).not.toContain('步骤1')
+  })
+
+  it('schema 校验: append 缺 content 时报错', async () => {
+    const result = await registry.execute('update_notes', { action: 'append' }, context)
+    expect(result.error).toContain('content')
+  })
+
+  it('schema 校验拒绝未知 action', async () => {
+    const result = await registry.execute('update_notes', { action: 'delete' }, context)
+    expect(result.error).toBeDefined()
+  })
+})
+
 describe('ToolRegistry 新工具注册', () => {
   let registry: ReturnType<typeof createToolRegistry>
 
@@ -217,6 +281,13 @@ describe('ToolRegistry 新工具注册', () => {
     expect(registry.has('fetch_url')).toBe(true)
   })
 
+  it('update_notes 已注册且双阶段免审批', () => {
+    const handler = registry.get('update_notes')
+    expect(handler).toBeDefined()
+    expect(handler?.definition.phase).toBe('both')
+    expect(handler?.definition.requiresApproval).toBe(false)
+  })
+
   it('plan 阶段包含只读工具', () => {
     const names = registry.getForPhase('plan').map((t) => t.definition.name)
     expect(names).toContain('list_directory')
@@ -224,9 +295,9 @@ describe('ToolRegistry 新工具注册', () => {
     expect(names).toContain('fetch_url')
   })
 
-  it('总共注册 21 个工具', () => {
+  it('总共注册 28 个工具', () => {
     const tools = registry.getAll()
-    expect(tools.length).toBe(21)
+    expect(tools.length).toBe(28)
     // 显式列出工具名，新增/删除工具时此断言会失败，强制同步测试
     const names = tools.map((t) => t.definition.name)
     expect(names).toEqual([
@@ -236,9 +307,11 @@ describe('ToolRegistry 新工具注册', () => {
       'grep',
       'glob',
       'update_todo',
+      'update_notes',
       'submit_plan',
       'list_directory',
       'search_symbol',
+      'lsp',
       'fetch_url',
       'create_file',
       'git_status',
@@ -246,6 +319,11 @@ describe('ToolRegistry 新工具注册', () => {
       'git_push',
       'web_search',
       'semantic_search',
+      'load_skill',
+      'team_task_list',
+      'team_task_claim',
+      'send_message',
+      'read_messages',
       'dispatch_subagent',
       'dispatch_agent',
       'dispatch_subagents',

@@ -39,6 +39,10 @@ const SHARED_TYPE_FILES = new Set(['agent/types', 'harness/types'])
 // Format: "source-file: import-path"
 const KNOWN_VIOLATIONS = new Set([
   'src/tools/registry.ts: ../agent/SubAgent',
+  // 多引擎分派工具（dispatch_agent/run_pipeline）需引用引擎注册表与流水线运行器，
+  // 属于既有架构债务（HEAD 已存在），待引擎层下沉或经接口解耦后移除
+  'src/tools/registry.ts: ../agent/AgentEngine',
+  'src/tools/registry.ts: ../agent/PipelineRunner',
   'src/context/Assembler.ts: ../tools/registry',
 ])
 

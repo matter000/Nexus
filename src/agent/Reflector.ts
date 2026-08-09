@@ -97,7 +97,7 @@ ${experienceText}`
         model: this.model,
         system: '你是经验提炼助手。从 Agent 执行轨迹中提炼可泛化的教训，输出严格 JSON。',
         messages: [{ role: 'user', content: prompt }],
-        maxTokens: 800,
+        maxOutputTokens: 800,
       })
       return parseReflectedLessons(result.text)
     } catch {

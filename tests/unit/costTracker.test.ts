@@ -2,10 +2,18 @@
  * 单元测试: CostTracker 成本追踪
  */
 
-import { describe, expect, it } from 'bun:test'
-import { CostTracker } from '../../src/router/CostTracker'
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
+import { CostTracker, deepSeekPeakConfig } from '../../src/router/CostTracker'
 
 describe('CostTracker', () => {
+  // 峰谷计价默认开启（本地时间 9-12/14-18 点 2 倍）：基础计价用例固定为空峰窗保证确定性
+  const origHours = deepSeekPeakConfig.hours
+  beforeAll(() => {
+    deepSeekPeakConfig.hours = []
+  })
+  afterAll(() => {
+    deepSeekPeakConfig.hours = origHours
+  })
   it('初始状态为零', () => {
     const tracker = new CostTracker()
     expect(tracker.getTotalCost()).toBe(0)
@@ -215,5 +223,93 @@ describe('CostTracker', () => {
       cacheHitTokens: 500, // 异常值：大于 inputTokens
     })
     expect(tracker.getTotalCost()).toBeGreaterThanOrEqual(0)
+  })
+})
+
+// ─── DeepSeek 峰谷计价（2026-08 官方预告：本地时间 9-12/14-18 点 2 倍） ────────
+
+describe('CostTracker 峰谷计价', () => {
+  const origHours = deepSeekPeakConfig.hours
+  const origMultiplier = deepSeekPeakConfig.multiplier
+
+  it('DeepSeek 请求落在峰窗内时单价乘倍率', () => {
+    const hour = new Date().getHours()
+    deepSeekPeakConfig.hours = [[hour, hour + 1]]
+    deepSeekPeakConfig.multiplier = 2
+    const tracker = new CostTracker()
+    tracker.record({
+      role: 'executor',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      inputTokens: 1000,
+      outputTokens: 500,
+      costPer1kInput: 0.00014,
+      costPer1kOutput: 0.00028,
+    })
+    // 峰窗内: (0.00014 + 0.00028*0.5) * 2 = 0.00056
+    expect(tracker.getTotalCost()).toBeCloseTo(0.00056)
+    expect(tracker.getSummary()).toContain('峰谷计价已生效')
+    deepSeekPeakConfig.hours = origHours
+    deepSeekPeakConfig.multiplier = origMultiplier
+  })
+
+  it('非峰窗（hours 为空）时维持原计价', () => {
+    deepSeekPeakConfig.hours = []
+    deepSeekPeakConfig.multiplier = 2
+    const tracker = new CostTracker()
+    tracker.record({
+      role: 'executor',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      inputTokens: 1000,
+      outputTokens: 500,
+      costPer1kInput: 0.00014,
+      costPer1kOutput: 0.00028,
+    })
+    expect(tracker.getTotalCost()).toBeCloseTo(0.00028)
+    expect(tracker.getSummary()).not.toContain('峰谷计价已生效')
+    deepSeekPeakConfig.hours = origHours
+    deepSeekPeakConfig.multiplier = origMultiplier
+  })
+
+  it('非 DeepSeek provider 不受峰窗影响', () => {
+    const hour = new Date().getHours()
+    deepSeekPeakConfig.hours = [[hour, hour + 1]]
+    deepSeekPeakConfig.multiplier = 2
+    const tracker = new CostTracker()
+    tracker.record({
+      role: 'executor',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-20250514',
+      inputTokens: 1000,
+      outputTokens: 500,
+      costPer1kInput: 0.003,
+      costPer1kOutput: 0.015,
+    })
+    expect(tracker.getTotalCost()).toBeCloseTo(0.0105)
+    deepSeekPeakConfig.hours = origHours
+    deepSeekPeakConfig.multiplier = origMultiplier
+  })
+
+  it('峰窗内缓存命中部分同样乘倍率', () => {
+    const hour = new Date().getHours()
+    deepSeekPeakConfig.hours = [[hour, hour + 1]]
+    deepSeekPeakConfig.multiplier = 2
+    const tracker = new CostTracker()
+    tracker.record({
+      role: 'executor',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      inputTokens: 1000,
+      outputTokens: 0,
+      costPer1kInput: 0.00014,
+      costPer1kOutput: 0.00028,
+      costPer1kInputCached: 0.0000028,
+      cacheHitTokens: 1000,
+    })
+    // 全部命中: 0.0000028 * 2 = 0.0000056
+    expect(tracker.getTotalCost()).toBeCloseTo(0.0000056)
+    deepSeekPeakConfig.hours = origHours
+    deepSeekPeakConfig.multiplier = origMultiplier
   })
 })

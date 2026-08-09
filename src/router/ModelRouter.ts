@@ -25,29 +25,35 @@ const MODEL_COST_DATA: Record<
   string,
   { costPer1kInput: number; costPer1kOutput: number; costPer1kInputCached?: number }
 > = {
-  // DeepSeek v4 系列（最新定价，单位: 美元）
-  // 价格参考（百万 tokens）:
-  //   v4-flash: 输入(缓存命中)=0.02元, 输入(缓存未命中)=1元, 输出=2元
-  //   v4-pro:   输入(缓存命中)=0.025元, 输入(缓存未命中)=3元, 输出=6元
-  // 按 7.3 汇率估算 USD/1K:
-  //   v4-flash: 缓存命中输入≈$0.0000027/1K, 缓存未命中输入≈$0.000137/1K, 输出≈$0.000274/1K
-  //   v4-pro:   缓存命中输入≈$0.0000034/1K, 缓存未命中输入≈$0.000411/1K, 输出≈$0.000822/1K
-  // 注意: 缓存命中价格远低于未命中（v4-flash 约 50x 差异，v4-pro 约 120x 差异）
-  // costPer1kInput 记录"未命中"价格，costPer1kInputCached 记录"命中"价格，
-  // CostTracker 按命中/未命中 token 数分级计费
+  // DeepSeek v4 系列（2026-08 官方现行价，单位: 美元/1K token）
+  // 价格参考（百万 tokens，截至 2026-08-06 公告前）：
+  //   v4-flash: 输入(缓存命中)=0.0028, 输入(缓存未命中)=0.14, 输出=0.28
+  //   v4-pro:   输入(缓存命中)=0.0034, 输入(缓存未命中)=0.435, 输出=0.87
+  // 注意: 8/6 官方已公告即将整体涨价；峰谷计价（本地时间 9-12/14-18 点 2 倍）
+  // 已由 CostTracker.deepSeekPeakConfig 处理，此处记录基准价。
+  // 缓存命中价格远低于未命中（flash 约 50x 差异，pro 约 128x 差异）
   'deepseek-v4-flash': {
-    costPer1kInput: 0.000137,
-    costPer1kOutput: 0.000274,
-    costPer1kInputCached: 0.0000027,
+    costPer1kInput: 0.00014,
+    costPer1kOutput: 0.00028,
+    costPer1kInputCached: 0.0000028,
   },
   'deepseek-v4-pro': {
-    costPer1kInput: 0.000411,
-    costPer1kOutput: 0.000822,
+    costPer1kInput: 0.000435,
+    costPer1kOutput: 0.00087,
     costPer1kInputCached: 0.0000034,
   },
   // Anthropic 系列
-  'claude-sonnet-4-20250514': { costPer1kInput: 0.003, costPer1kOutput: 0.015 },
-  'claude-haiku-3-5': { costPer1kInput: 0.0008, costPer1kOutput: 0.004 },
+  // 缓存读取价 = 基础输入价 × 0.1（显式 prompt caching 命中后 stable 前缀按此计费）
+  'claude-sonnet-4-20250514': {
+    costPer1kInput: 0.003,
+    costPer1kOutput: 0.015,
+    costPer1kInputCached: 0.0003,
+  },
+  'claude-haiku-3-5': {
+    costPer1kInput: 0.0008,
+    costPer1kOutput: 0.004,
+    costPer1kInputCached: 0.00008,
+  },
   // OpenAI 系列
   'gpt-4o': { costPer1kInput: 0.0025, costPer1kOutput: 0.01 },
   'gpt-4o-mini': { costPer1kInput: 0.00015, costPer1kOutput: 0.0006 },
@@ -81,6 +87,19 @@ const DEFAULT_ROLE_MODELS: Record<ModelRole, string> = {
   verifier: 'deepseek-v4-pro',
 }
 
+/**
+ * OpenAI 兼容端点（DeepSeek 等）适配：
+ * AI SDK v6 的 createOpenAI 默认走 Responses API（/v1/responses），
+ * 而 DeepSeek/兼容端点仅提供 Chat Completions（/v1/chat/completions）。
+ * 返回一个可调用函数，调用即路由到 provider.chat(model)（Chat Completions）。
+ */
+function createOpenAICompatible(
+  opts: Parameters<typeof createOpenAI>[0],
+): (model: string) => LanguageModel {
+  const provider = createOpenAI(opts)
+  return (model: string) => provider.chat(model) as LanguageModel
+}
+
 /** 降级链: 跨 provider 容灾策略
  *  deepseek-v4-flash → claude-haiku-3-5 → gpt-4o-mini（同生态内降级无意义，flash 失败通常是服务端问题）
  *  deepseek-v4-pro → deepseek-v4-flash → claude-haiku-3-5 → gpt-4o-mini
@@ -100,10 +119,7 @@ export const FALLBACK_CHAIN: Record<string, string> = {
 export class ModelRouter {
   private config: NexusConfig
   private costTracker: CostTracker
-  private providers: Map<
-    string,
-    ReturnType<typeof createAnthropic> | ReturnType<typeof createOpenAI>
-  >
+  private providers: Map<string, (model: string) => LanguageModel>
   private currentModels: Record<ModelRole, string>
   private secrets: SecretsConfig
 
@@ -144,7 +160,7 @@ export class ModelRouter {
       } else if (name === 'deepseek') {
         this.providers.set(
           'deepseek',
-          createOpenAI({
+          createOpenAICompatible({
             baseURL:
               this.secrets.providers.deepseek?.baseUrl ??
               providerConfig.baseUrl ??
@@ -172,7 +188,7 @@ export class ModelRouter {
         // 代理 DeepSeek 端点时挂载 fetch 拦截器，使 thinking 参数注入生效
         this.providers.set(
           name,
-          createOpenAI({
+          createOpenAICompatible({
             baseURL,
             apiKey,
             ...(baseURL.includes('api.deepseek.com') ? { fetch: createDeepSeekFetch() } : {}),
@@ -235,7 +251,12 @@ export class ModelRouter {
     return DEFAULT_ROLE_MODELS[role]
   }
 
-  /** 构建模型的路由信息（合并适配器能力数据 + 成本数据） */
+  /** 构建模型的路由信息（合并适配器能力数据 + 成本数据）
+   *
+   * 成本来源优先级：config.toml 的 costOverrides（用户自定义/新模型的唯一配置入口）
+   * > 内置成本表。未知模型默认记 0（不估算）——宁可显示 $0 也不按高价误报，
+   * 用户可通过 costOverrides 补充实际定价。
+   */
   private buildModelRoute(modelName: string, role: ModelRole): ModelRoute | null {
     const providerName = this.resolveProviderName(modelName)
     if (!providerName) return null
@@ -244,7 +265,7 @@ export class ModelRouter {
     if (!adapter) return null
 
     const costData = this.config.models.costOverrides?.[modelName] ??
-      MODEL_COST_DATA[modelName] ?? { costPer1kInput: 0.003, costPer1kOutput: 0.015 }
+      MODEL_COST_DATA[modelName] ?? { costPer1kInput: 0, costPer1kOutput: 0 }
 
     return {
       provider: providerName,
@@ -393,13 +414,13 @@ export class ModelRouter {
     const modelName = this.currentModels[role]
     const route = this.buildModelRoute(modelName, role)
     if (route) return route
-    // 未知模型,返回默认值
+    // 未知模型：成本记 0（不估算），能力字段取保守默认值
     return {
       provider: 'anthropic',
       model: modelName,
       role,
-      costPer1kInput: 0.003,
-      costPer1kOutput: 0.015,
+      costPer1kInput: 0,
+      costPer1kOutput: 0,
       contextWindow: 200000,
       supportsTools: true,
       supportsStreaming: true,
@@ -430,13 +451,13 @@ export class ModelRouter {
   getRouteInfoForModel(modelName: string): ModelRoute {
     const route = this.buildModelRoute(modelName, 'executor')
     if (route) return route
-    // 未知模型,返回默认值
+    // 未知模型：成本记 0（不估算）
     return {
       provider: 'anthropic',
       model: modelName,
       role: 'executor',
-      costPer1kInput: 0.003,
-      costPer1kOutput: 0.015,
+      costPer1kInput: 0,
+      costPer1kOutput: 0,
       contextWindow: 200000,
       supportsTools: true,
       supportsStreaming: true,
