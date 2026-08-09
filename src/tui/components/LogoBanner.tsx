@@ -99,6 +99,8 @@ interface LogoBannerProps {
   projectRoot?: string
   /** 示例任务选择回调（App 层填入输入框） */
   onPickExample?: (text: string) => void
+  /** 紧凑模式：终端高度不足时隐藏能力清单与示例任务（首帧不溢出视口） */
+  compact?: boolean
 }
 
 export function LogoBanner({
@@ -106,6 +108,7 @@ export function LogoBanner({
   model,
   projectRoot,
   onPickExample,
+  compact = false,
 }: LogoBannerProps) {
   const dirName = projectRoot ? projectRoot.split(/[\\/]/).pop() || projectRoot : ''
 
@@ -131,15 +134,17 @@ export function LogoBanner({
         </Text>
       </Box>
 
-      {/* 能力清单 */}
-      <Box flexDirection="column" marginTop={1}>
-        {CAPABILITIES.map((cap) => (
-          <Box key={cap}>
-            <Text color={theme.colors.primary}>▪ </Text>
-            <Text color={theme.colors.fg}>{cap}</Text>
-          </Box>
-        ))}
-      </Box>
+      {/* 能力清单（compact 模式隐藏） */}
+      {!compact && (
+        <Box flexDirection="column" marginTop={1}>
+          {CAPABILITIES.map((cap) => (
+            <Box key={cap}>
+              <Text color={theme.colors.primary}>▪ </Text>
+              <Text color={theme.colors.fg}>{cap}</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
 
       {/* 命令提示 */}
       <Box marginTop={1}>
@@ -148,20 +153,22 @@ export function LogoBanner({
         </Text>
       </Box>
 
-      {/* 示例任务（按 1/2/3 填入输入框） */}
-      <Box flexDirection="column" marginTop={2}>
-        <Text color={theme.colors.muted} dimColor>
-          ── 试试这些（按 1/2/3 选择）──
-        </Text>
-        {EXAMPLES.map((ex) => (
-          <Box key={ex.key}>
-            <Text color={theme.colors.accent} bold>
-              {ex.key})
-            </Text>
-            <Text> {ex.text}</Text>
-          </Box>
-        ))}
-      </Box>
+      {/* 示例任务（按 1/2/3 填入输入框；compact 模式隐藏） */}
+      {!compact && (
+        <Box flexDirection="column" marginTop={2}>
+          <Text color={theme.colors.muted} dimColor>
+            ── 试试这些（按 1/2/3 选择）──
+          </Text>
+          {EXAMPLES.map((ex) => (
+            <Box key={ex.key}>
+              <Text color={theme.colors.accent} bold>
+                {ex.key})
+              </Text>
+              <Text> {ex.text}</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
     </Box>
   )
 }

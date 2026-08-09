@@ -4,7 +4,7 @@
  * 布局风格参考 Claude Code CLI
  */
 
-import { Box, Static, Text, useApp, useInput } from 'ink'
+import { Box, Static, Text, useApp, useInput, useStdout } from 'ink'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentPhase, NexusEvent, Plan, Todo } from '../agent/types'
 import { type CommandContext, handleSlashCommand, isSlashCommand } from '../cli/commands'
@@ -684,6 +684,11 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   // 欢迎态：无对话内容且无面板覆盖时，展示居中欢迎屏
   const showWelcome = !hasUserMessages && !streamingText && !showConfig && !showModelSelector
 
+  // 终端可视高度：欢迎屏按高度自动裁剪（compact 模式），保证首帧不溢出视口（防 resize 残影）
+  const { stdout } = useStdout()
+  const terminalRows = stdout.rows ?? 24
+  const welcomeCompact = terminalRows < 46
+
   return (
     <Box flexDirection="column">
       {/* 顶部状态栏：模型/模式/权限/阶段（L2 信息行已移至输入框上方） */}
@@ -762,19 +767,18 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         </Box>
       )}
 
-      {/* 欢迎面板（无用户消息时）：置于 Static 沉降区——渲染一次进入终端滚动历史，
-          不再参与动态重绘（终端 resize 放大时不会残留旧帧欢迎屏） */}
-      <Static items={showWelcome ? ['welcome'] : []}>
-        {(item) => (
-          <Box key={item} justifyContent="center" paddingX={1} marginBottom={1}>
-            <LogoBanner
-              version="0.1.0"
-              model={commandContext.getModel()}
-              projectRoot={projectRoot}
-            />
-          </Box>
-        )}
-      </Static>
+      {/* 欢迎面板（无用户消息时）：动态区渲染；终端高度不足时 compact 裁剪，
+          保证首帧总高 ≤ 视口（避免底部行被推入滚动缓冲区，放大终端出现旧帧残留） */}
+      {showWelcome && (
+        <Box justifyContent="center" paddingX={1}>
+          <LogoBanner
+            version="0.1.0"
+            model={commandContext.getModel()}
+            projectRoot={projectRoot}
+            compact={welcomeCompact}
+          />
+        </Box>
+      )}
       {/* 已定稿消息：Ink <Static> 沉降区——渲染一次后进入终端滚动历史，
           不再参与动态帧重布局（长会话防闪烁/防全量重排的核心手段） */}
       <Static items={messages}>
