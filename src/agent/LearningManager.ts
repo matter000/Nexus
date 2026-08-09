@@ -144,25 +144,40 @@ export class LearningManager {
 
   /**
    * L4：消费循环 trace 的失败模式——高频失败（count >= 3）且无等价教训时
-   * 生成模板化教训（零 LLM 成本）。返回统计供会话末播报。
+   * 生成教训。advice 优先用 Reflector LLM 精化（NEXUS_L4_REFINE=off 可关闭），
+   * 精化失败/关闭时降级为模板文案（零成本兜底）。返回统计供会话末播报。
    */
-  consumeLoopTraces(minCount = 3): {
+  async consumeLoopTraces(
+    minCount = 3,
+    summarizerModel?: LanguageModel,
+  ): Promise<{
     patterns: FailurePattern[]
     newLessons: number
-  } {
+  }> {
     const result = { patterns: [] as FailurePattern[], newLessons: 0 }
     try {
       if (!this.traceStore || !this.memoryStore) return result
       const patterns = this.traceStore.failurePatterns(minCount)
       result.patterns = patterns
       const existing = this.memoryStore.listLessons()
+      const refineEnabled = process.env.NEXUS_L4_REFINE !== 'off'
       for (const p of patterns) {
         const key = `[循环] ${p.loopName}: ${p.pattern}`
         // 已有等价教训（trigger_desc 前缀匹配）则跳过
         if (existing.some((l) => l.triggerDesc.startsWith(`[循环] ${p.loopName}:`))) continue
+        // 先精化后降级：LLM 提炼具体 advice，失败/关闭用模板兜底
+        let advice = `该失败模式在循环 ${p.loopName} 中重复出现 ${p.count} 次。建议：任务开始时先运行对应证据门禁确认基线；失败后检查验证结论中的具体缺失项再重试，避免重复无用功。`
+        if (refineEnabled && summarizerModel) {
+          try {
+            const refined = await new Reflector(summarizerModel).refineLoopPattern(p)
+            if (refined) advice = refined
+          } catch {
+            // 精化失败静默降级模板（学习是旁路增强）
+          }
+        }
         this.memoryStore.addLesson({
           triggerDesc: key,
-          advice: `该失败模式在循环 ${p.loopName} 中重复出现 ${p.count} 次。建议：任务开始时先运行对应证据门禁确认基线；失败后检查验证结论中的具体缺失项再重试，避免重复无用功。`,
+          advice,
           kind: 'failure_pattern',
         })
         result.newLessons++

@@ -1409,8 +1409,11 @@ export class Orchestrator {
         message: `[Memory] 本次会话反思出 ${result.newLessons} 条新教训（/memory 查看）`,
       })
     }
-    // L4：消费循环 trace 失败模式（高频失败 → 模板化教训，零 LLM 成本）
-    const traceResult = this.learningManager.consumeLoopTraces()
+    // L4：消费循环 trace 失败模式（高频失败 → 教训；advice 经 Reflector LLM 精化，NEXUS_L4_REFINE=off 关闭）
+    const traceResult = await this.learningManager.consumeLoopTraces(
+      3,
+      this.router.getModel('summarizer'),
+    )
     if (traceResult.newLessons > 0) {
       this.emit({
         type: 'system_info',

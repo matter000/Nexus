@@ -6,6 +6,7 @@
  */
 
 import { generateText, type LanguageModel } from 'ai'
+import type { FailurePattern } from '../memory/TraceStore'
 import type { Experience, LessonKind } from '../memory/types'
 
 /** 单次反思最多处理的经验条数（防 prompt 膨胀） */
@@ -102,6 +103,51 @@ ${experienceText}`
       return parseReflectedLessons(result.text)
     } catch {
       return []
+    }
+  }
+
+  /**
+   * 精化单个循环失败模式的 advice（LLM 提炼），替代 L4 模板化兜底文案。
+   * 输入高频失败模式（loop_name + 失败类型 + 次数），产出具体可执行的建议；
+   * LLM 调用失败或解析无结果时返回 null（调用方降级为模板 advice，学习是旁路绝不阻塞）。
+   */
+  async refineLoopPattern(pattern: FailurePattern): Promise<string | null> {
+    const prompt = `请为一个在循环任务中反复出现的失败模式，提炼一条具体可执行的建议。
+
+要求：
+1. 建议必须针对该失败模式的实际修复路径（如先跑哪个门禁确认基线、失败后检查哪个信号、避免哪种重复无用功）
+2. 表述泛化：可提及“证据门禁/验证结论”等通用机制，但不出现具体文件名或一次性细节
+3. 只输出一条 advice，不要输出数组以外的文字
+
+--- 失败模式 ---
+循环名称: ${pattern.loopName}
+失败类型: ${pattern.pattern}
+重复次数: ${pattern.count}
+
+只输出 JSON 数组，格式：
+[{"advice": "应该..."}]`
+
+    try {
+      const result = await generateText({
+        model: this.model,
+        system: '你是循环任务失败分析助手。从高频失败模式中提炼具体可执行的建议，输出严格 JSON。',
+        messages: [{ role: 'user', content: prompt }],
+        maxOutputTokens: 400,
+      })
+      // 轻量解析：精化输出只有 advice 字段（parseReflectedLessons 要求 triggerDesc，不能复用）
+      const match = result.text.match(/\[[\s\S]*\]/)
+      if (!match) return null
+      const parsed: unknown = JSON.parse(match[0])
+      if (!Array.isArray(parsed)) return null
+      for (const item of parsed) {
+        if (typeof item === 'object' && item !== null) {
+          const advice = (item as Record<string, unknown>).advice
+          if (typeof advice === 'string' && advice.trim()) return advice.trim()
+        }
+      }
+      return null
+    } catch {
+      return null
     }
   }
 }

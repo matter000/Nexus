@@ -438,7 +438,7 @@ L1 Agent Loop: ReAct（Planner/Executor 双阶段执行）
 
 - 采集：Orchestrator 三处钩子（exec 逐轮 / goal roundSummaries / loop 汇总）→ `recordLoopTrace`
 - 聚类：`failurePatterns(minCount=3)` 按 loop_name+失败类型聚合（evidence gate 失败 / 验证 N 项未完成）
-- 消费：会话末 `consumeLoopTraces`——高频失败且无等价教训时生成模板化教训（零 LLM 成本），`[循环] <loop>: <pattern>` 前缀去重
+- 消费：会话末 `consumeLoopTraces`（async，接收 summarizer 模型）——高频失败且无等价教训时生成教训；advice 优先经 `Reflector.refineLoopPattern` LLM 精化（每会话约 $0.01，`NEXUS_L4_REFINE=off` 可关闭），失败/关闭降级模板文案（零成本兜底），`[循环] <loop>: <pattern>` 前缀去重
 
 **相关文件**：`src/index.ts`、`src/agent/Orchestrator.ts`、`src/agent/Executor.ts`、`src/agent/GoalLoop.ts`、`src/agent/LoopState.ts`、`src/agent/LoopScheduler.ts`、`src/memory/TraceStore.ts`
 
