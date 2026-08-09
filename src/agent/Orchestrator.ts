@@ -189,6 +189,16 @@ export class Orchestrator {
     this.skipPlan = skip
   }
 
+  /** 运行时切换权限模式（Shift+Tab 轮换；写入 cfg，后续 Executor/SubAgent 读取生效） */
+  setPermissionMode(mode: PermissionMode): void {
+    this.cfg.permissionMode = mode
+  }
+
+  /** 获取当前权限模式 */
+  getPermissionMode(): PermissionMode {
+    return this.cfg.permissionMode
+  }
+
   /** 获取当前是否跳过 Plan 阶段 */
   getSkipPlan(): boolean {
     return this.skipPlan

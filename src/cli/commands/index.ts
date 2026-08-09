@@ -50,6 +50,10 @@ export interface CommandContext {
   setSkipPlan: (skip: boolean) => void
   /** 获取当前是否跳过 Plan 阶段 */
   getSkipPlan: () => boolean
+  /** 运行时切换权限模式（Shift+Tab 轮换 ask → auto-edit → auto-all → yolo） */
+  setPermissionMode: (mode: 'ask' | 'auto-edit' | 'auto-all' | 'yolo') => void
+  /** 获取当前权限模式 */
+  getPermissionMode: () => 'ask' | 'auto-edit' | 'auto-all' | 'yolo'
   /** 将当前模型持久化到 secrets（下次启动时恢复） */
   saveLastModel: (model: string) => Promise<void>
   /** 恢复指定会话（或最近一次） */

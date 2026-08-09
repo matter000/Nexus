@@ -31,6 +31,14 @@ function formatTokenCount(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n)
 }
 
+/** 权限模式中文标签（Shift+Tab 轮换 + 状态栏展示） */
+const PERMISSION_LABELS: Record<'ask' | 'auto-edit' | 'auto-all' | 'yolo', string> = {
+  ask: '询问',
+  'auto-edit': '自动编辑',
+  'auto-all': '全自动',
+  yolo: '无限制',
+}
+
 interface ToolCallDisplay {
   callId: string
   tool: string
@@ -310,6 +318,16 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
     // 工具卡片全局展开/折叠（T 键）
     if (input === 'T' || input === 't') {
       setForceExpandTools((prev) => !prev)
+      return
+    }
+
+    // Shift+Tab：轮换权限模式（ask → auto-edit → auto-all → yolo，Claude Code 风格）
+    if (key.shift && key.tab) {
+      const order = ['ask', 'auto-edit', 'auto-all', 'yolo'] as const
+      const current = commandContext.getPermissionMode()
+      const next = order[(order.indexOf(current) + 1) % order.length]
+      commandContext.setPermissionMode(next)
+      setStatusLine(`权限模式: ${PERMISSION_LABELS[next]}`)
       return
     }
 
@@ -668,7 +686,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
 
   return (
     <Box flexDirection="column">
-      {/* 顶部状态栏（仪表盘化，两行分块）：L1 模型/模式/阶段；L2 上下文进度条 + 成本/token/缓存/todo */}
+      {/* 顶部状态栏（仪表盘化，两行分块）：L1 模型/模式/权限/阶段；L2 上下文进度条 + 成本/token/缓存/todo */}
       <Box paddingX={1} flexDirection="column">
         <Box>
           <Text bold color={theme.colors.primary}>
@@ -680,6 +698,11 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           >
             {' '}
             [{commandContext.getSkipPlan() ? 'Auto' : 'Plan'}]
+          </Text>
+          {/* 权限模式标记（Shift+Tab 轮换） */}
+          <Text color={theme.colors.muted}>
+            {' '}
+            [{PERMISSION_LABELS[commandContext.getPermissionMode()]}]
           </Text>
           <Text color={phaseColor}> ● {phaseLabel}</Text>
           {/* 循环轮次（/goal /loop 运行时）：状态行已含，此处不重复 */}

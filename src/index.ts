@@ -281,6 +281,8 @@ async function main() {
     getHistory: () => orchestrator.getHistory(),
     setSkipPlan: (skip) => orchestrator.setSkipPlan(skip),
     getSkipPlan: () => orchestrator.getSkipPlan(),
+    setPermissionMode: (mode) => orchestrator.setPermissionMode(mode),
+    getPermissionMode: () => orchestrator.getPermissionMode(),
     saveLastModel: async (model) => {
       const currentSecrets = await loadSecrets(args.cwd)
       currentSecrets.lastModel = model
