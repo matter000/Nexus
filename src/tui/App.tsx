@@ -832,15 +832,15 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         )}
       </Box>
 
-      {/* 底部分隔线（欢迎态居中） */}
-      <Box paddingX={1} alignItems={showWelcome ? 'center' : 'flex-start'}>
+      {/* 底部分隔线（始终居中） */}
+      <Box paddingX={1} alignItems="center">
         <Text color={theme.colors.muted} dimColor>
           {'─'.repeat(60)}
         </Text>
       </Box>
 
-      {/* 底部固定区域（欢迎态居中，对话态左对齐） */}
-      <Box flexDirection="column" paddingX={1} alignItems={showWelcome ? 'center' : 'flex-start'}>
+      {/* 底部固定区域（始终居中，对话后不左移） */}
+      <Box flexDirection="column" paddingX={1} alignItems="center">
         {/* 输入行上方：L1 状态行（模型/模式/权限/阶段）在左 + ctx/成本信息行在右，同一行 */}
         <Box marginBottom={1}>
           <Text bold color={theme.colors.primary}>
