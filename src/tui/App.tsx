@@ -765,8 +765,8 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
       {/* 欢迎面板（无用户消息时）：置于 Static 沉降区——渲染一次进入终端滚动历史，
           不再参与动态重绘（终端 resize 放大时不会残留旧帧欢迎屏） */}
       <Static items={showWelcome ? ['welcome'] : []}>
-        {() => (
-          <Box justifyContent="center" paddingX={1} marginBottom={1}>
+        {(item) => (
+          <Box key={item} justifyContent="center" paddingX={1} marginBottom={1}>
             <LogoBanner
               version="0.1.0"
               model={commandContext.getModel()}
