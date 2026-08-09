@@ -194,3 +194,18 @@
 - medium 抽查 3 个新任务（generic-stack / error-path / json-parse-tolerance）：file 规则与 no_extra_files 全过，仅 bash_pass 环境性失败——prompt 可理解、agent 行为正确
 - **暴露并修复两处缺陷**：① harness `Validator.ts` no_extra_files 把 Checkpoint 初始化的 `.git/` 计入 diff 干净度（真实回归误杀 5 个 easy 任务）→ listAllFiles 跳过 .git；② offbyone 任务 prompt 未约束文件范围（agent 合理补测试被 no_extra_files 拒绝）→ prompt 明确“仅修改 src/paginate.ts”
 - 关键经验：真实回归必须排除 secrets.toml 的 defaultProvider 干扰（模型名不在 MODEL_PROVIDER_MAP 时会被解析到默认自定义 provider）
+
+### 难度基线扩展（medium/hard 真实回归，2026-08-09）
+
+- 执行：同 easy 轮次环境（隔离 HOME + --model deepseek-v4-flash），medium 全量 11 + hard 全量 5，成本 $0.34
+- **medium 基线：4/11 全规则通过**（add-export / cross-file-rename / add-test / shared-types）；6 个仅 Windows bash_pass 环境性失败（file 规则全过：email-tests / error-path / generic-stack / json-parse-tolerance / retry-wrapper / test-first-multiply）；1 个模型行为失败（async-convert ×2 未产出 async/await，prompt 与规则一致，记为模型基线）
+- **hard 基线：1/5 全规则通过**（extract-refactor）；3 个仅 bash_pass 环境性失败（backward-compat-rename / perf-dedup / state-machine，file 规则全过）；1 个模型行为失败（csv-quote-fix 违反“不改变函数签名”约束）
+- **再修复两处**：① add-test 规则过严（要求测试文件字面包含 “function greet”，合理实现用 import 引用）→ 放宽为 “greet”；② Validator listAllFiles 排除 PowerShell 模块缓存目录（agent 在无 bash 的 Windows 上改用 powershell，其 ModuleAnalysisCache 落在 cwd 被误报为多余文件）
+- 汇总：23 任务中非环境性真失败仅 2 个（async-convert / csv-quote-fix，均模型行为），任务定义在修复后与 agent 行为一致
+
+### L4 教训 LLM 精化（2026-08-09）
+
+- `consumeLoopTraces` 的失败模式教训 advice 由模板化文案升级为 **Reflector.refineLoopPattern LLM 精化**（summarizer 档模型，每会话约 $0.01）
+- 降级链：精化失败/关闭 → 模板 advice（零成本兜底）；`NEXUS_L4_REFINE=off` 环境变量完全关闭 LLM 调用
+- 实现：Reflector 新增 refineLoopPattern（轻量 JSON 解析 advice，不复用要求 triggerDesc 的 parseReflectedLessons）；LearningManager.consumeLoopTraces 改 async + 接收 summarizerModel；Orchestrator 会话末传 router.getModel('summarizer')
+- 测试：learningManagerTrace.test.ts 新增精化/降级/开关 3 用例（mock ai 模块，mock 注册先于 import 的 executor.test.ts 同模式）+ 现有用例转 async（withLearningManager helper 适配）

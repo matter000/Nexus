@@ -123,7 +123,7 @@ export function parseArgs(argv: string[]): CliArgs {
         break
       case '--max-iterations': {
         const val = parseInt(argv[++i], 10)
-        if (isNaN(val) || val < 1) {
+        if (Number.isNaN(val) || val < 1) {
           console.error(`错误: --max-iterations 必须是正整数`)
           process.exit(1)
         }

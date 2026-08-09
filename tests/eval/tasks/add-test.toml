@@ -31,7 +31,7 @@ export function welcome(name: string, time: 'morning' | 'afternoon' | 'evening')
 [[validate]]
 type = "file_contains"
 path = "src/greet.test.ts"
-pattern = "function greet"
+pattern = "greet"
 
 [[validate]]
 type = "no_extra_files"
