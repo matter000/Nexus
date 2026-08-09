@@ -686,56 +686,24 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
 
   return (
     <Box flexDirection="column">
-      {/* 顶部状态栏（仪表盘化，两行分块）：L1 模型/模式/权限/阶段；L2 上下文进度条 + 成本/token/缓存/todo */}
-      <Box paddingX={1} flexDirection="column">
-        <Box>
-          <Text bold color={theme.colors.primary}>
-            {commandContext.getModel()}
-          </Text>
-          <Text
-            color={commandContext.getSkipPlan() ? theme.colors.accent : theme.colors.success}
-            bold
-          >
-            {' '}
-            [{commandContext.getSkipPlan() ? 'Auto' : 'Plan'}]
-          </Text>
-          {/* 权限模式标记（Shift+Tab 轮换） */}
-          <Text color={theme.colors.muted}>
-            {' '}
-            [{PERMISSION_LABELS[commandContext.getPermissionMode()]}]
-          </Text>
-          <Text color={phaseColor}> ● {phaseLabel}</Text>
-          {/* 循环轮次（/goal /loop 运行时）：状态行已含，此处不重复 */}
-        </Box>
-        {(ctxUsage || cost.total > 0 || todos.length > 0) && (
-          <Box>
-            {/* 上下文占用进度条 + 百分比（阈值着色，>80% 追加 /compact 预警） */}
-            {ctxUsage && ctxRatio !== null && (
-              <Text color={theme.colors.muted}>
-                ctx <Text color={ctxBarColor}>{'▓'.repeat(Math.round(ctxRatio * 16))}</Text>
-                <Text color={theme.colors.muted}>
-                  {'░'.repeat(16 - Math.round(ctxRatio * 16))} {Math.round(ctxRatio * 100)}%
-                </Text>
-              </Text>
-            )}
-            {/* 成本仪表盘：会话累计费用 / token / 缓存命中率 */}
-            {cost.total > 0 && (
-              <Text color={theme.colors.muted}>
-                {` · ${costStr} · in ${formatTokenCount(cost.inputTokens)}/out ${formatTokenCount(cost.outputTokens)}`}
-              </Text>
-            )}
-            {cacheRate !== undefined && cost.total > 0 && (
-              <Text color={cacheColor}>{` · cache ${Math.round(cacheRate * 100)}%`}</Text>
-            )}
-            {todos.length > 0 && (
-              <Text color={theme.colors.muted}>{` · todo ${todosDone}/${todos.length}`}</Text>
-            )}
-            {/* 上下文水位预警：>80% 时提示 /compact（仅超阈值出现，降噪） */}
-            {ctxRatio !== null && ctxRatio >= 0.8 && (
-              <Text color={theme.colors.warning}> — 建议 /compact</Text>
-            )}
-          </Box>
-        )}
+      {/* 顶部状态栏：模型/模式/权限/阶段（L2 信息行已移至输入框上方） */}
+      <Box paddingX={1}>
+        <Text bold color={theme.colors.primary}>
+          {commandContext.getModel()}
+        </Text>
+        <Text
+          color={commandContext.getSkipPlan() ? theme.colors.accent : theme.colors.success}
+          bold
+        >
+          {' '}
+          [{commandContext.getSkipPlan() ? 'Auto' : 'Plan'}]
+        </Text>
+        {/* 权限模式标记（Shift+Tab 轮换） */}
+        <Text color={theme.colors.muted}>
+          {' '}
+          [{PERMISSION_LABELS[commandContext.getPermissionMode()]}]
+        </Text>
+        <Text color={phaseColor}> ● {phaseLabel}</Text>
       </Box>
 
       {/* API 配置面板 */}
@@ -878,6 +846,36 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
 
       {/* 底部固定区域（欢迎态居中，对话态左对齐） */}
       <Box flexDirection="column" paddingX={1} alignItems={showWelcome ? 'center' : 'flex-start'}>
+        {/* 输入行上方：上下文/成本信息行（ctx 进度条 + 成本/token/缓存/todo，始终贴输入框） */}
+        {(ctxUsage || cost.total > 0 || todos.length > 0) && (
+          <Box marginBottom={1}>
+            {/* 上下文占用进度条 + 百分比（阈值着色，>80% 追加 /compact 预警） */}
+            {ctxUsage && ctxRatio !== null && (
+              <Text color={theme.colors.muted}>
+                ctx <Text color={ctxBarColor}>{'▓'.repeat(Math.round(ctxRatio * 16))}</Text>
+                <Text color={theme.colors.muted}>
+                  {'░'.repeat(16 - Math.round(ctxRatio * 16))} {Math.round(ctxRatio * 100)}%
+                </Text>
+              </Text>
+            )}
+            {/* 成本仪表盘：会话累计费用 / token / 缓存命中率 */}
+            {cost.total > 0 && (
+              <Text color={theme.colors.muted}>
+                {` · ${costStr} · in ${formatTokenCount(cost.inputTokens)}/out ${formatTokenCount(cost.outputTokens)}`}
+              </Text>
+            )}
+            {cacheRate !== undefined && cost.total > 0 && (
+              <Text color={cacheColor}>{` · cache ${Math.round(cacheRate * 100)}%`}</Text>
+            )}
+            {todos.length > 0 && (
+              <Text color={theme.colors.muted}>{` · todo ${todosDone}/${todos.length}`}</Text>
+            )}
+            {/* 上下文水位预警：>80% 时提示 /compact（仅超阈值出现，降噪） */}
+            {ctxRatio !== null && ctxRatio >= 0.8 && (
+              <Text color={theme.colors.warning}> — 建议 /compact</Text>
+            )}
+          </Box>
+        )}
         {/* 输入行 */}
         <InputBox
           onSubmit={handleSubmit}
