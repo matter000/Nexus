@@ -806,7 +806,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         {statusLine && (
           <Box>
             <Text color={theme.colors.muted} dimColor>
-              ⚙ {statusLine}
+              {statusLine}
             </Text>
           </Box>
         )}
@@ -830,13 +830,6 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
             reasonDraft={planReasonDraft}
           />
         )}
-      </Box>
-
-      {/* 底部分隔线（始终居中） */}
-      <Box paddingX={1} alignItems="center">
-        <Text color={theme.colors.muted} dimColor>
-          {'─'.repeat(60)}
-        </Text>
       </Box>
 
       {/* 底部固定区域（始终居中，对话后不左移） */}
