@@ -39,7 +39,7 @@
 2. **/loop 节拍循环**（新增 `src/agent/LoopState.ts` + Orchestrator.runLoop）：按间隔重跑任务（最小 1 分钟，对齐 Claude Code）；状态持久化到 `.nexus/loop-state.md`（人类可读 Markdown + HTML 注释 JSON meta，社区 STATE.md 共识；损坏重置不阻塞）；停止规则 max-rounds / max-cost / 状态文件 stop_requested / Ctrl+C（可中断等待）
 3. **命令与门面**：/goal /loop 斜杠命令注册（--max-rounds/--max-cost/--interval 10m|1h 解析）；CommandContext 注入 runGoal/runLoop 委托；Orchestrator 新增 getLastExecutionSignals（evidence+verify+error 聚合，供 /goal 验收与外部复用）
 
-验证：goalLoop 13 用例（验收判定/重跑/预算/中断/门禁映射）+ loopState 6 用例（读写/合并/停止信号/损坏重置/往返）+ slashCommands 8 用例（命令解析与委托）+ orchestrator 3 用例（门面）；隔离套件 38 文件 / 476 用例全绿；lint/tsc/import 边界全通过。手动冒烟（真实 LLM 链路：/goal "让所有测试通过"、/loop 节拍）留待有 API Key 环境。
+验证：goalLoop 13 用例（验收判定/重跑/预算/中断/门禁映射）+ loopState 6 用例（读写/合并/停止信号/损坏重置/往返）+ slashCommands 8 用例（命令解析与委托）+ orchestrator 3 用例（门面）；隔离套件 38 文件 / 476 用例全绿；lint/tsc/import 边界全通过。**真实链路冒烟已完成（2026-08-09，DeepSeek 临时 Key）**：/goal "让 tests/unit/loopState.test.ts 全部通过" 首轮验收通过（$0.038）；/loop 节拍一轮执行 + loop-state.md 写入正常。
 
 ### 本地 Automations（已完成，2026-08；基于 Codex automations.toml 与 Claude Code 定时任务体系调研：heartbeat 形态、Cron 触发"任务失忆"坑复盘、官方"先手动跑通再自动化"顺序建议）
 
@@ -50,7 +50,7 @@
 3. **/loops 命令与 Triage**：/loops（列表：状态/下次运行/上次结果）、run-now / enable / disable / inbox（[紧急]/[本周]/[观察] 分级发现，宽松标记解析写入状态文件）；CommandContext 委托 + Orchestrator 门面（startLoops 挂 startBackgroundInit、stopLoops 挂 shutdown、listLoops/runLoopNow/setLoopEnabled/getLoopInbox）
 4. **状态文件按名分文件**：LoopState 支持 name，`loop-state-<name>.md`（main 保持 loop-state.md 兼容）；findings 分级 meta
 
-验证：loopConfig 7 用例（schedule 解析/默认值/损坏跳过/语法错误）+ loopScheduler 6 用例（补跑/tick 触发/runNow/启停/list/成本暂停）+ loopState 扩展 3 用例（分文件/parseFindings/往返）+ orchestrator 门面 1 用例（无配置降级）+ slashCommands 6 用例；隔离套件 40 文件 / 498 用例全绿；lint/tsc/import 边界全通过。手动冒烟（[loops.demo] schedule="1m" 心跳观察）留待有 API Key 环境。
+验证：loopConfig 7 用例（schedule 解析/默认值/损坏跳过/语法错误）+ loopScheduler 6 用例（补跑/tick 触发/runNow/启停/list/成本暂停）+ loopState 扩展 3 用例（分文件/parseFindings/往返）+ orchestrator 门面 1 用例（无配置降级）+ slashCommands 6 用例；隔离套件 40 文件 / 498 用例全绿；lint/tsc/import 边界全通过。**真实链路冒烟已完成（2026-08-09）**：loops.toml 心跳启动补跑执行一轮，loop-state-smoke-demo.md 状态文件（round/findings）写入正确，/loops list 状态正常。
 
 ### DeepSeek 深度适配（已完成，2026-08；基于官方文档与社区 issue 交叉调研：V4 GA / 涨价预警 / 峰谷计价 / thinking 三约束）
 
@@ -60,7 +60,7 @@
 4. **成本表对齐**：v4-flash/pro 更新为 2026-08 官方现行价（flash $0.14/$0.0028/$0.28，pro $0.435/$0.0034/$0.87，单位 M token），注释标注 8/6 涨价预警与峰谷处理位置
 5. **v6 消息缺陷修复**（spike 意外发现）：AI SDK v6 的 tool-result part 要求 output 为判别联合 `{type:'text'|'json', value}`（非裸字符串）——normalizeMessagesForSDK 与 Executor 验证循环已修复，此前仅被 mock 测试掩盖
 
-验证：隔离测试 34 文件 / 433 用例全绿（新增 transformDeepSeekBody 4 单测 + 端到端链路用例、峰谷计价 4 用例、思考模式默认/覆盖用例）；lint/tsc/import 边界全通过。真实冒烟（思考模式 + 工具调用多轮链路）留待有 API Key 环境执行。
+验证：隔离测试 34 文件 / 433 用例全绿（新增 transformDeepSeekBody 4 单测 + 端到端链路用例、峰谷计价 4 用例、思考模式默认/覆盖用例）；lint/tsc/import 边界全通过。**真实链路冒烟已完成（2026-08-09）**：思考模式 + 多轮工具调用（grep→read_file 连续调用）无 400（reasoning_content 回传契约正常），基础连接 $0.007/次。
 
 ### Agent 深化改进四专项（已完成，2026-08；基于 Harness Engineering 第三范式共识：验证层是新瓶颈）
 
