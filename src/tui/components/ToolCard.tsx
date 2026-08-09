@@ -25,13 +25,38 @@ const TOOL_EMOJIS: Record<string, string> = {
   glob: '📂',
   fetch_url: '🌐',
   search_symbol: '🔍',
+  lsp: '🧭',
   list_directory: '📁',
   update_todo: '📋',
+  update_notes: '📝',
   semantic_search: '🧠',
   dispatch_subagent: '🤖',
+  dispatch_agent: '🤖',
+  dispatch_subagents: '🤖',
+  dispatch_agents: '🤖',
+  run_pipeline: '🔗',
+  team_task_list: '📌',
+  team_task_claim: '📌',
+  send_message: '✉️',
+  read_messages: '✉️',
+  create_file: '✨',
+  web_search: '🌐',
+  git_status: '🌱',
+  git_commit: '🌱',
+  git_push: '🌱',
+  git_merge: '🌱',
+  submit_plan: '🗺️',
+  load_skill: '🎯',
 }
 
-export function ToolCard({ tool, params, status, result, error, forceExpand }: ToolCardProps) {
+export const ToolCard = React.memo(function ToolCard({
+  tool,
+  params,
+  status,
+  result,
+  error,
+  forceExpand,
+}: ToolCardProps) {
   const emoji = TOOL_EMOJIS[tool] ?? '🔧'
   const detail = extractDetail(tool, params)
   const [collapsed, setCollapsed] = useState(true)
@@ -106,7 +131,7 @@ export function ToolCard({ tool, params, status, result, error, forceExpand }: T
       {renderContent(status, result, error)}
     </Box>
   )
-}
+})
 
 function renderContent(status: ToolStatus, result?: string, error?: string) {
   if (status === 'done' && result)

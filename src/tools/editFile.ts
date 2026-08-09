@@ -20,7 +20,7 @@ import type { ToolContext, ToolHandler } from './registry'
 const definition: ToolDefinition = {
   name: 'edit_file',
   description:
-    '精准替换文件中的字符串。old_string 必须在文件中唯一匹配(0处匹配报错,>1处匹配也报错)。提供足够的上下文行确保唯一性。',
+    '精准替换文件中的字符串。old_string 必须在文件中唯一匹配(0处匹配报错,>1处匹配也报错)。提供足够的上下文行确保唯一性。编辑前先 read_file 确认最新内容；匹配失败时重新 read_file 再重试，不要盲改。',
   inputSchema: {
     type: 'object',
     properties: {

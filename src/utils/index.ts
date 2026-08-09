@@ -237,6 +237,10 @@ export function isRetryable(error: unknown): boolean {
       msg.includes('503') ||
       msg.includes('504') ||
       msg.includes('timeout') ||
+      msg.includes('timed out') ||
+      msg.includes('超时') ||
+      msg.includes('流停滞') ||
+      msg.includes('空响应') ||
       msg.includes('network') ||
       msg.includes('econnrefused') ||
       msg.includes('enotfound') ||

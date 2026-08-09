@@ -102,6 +102,62 @@ export const migrations: Migration[] = [
       DROP TABLE IF EXISTS todos;
     `,
   },
+  {
+    version: 4,
+    name: 'add_learning_tables',
+    up: `
+      CREATE TABLE IF NOT EXISTS experiences (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        tool_sequence TEXT,
+        outcome TEXT NOT NULL DEFAULT 'partial',
+        error_label TEXT,
+        cost REAL DEFAULT 0,
+        duration_ms INTEGER DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS lessons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trigger_desc TEXT NOT NULL,
+        advice TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'failure_pattern',
+        status TEXT NOT NULL DEFAULT 'candidate',
+        score REAL NOT NULL DEFAULT 0.5,
+        hit_count INTEGER NOT NULL DEFAULT 0,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        source_experience_id TEXT,
+        created_at INTEGER NOT NULL,
+        last_verified_at INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS skills (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        description TEXT NOT NULL,
+        file_path TEXT,
+        status TEXT NOT NULL DEFAULT 'candidate',
+        source_lesson_ids TEXT,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS learning_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_experiences_created ON experiences(created_at);
+      CREATE INDEX IF NOT EXISTS idx_lessons_status ON lessons(status);
+      CREATE INDEX IF NOT EXISTS idx_skills_status ON skills(status);
+    `,
+    down: `
+      DROP TABLE IF EXISTS learning_meta;
+      DROP TABLE IF EXISTS skills;
+      DROP TABLE IF EXISTS lessons;
+      DROP TABLE IF EXISTS experiences;
+    `,
+  },
 ]
 
 /** 获取当前 schema 版本 */

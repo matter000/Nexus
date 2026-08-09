@@ -321,7 +321,7 @@ ${earlyText}`
       model,
       system: '你是对话压缩助手。将冗长的对话历史压缩为简洁的结构化摘要，保留关键信息。',
       messages: [{ role: 'user', content: summaryPrompt }],
-      maxTokens: 1000,
+      maxOutputTokens: 1000,
     })
 
     const summary = result.text

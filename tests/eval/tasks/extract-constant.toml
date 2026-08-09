@@ -1,0 +1,43 @@
+[id]
+name = "魔法数字提常量"
+category = "refactor"
+difficulty = "easy"
+description = "把散落的超时魔法数字提取为命名常量"
+
+[request]
+user_prompt = "把 retryRequest 中的魔法数字（3 次重试、1000ms 基础延迟、30000ms 超时）提取为文件顶部的命名常量，并在原处引用常量"
+
+[[initial_files]]
+path = "src/retry.ts"
+content = """
+export function computeDelay(attempt: number): number {
+  return 1000 * 2 ** attempt
+}
+
+export function shouldRetry(attempt: number): boolean {
+  return attempt < 3
+}
+
+export function isTimedOut(elapsedMs: number): boolean {
+  return elapsedMs > 30000
+}
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/retry.ts"
+pattern = "const"
+
+[[validate]]
+type = "file_not_contains"
+path = "src/retry.ts"
+pattern = "return 1000 * 2"
+
+[[validate]]
+type = "file_not_contains"
+path = "src/retry.ts"
+pattern = "< 3"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/retry.ts"]

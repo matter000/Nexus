@@ -35,10 +35,39 @@ describe('Config Loader', () => {
     expect(config.limits.maxReadLines).toBe(2000)
     expect(config.limits.maxIterations).toBe(50)
     expect(config.limits.maxOutputBytes).toBe(102400)
+    // Loop Engineering：自动修复循环默认开启 1 次（L2 反馈回传）
+    expect(config.limits.maxAutoRetries).toBe(1)
     expect(config.context.budgetRatio).toBe(0.8)
     expect(config.context.recentTurnsKeep).toBe(5)
     expect(config.checkpoint.autoCheckpoint).toBe(true)
     expect(config.checkpoint.branch).toBe('nexus/checkpoints')
+  })
+
+  it('正确解析 [evidence] 证据门禁配置段', async () => {
+    await writeConfigToml(`
+[evidence]
+lint_command = "bun run lint"
+typecheck_command = "bunx tsc --noEmit"
+test_command = "bun test"
+timeout_ms = 300
+`)
+    const config = await loadConfig(tempDir)
+
+    expect(config.evidence).toEqual({
+      lintCommand: 'bun run lint',
+      typecheckCommand: 'bunx tsc --noEmit',
+      testCommand: 'bun test',
+      timeoutMs: 300,
+    })
+  })
+
+  it('evidence.timeout_ms 小于 10 时重置为 180', async () => {
+    await writeConfigToml(`
+[evidence]
+timeout_ms = 3
+`)
+    const config = await loadConfig(tempDir)
+    expect(config.evidence?.timeoutMs).toBe(180)
   })
 
   it('正确解析 TOML 配置文件', async () => {

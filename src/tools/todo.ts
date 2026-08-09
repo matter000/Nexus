@@ -10,7 +10,7 @@ import type { ToolContext, ToolHandler } from './registry'
 const definition: ToolDefinition = {
   name: 'update_todo',
   description:
-    '更新任务进度列表。可以标记任务完成、添加新任务或更新已有任务内容。在完成任务后应主动调用此工具更新状态。',
+    '维护任务进度列表（add 新增/complete 完成/in_progress 开始/update 改内容/cancelled 取消）。每完成一个步骤必须立即调用 complete 标记；未真正完成的任务不得标记 complete。',
   inputSchema: {
     type: 'object',
     properties: {

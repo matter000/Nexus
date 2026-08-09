@@ -1,0 +1,57 @@
+[id]
+name = "提取共享类型"
+category = "multi-file"
+difficulty = "medium"
+description = "把两个文件重复定义的 Point 接口提取到 types.ts 并统一导入"
+
+[request]
+user_prompt = "src/geometry.ts 和 src/render.ts 各自重复定义了 Point 接口，请把它提取到 src/types.ts 导出，两个文件改为从 types 导入，不要改变任何函数行为"
+
+[[initial_files]]
+path = "src/geometry.ts"
+content = """
+export interface Point {
+  x: number
+  y: number
+}
+
+export function distance(a: Point, b: Point): number {
+  return Math.hypot(a.x - b.x, a.y - b.y)
+}
+"""
+
+[[initial_files]]
+path = "src/render.ts"
+content = """
+export interface Point {
+  x: number
+  y: number
+}
+
+export function renderPath(points: Point[]): string {
+  return points.map((p) => p.x + ',' + p.y).join(' ')
+}
+"""
+
+[[validate]]
+type = "file_exists"
+path = "src/types.ts"
+
+[[validate]]
+type = "file_contains"
+path = "src/types.ts"
+pattern = "interface Point"
+
+[[validate]]
+type = "file_contains"
+path = "src/geometry.ts"
+pattern = "./types"
+
+[[validate]]
+type = "file_contains"
+path = "src/render.ts"
+pattern = "./types"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/types.ts", "src/geometry.ts", "src/render.ts"]

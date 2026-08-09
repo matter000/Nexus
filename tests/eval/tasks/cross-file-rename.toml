@@ -1,0 +1,60 @@
+[id]
+name = "跨文件函数重命名"
+category = "multi-file"
+difficulty = "medium"
+description = "把工具函数 calcTotal 重命名为 computeTotal 并更新所有调用处"
+
+[request]
+user_prompt = "把 src/math.ts 中的 calcTotal 函数重命名为 computeTotal，并更新所有引用它的文件"
+
+[[initial_files]]
+path = "src/math.ts"
+content = """
+export function calcTotal(prices: number[]): number {
+  return prices.reduce((acc, p) => acc + p, 0)
+}
+"""
+
+[[initial_files]]
+path = "src/invoice.ts"
+content = """
+import { calcTotal } from './math'
+
+export function invoiceAmount(prices: number[], tax: number): number {
+  return calcTotal(prices) * (1 + tax)
+}
+"""
+
+[[initial_files]]
+path = "src/report.ts"
+content = """
+import { calcTotal } from './math'
+
+export function summarize(prices: number[]): string {
+  return 'total: ' + calcTotal(prices)
+}
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/math.ts"
+pattern = "computeTotal"
+
+[[validate]]
+type = "file_not_contains"
+path = "src/invoice.ts"
+pattern = "calcTotal"
+
+[[validate]]
+type = "file_not_contains"
+path = "src/report.ts"
+pattern = "calcTotal"
+
+[[validate]]
+type = "file_contains"
+path = "src/invoice.ts"
+pattern = "computeTotal"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/math.ts", "src/invoice.ts", "src/report.ts"]

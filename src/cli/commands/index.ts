@@ -13,6 +13,8 @@ export interface SlashCommand {
 export interface CommandContext {
   getModel: () => string
   setModel: (model: string) => void
+  /** 中断当前执行（触发 Orchestrator.abort()，中止正在进行的 LLM 调用/工具） */
+  interrupt: () => void
   /** 重新初始化 providers 并切换到指定模型（用于添加新模型后的保存与切换） */
   reinitAndSelectModel: (model: string) => Promise<void>
   /** 仅重新初始化 providers（用于删除自定义模型后回退 auto 选择） */
@@ -73,6 +75,53 @@ export interface CommandContext {
   getAutoRetries: () => number
   /** 获取最近的错误报告 */
   getRecentErrors: (limit?: number) => Promise<string>
+  /** 查看学习记忆统计与 top 教训 */
+  listMemory: () => string
+  /** 删除一条教训或技能 */
+  deleteMemoryEntry: (kind: 'lesson' | 'skill', id: number | string) => string
+  /** 列出技能文件 */
+  listSkills: () => string
+  /** 列出已安装插件 */
+  listPlugins: () => string
+  /**
+   * L3 事件驱动循环：/goal 目标驱动（跨多次 execute 的验收循环，门禁优先 + verifier 兜底）。
+   * 未注入（如测试环境）时为 undefined，命令提示不可用。
+   */
+  runGoal?: (
+    goal: string,
+    opts?: { acceptance?: string; maxRounds?: number; maxCost?: number },
+  ) => Promise<{
+    achieved: boolean
+    rounds: number
+    roundSummaries: Array<{
+      round: number
+      evidencePassed: boolean | null
+      verifyPass: boolean | null
+      cost: number
+    }>
+  }>
+  /** L3 事件驱动循环：/loop 节拍循环（间隔重跑 + loop-state.md 状态文件） */
+  runLoop?: (
+    prompt: string,
+    opts?: { intervalMin?: number; maxRounds?: number; maxCost?: number },
+  ) => Promise<string>
+  /** 本地 Automations：列出全部 loop 运行时信息（/loops 列表） */
+  listLoops?: () => Array<{
+    name: string
+    scheduleMin: number
+    enabled: boolean
+    nextRunAt: number | null
+    lastRunAt: number | null
+    lastResultSummary: string
+    running: boolean
+    pausedReason: string | null
+  }>
+  /** 本地 Automations：手动触发指定 loop */
+  runLoopNow?: (name: string) => Promise<string | null>
+  /** 本地 Automations：启停指定 loop */
+  setLoopEnabled?: (name: string, enabled: boolean) => Promise<void>
+  /** 本地 Automations：Triage 收件箱（分级发现） */
+  getLoopInbox?: (name?: string) => Promise<string>
 }
 
 const commands: SlashCommand[] = [
@@ -313,6 +362,126 @@ const commands: SlashCommand[] = [
     },
   },
   {
+    name: 'plugins',
+    aliases: ['plugin'],
+    description: '查看已安装插件（.nexus/plugins/）',
+    handler: async (_args, ctx) => {
+      return ctx.listPlugins()
+    },
+  },
+  {
+    name: 'memory',
+    aliases: ['mem'],
+    description: '查看/管理学习记忆（/memory、/memory delete lesson <id>、/memory skills）',
+    handler: async (args, ctx) => {
+      const [sub, kind, idStr] = args.trim().split(/\s+/)
+      if (sub === 'delete' && kind && idStr) {
+        const id = /^\d+$/.test(idStr) ? Number(idStr) : idStr
+        return ctx.deleteMemoryEntry(kind as 'lesson' | 'skill', id)
+      }
+      if (sub === 'skills') return ctx.listSkills()
+      return ctx.listMemory()
+    },
+  },
+  {
+    name: 'goal',
+    aliases: [],
+    description:
+      '目标驱动循环：重复执行直到验收条件满足（/goal <目标> [--max-rounds N] [--max-cost $]，如 /goal "让所有测试通过"）',
+    handler: async (args, ctx) => {
+      const { prompt, maxRounds, maxCost } = parseGoalArgs(args)
+      if (!prompt) {
+        return '用法: /goal <目标> [--max-rounds N] [--max-cost $]\n示例: /goal "让所有测试通过" --max-rounds 3'
+      }
+      if (!ctx.runGoal) return '目标驱动循环不可用（当前上下文未注入 runGoal）'
+      const result = await ctx.runGoal(prompt, { maxRounds, maxCost })
+      const totalCost = result.roundSummaries.reduce((sum, r) => sum + r.cost, 0)
+      const lines: string[] = [
+        result.achieved
+          ? `目标已达成（第 ${result.rounds} 轮）`
+          : `目标未达成（已尝试 ${result.rounds} 轮）`,
+        `  总成本: $${totalCost.toFixed(4)}`,
+      ]
+      for (const r of result.roundSummaries) {
+        lines.push(
+          `  第 ${r.round} 轮: 证据 ${r.evidencePassed === null ? '未运行' : r.evidencePassed ? '通过' : '失败'} / 验证 ${r.verifyPass === null ? '未运行' : r.verifyPass ? '通过' : '失败'} / $${r.cost.toFixed(4)}`,
+        )
+      }
+      if (!result.achieved) {
+        lines.push(
+          '提示: 目标未达成可能因轮次/成本预算不足，可增加 --max-rounds 或 --max-cost 后重试',
+        )
+      }
+      return lines.join('\n')
+    },
+  },
+  {
+    name: 'loop',
+    aliases: [],
+    description:
+      '节拍循环：按间隔重复执行任务，状态持久化到 .nexus/loop-state.md（/loop <任务> [--interval 10m] [--max-rounds N] [--max-cost $]）',
+    handler: async (args, ctx) => {
+      const { prompt, intervalMin, maxRounds, maxCost } = parseLoopArgs(args)
+      if (!prompt) {
+        return '用法: /loop <任务> [--interval 10m] [--max-rounds N] [--max-cost $]\n示例: /loop "检查依赖更新" --interval 10m --max-rounds 3'
+      }
+      if (!ctx.runLoop) return '节拍循环不可用（当前上下文未注入 runLoop）'
+      return await ctx.runLoop(prompt, { intervalMin, maxRounds, maxCost })
+    },
+  },
+  {
+    name: 'loops',
+    aliases: [],
+    description:
+      '本地 Automations：查看/管理 loops.toml 定时循环（/loops、/loops run-now <name>、/loops enable|disable <name>、/loops inbox）',
+    handler: async (args, ctx) => {
+      if (!ctx.listLoops) return '本地 Automations 不可用（当前上下文未注入）'
+      const [sub, name] = args.trim().split(/\s+/)
+
+      if (sub === 'run-now' && name && ctx.runLoopNow) {
+        const result = await ctx.runLoopNow(name)
+        return result ?? `未知 loop: ${name}`
+      }
+      if ((sub === 'enable' || sub === 'disable') && name && ctx.setLoopEnabled) {
+        await ctx.setLoopEnabled(name, sub === 'enable')
+        return `[loops.${name}] 已${sub === 'enable' ? '启用' : '禁用'}`
+      }
+      if (sub === 'inbox' && ctx.getLoopInbox) {
+        return ctx.getLoopInbox(name)
+      }
+
+      // 默认：列表
+      const loops = ctx.listLoops()
+      if (loops.length === 0) {
+        return '未配置本地 Automations（.nexus/loops.toml 为空或不存在）\n\n用法: /loops run-now <name> | enable|disable <name> | inbox'
+      }
+      const lines = ['本地 Automations:']
+      for (const l of loops) {
+        const status = l.running
+          ? '运行中'
+          : l.pausedReason
+            ? `暂停（${l.pausedReason}）`
+            : l.enabled
+              ? '启用'
+              : '禁用'
+        lines.push(
+          `  [loops.${l.name}] ${status} / 间隔 ${l.scheduleMin}m` +
+            ` / 下次: ${l.nextRunAt ? new Date(l.nextRunAt).toLocaleTimeString() : '—'}` +
+            ` / 上次: ${l.lastRunAt ? new Date(l.lastRunAt).toLocaleString() : '从未'}`,
+        )
+        if (l.lastResultSummary) {
+          const s =
+            l.lastResultSummary.length > 80
+              ? `${l.lastResultSummary.slice(0, 80)}…`
+              : l.lastResultSummary
+          lines.push(`    ${s}`)
+        }
+      }
+      lines.push('\n用法: /loops run-now <name> | enable|disable <name> | inbox [name]')
+      return lines.join('\n')
+    },
+  },
+  {
     name: 'help',
     aliases: ['?'],
     description: '显示可用命令及其说明',
@@ -376,6 +545,62 @@ export async function handleSlashCommand(
 
 export function getAvailableCommands(): SlashCommand[] {
   return commands
+}
+
+/** 解析 /goal 参数：目标文本 + --max-rounds N + --max-cost $（--flag value 形式） */
+function parseGoalArgs(args: string): {
+  prompt: string
+  maxRounds?: number
+  maxCost?: number
+} {
+  const parts = args.trim().split(/\s+/)
+  const flags: Record<string, string> = {}
+  const words: string[] = []
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i]
+    if (p.startsWith('--')) {
+      const value = parts[++i]
+      if (value) flags[p.slice(2)] = value
+    } else {
+      words.push(p)
+    }
+  }
+  const maxRounds = flags['max-rounds'] ? Number.parseInt(flags['max-rounds'], 10) : undefined
+  const maxCost = flags['max-cost'] ? Number.parseFloat(flags['max-cost']) : undefined
+  return {
+    prompt: words.join(' '),
+    maxRounds: maxRounds && !Number.isNaN(maxRounds) ? maxRounds : undefined,
+    maxCost: maxCost && !Number.isNaN(maxCost) ? maxCost : undefined,
+  }
+}
+
+/** 解析 /loop 参数：任务文本 + --interval <n>m|h + --max-rounds N + --max-cost $ */
+function parseLoopArgs(args: string): {
+  prompt: string
+  intervalMin?: number
+  maxRounds?: number
+  maxCost?: number
+} {
+  const parsed = parseGoalArgs(args)
+  const parts = args.trim().split(/\s+/)
+  let intervalMin: number | undefined
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i] === '--interval') {
+      const v = parts[++i]
+      if (v) {
+        const m = v.match(/^(\d+)(m|h)$/)
+        if (m) {
+          intervalMin = Number.parseInt(m[1], 10) * (m[2] === 'h' ? 60 : 1)
+        }
+      }
+    }
+  }
+  return {
+    prompt: parsed.prompt,
+    intervalMin,
+    maxRounds: parsed.maxRounds,
+    maxCost: parsed.maxCost,
+  }
 }
 
 /**

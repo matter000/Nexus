@@ -42,3 +42,7 @@ pattern = "formatDate"
 type = "file_contains"
 path = "src/index.ts"
 pattern = "formatDate"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/utils.ts", "src/index.ts"]

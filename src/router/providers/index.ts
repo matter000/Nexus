@@ -165,7 +165,12 @@ const DEEPSEEK_ROLE_PARAMETERS: Record<
  * - 注意: 思考模式下 temperature/top_p 不生效
  */
 const DEEPSEEK_PROMPT_SUFFIX: Record<string, string> = {
-  'deepseek-v4-flash': '',
+  'deepseek-v4-flash': `
+## Agentic Coding（V4-Flash 深度适配）
+- 你运行在思考模式下，先推理再动手：每次工具调用前想清楚要验证什么
+- 工具调用后保持推理链：基于结果继续推理，不要重复调用同一工具
+- 多文件改动先规划依赖顺序；修改后用测试验证（可用 bash 运行项目测试命令）
+- 你的上下文窗口达 1M token，充分利用但不要灌入无关内容`,
   'deepseek-v4-pro': `
 ## 思考模式
 - 你是 DeepSeek V4-Pro 高性能模型，支持深度推理
@@ -216,15 +221,17 @@ export const deepseekAdapter: ProviderAdapter = {
     // 按角色返回最优参数
     const roleParams = DEEPSEEK_ROLE_PARAMETERS[role]
 
-    // planner/executor: 工具密集型 ReAct 多轮调用，显式关闭思考模式。
-    // @ai-sdk/openai 不回传 reasoning_content，思考模式下多轮工具调用必触发 422；
-    // 关闭后 temperature/top_p 生效，延迟更低。
+    // planner/executor：默认开启思考模式（V4 agentic coding 优势，DeepSeek 内部即此用法）。
+    // reasoning_content 回传由 deepseekFetch 拦截器在请求体层保证（2026-08 深度适配），
+    // 多轮工具调用不再触发 400；设置 NEXUS_DEEPSEEK_THINKING=off 可一键回退非思考模式。
+    // 注意: 思考模式下 temperature/top_p 不生效（保留传入无副作用）。
     if (role === 'planner' || role === 'executor') {
+      const thinkingDisabled = process.env.NEXUS_DEEPSEEK_THINKING === 'off'
       return {
         temperature: roleParams.temperature,
         topP: roleParams.topP,
         maxTokens: roleParams.maxTokens,
-        thinking: { type: 'disabled' },
+        thinking: thinkingDisabled ? { type: 'disabled' } : { type: 'enabled' },
       }
     }
 
@@ -302,8 +309,16 @@ export function createDynamicCustomAdapter(name: string, secret: ProviderSecret)
     name,
     isAvailable: () => !!(secret.apiKey && secret.baseUrl),
     getDefaultModel: () => secret.defaultModel ?? 'default',
-    getContextWindow: () => 128000, // 默认假设
+    getContextWindow: (model) =>
+      DEEPSEEK_MODELS[model]?.contextWindow ??
+      (secret.baseUrl?.includes('api.deepseek.com') ? 1_000_000 : 128000),
     supportsTools: () => true, // OpenAI/Anthropic 兼容接口通常都支持 tool calling
+    // 代理 DeepSeek 端点时复用 DeepSeek 的角色参数优化
+    // （planner/executor 关闭思考模式避免多轮工具调用 422）
+    getModelParameters: (model, role) =>
+      secret.baseUrl?.includes('api.deepseek.com')
+        ? deepseekAdapter.getModelParameters?.(model, role)
+        : undefined,
   }
 }
 

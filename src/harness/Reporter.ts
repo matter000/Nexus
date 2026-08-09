@@ -28,6 +28,19 @@ export function printReport(report: EvalReport): void {
   console.log(
     `  ${BOLD}Pass Rate:${RESET} ${passRate}%  |  ${BOLD}Cost:${RESET} $${report.totalCost.toFixed(4)}  |  ${BOLD}Time:${RESET} ${formatDuration(report.totalDurationMs)}`,
   )
+  // 聚合质量指标：平均步数/上下文利用率（效率）+ diff 干净度违规（防"改对但绕路"）
+  const avgStepsStr = report.avgSteps !== undefined ? report.avgSteps.toFixed(1) : '-'
+  const avgUtilStr =
+    report.avgPeakUtilization !== undefined
+      ? `${Math.round(report.avgPeakUtilization * 100)}%`
+      : '-'
+  const violationsStr =
+    report.extraFilesViolations > 0
+      ? `${RED}${report.extraFilesViolations}${RESET}`
+      : `${GREEN}0${RESET}`
+  console.log(
+    `  ${BOLD}Avg Steps:${RESET} ${avgStepsStr}  |  ${BOLD}Avg Ctx Peak:${RESET} ${avgUtilStr}  |  ${BOLD}Extra-Files Violations:${RESET} ${violationsStr}`,
+  )
   console.log(`${CYAN}══════════════════════════════════════════════${RESET}`)
 
   // 任务结果
@@ -37,11 +50,16 @@ export function printReport(report: EvalReport): void {
     const costStr =
       report.mode === 'real' ? `$${r.cost.toFixed(3)}`.padStart(9) : '    mock'.padStart(9)
     const timeStr = formatDuration(r.durationMs).padStart(6)
+    const stepsStr = r.steps !== undefined ? `${r.steps}步`.padStart(5) : ''.padStart(5)
+    const utilStr =
+      r.peakContextUtilization !== undefined && r.peakContextUtilization > 0
+        ? `${Math.round(r.peakContextUtilization * 100)}%ctx`.padStart(6)
+        : ''.padStart(6)
     const catStr = r.category.padEnd(12)
     const diffStr = r.difficulty.padEnd(6)
 
     console.log(
-      `  ${icon} ${r.taskId.padEnd(12)} ${r.taskName.padEnd(14)} ${MUTED}${catStr}${diffStr}${RESET} ${costStr}  ${timeStr}`,
+      `  ${icon} ${r.taskId.padEnd(12)} ${r.taskName.padEnd(14)} ${MUTED}${catStr}${diffStr}${RESET} ${costStr} ${stepsStr} ${utilStr} ${timeStr}`,
     )
 
     if (!r.pass && r.reason) {

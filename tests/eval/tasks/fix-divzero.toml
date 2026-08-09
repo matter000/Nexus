@@ -32,3 +32,7 @@ path = "src/calculator.ts"
 type = "file_contains"
 path = "src/calculator.ts"
 pattern = "=== 0"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/calculator.ts"]

@@ -1,0 +1,39 @@
+[id]
+name = "修复CSV引号解析"
+category = "bug-fix"
+difficulty = "hard"
+description = "修复 CSV 解析器不处理引号内逗号的 bug，并保证不改动范围外文件"
+
+[request]
+user_prompt = "修复 src/csv.ts 的 parseRow：字段可能被双引号包裹，引号内的逗号不应作为分隔符（例如 a,\"b,c\",d 应解析为 3 个字段）。只修改 parseRow 的实现，不改变函数签名"
+
+[[initial_files]]
+path = "src/csv.ts"
+content = '''
+export function parseRow(line: string): string[] {
+  return line.split(',')
+}
+
+export function parseCsv(text: string): string[][] {
+  return text.split('\n').filter(Boolean).map(parseRow)
+}
+'''
+
+[[validate]]
+type = "file_contains"
+path = "src/csv.ts"
+pattern = '"'
+
+[[validate]]
+type = "file_not_contains"
+path = "src/csv.ts"
+pattern = "return line.split(',')"
+
+[[validate]]
+type = "bash_output_contains"
+command = "grep -c parseRow src/csv.ts"
+pattern = "2"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/csv.ts"]

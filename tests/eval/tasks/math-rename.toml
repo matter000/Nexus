@@ -52,3 +52,7 @@ pattern = "add("
 type = "file_contains"
 path = "src/main.ts"
 pattern = "sum("
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/math.ts", "src/main.ts"]

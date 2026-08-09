@@ -31,7 +31,8 @@ export function MessageList({ messages }: MessageListProps) {
   )
 }
 
-function MessageItem({ message }: { message: Message }) {
+/** 单条消息渲染（导出供 Ink <Static> 沉降复用；memo 化避免历史消息重复重布局） */
+export const MessageItem = React.memo(function MessageItem({ message }: { message: Message }) {
   if (message.role === 'user') {
     return (
       <Box flexDirection="column">
@@ -68,4 +69,4 @@ function MessageItem({ message }: { message: Message }) {
   }
 
   return null
-}
+})

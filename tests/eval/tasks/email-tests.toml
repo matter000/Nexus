@@ -1,0 +1,37 @@
+[id]
+name = "为校验器补测试"
+category = "add-test"
+difficulty = "medium"
+description = "为 email 校验函数创建覆盖边界情况的测试文件"
+
+[request]
+user_prompt = "为 src/validate.ts 的 isValidEmail 创建测试文件 tests/validate.test.ts，至少覆盖：合法邮箱、缺少 @、空字符串、缺少域名 四个用例"
+
+[[initial_files]]
+path = "src/validate.ts"
+content = """
+export function isValidEmail(email: string): boolean {
+  if (!email) return false
+  const at = email.indexOf('@')
+  if (at <= 0) return false
+  const dot = email.indexOf('.', at)
+  return dot > at + 1 && dot < email.length - 1
+}
+"""
+
+[[validate]]
+type = "file_exists"
+path = "tests/validate.test.ts"
+
+[[validate]]
+type = "file_contains"
+path = "tests/validate.test.ts"
+pattern = "isValidEmail"
+
+[[validate]]
+type = "bash_pass"
+command = "grep -cE 'it|test' tests/validate.test.ts"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/validate.ts", "tests/validate.test.ts"]

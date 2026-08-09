@@ -30,19 +30,32 @@ jobs:
       - name: Lint & type check
         run: bun run lint
 
-      - name: Unit tests (with coverage)
-        run: bun test tests/unit/ tests/integration/ --coverage --test-name-pattern '^(?:(?!Tree-sitter).)*$' --coverage-reporter=lcov --coverage-reporter=text --coverage-reporter=text-summary
+      - name: Unit tests (process-isolated, no coverage)
+        run: bun run scripts/run-tests-isolated.ts
 
       - name: Tree-sitter tests (separate process to avoid WASM memory conflict)
         run: bun test tests/unit/treesitter.test.ts
 
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-report
-          path: coverage/lcov.info
-          retention-days: 30
+      - name: Skill & Plugin tests (separate process to avoid mock.module leak)
+        run: bun test tests/unit/pluginLoader.test.ts tests/unit/skillLibrary.test.ts
+
+      - name: Eval harness gate (mock mode)
+        run: |
+          bun run src/index.ts eval tests/eval/tasks --mock --json eval-report.json || true
+          bun -e "const r = JSON.parse(await Bun.file('eval-report.json').text()); if (!r || r.tasksTotal < 15) { console.error('Eval regression: only ' + (r ? r.tasksTotal : 0) + ' tasks loaded'); process.exit(1) } console.log('Eval harness OK: ' + r.tasksTotal + ' tasks executed end-to-end')"
+
+      - name: Eval real-mode regression (easy tasks, gated by secret)
+        if: ${{ env.NEXUS_EVAL_API_KEY != '' }}
+        env:
+          NEXUS_EVAL_API_KEY: ${{ secrets.NEXUS_EVAL_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.NEXUS_EVAL_API_KEY }}
+        run: |
+          bun run src/index.ts eval tests/eval/tasks --real --difficulty easy --json eval-real-report.json || true
+          bun -e "const r = JSON.parse(await Bun.file('eval-real-report.json').text()); if (!r || r.tasksTotal < 4) { console.error('Eval real: insufficient tasks ' + (r ? r.tasksTotal : 0)); process.exit(1) } const rate = r.tasksPassed / r.tasksTotal; if (rate < 0.6) { console.error('Eval real regression: pass rate ' + (rate * 100).toFixed(0) + '% < 60%'); process.exit(1) } if (r.totalCost > 2) { console.error('Eval real cost overrun: $' + r.totalCost.toFixed(2) + ' > $2'); process.exit(1) } console.log('Eval real OK: ' + r.tasksPassed + '/' + r.tasksTotal + ' passed, $' + r.totalCost.toFixed(3))"
+
+      - name: Eval real-mode skip notice
+        if: ${{ env.NEXUS_EVAL_API_KEY == '' }}
+        run: echo "::notice::NEXUS_EVAL_API_KEY 未配置，跳过 eval 真实模式回归（fork PR 不受影响）"
 
       - name: Core change detection
         if: github.event_name == 'pull_request'
@@ -66,7 +79,7 @@ jobs:
         run: |
           echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          bun test tests/unit/ tests/integration/ --coverage --test-name-pattern '^(?:(?!Tree-sitter).)*$' --coverage-reporter=text-summary 2>&1 | tail -20 >> $GITHUB_STEP_SUMMARY || true
+          bun test tests/unit/ tests/integration/ --coverage --test-name-pattern '^(?:(?!(Tree-sitter|SkillPlugin)).)*$' --coverage-reporter=text-summary 2>&1 | tail -20 >> $GITHUB_STEP_SUMMARY || true
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Tree-sitter tests" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

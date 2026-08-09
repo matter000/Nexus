@@ -26,9 +26,25 @@ const DEFAULT_RULES: ProjectRules = {
   },
 }
 
-/** 加载 .nexus/rules.toml */
+/** AGENTS.md 注入上下文的 token 上限（防大文件稀释 L1；~4 字符/token） */
+const AGENTS_MD_MAX_TOKENS = 2000
+
+/** 读取项目根 AGENTS.md（2026 年事实标准的 agent 协作指南），不存在时返回 undefined */
+async function loadAgentsMd(projectRoot: string): Promise<string | undefined> {
+  try {
+    const content = await readFile(join(projectRoot, 'AGENTS.md'), 'utf-8')
+    const maxChars = AGENTS_MD_MAX_TOKENS * 4
+    if (content.length <= maxChars) return content
+    return `${content.slice(0, maxChars)}\n...（AGENTS.md 过长已截断，完整内容用 grep/read_file 查阅）`
+  } catch {
+    return undefined
+  }
+}
+
+/** 加载 .nexus/rules.toml（并附带项目根 AGENTS.md 作为补充） */
 export async function loadRules(projectRoot: string): Promise<ProjectRules> {
   const rulesPath = join(projectRoot, '.nexus', 'rules.toml')
+  const agentsMd = await loadAgentsMd(projectRoot)
 
   try {
     const content = await readFile(rulesPath, 'utf-8')
@@ -58,10 +74,11 @@ export async function loadRules(projectRoot: string): Promise<ProjectRules> {
       context: {
         alwaysInclude: (raw.context as Record<string, string[]>)?.always_include ?? [],
       },
+      ...(agentsMd ? { agentsMd } : {}),
     }
   } catch {
-    // 文件不存在或解析失败,返回默认值
-    return DEFAULT_RULES
+    // 文件不存在或解析失败,返回默认值（AGENTS.md 仍附带）
+    return { ...DEFAULT_RULES, ...(agentsMd ? { agentsMd } : {}) }
   }
 }
 
@@ -86,6 +103,13 @@ export function formatRulesForPrompt(rules: ProjectRules): string {
     for (const [constraint] of activeConstraints) {
       parts.push(`- ${constraint}`)
     }
+  }
+
+  // AGENTS.md 作为补充说明：与上方结构化规则冲突时，结构化规则优先
+  if (rules.agentsMd) {
+    parts.push(`\n## 项目协作指南 (AGENTS.md)`)
+    parts.push('（与上方结构化规则冲突时，以上方规则为准）')
+    parts.push(rules.agentsMd)
   }
 
   return parts.join('\n')

@@ -1,0 +1,41 @@
+[id]
+name = "回调转异步"
+category = "refactor"
+difficulty = "medium"
+description = "把回调风格的 fetchData 重构为 async/await"
+
+[request]
+user_prompt = "把 fetchData 从回调风格重构为 async/await 风格，返回 Promise<string>，保持错误语义不变（失败时 reject/throw）"
+
+[[initial_files]]
+path = "src/fetcher.ts"
+content = """
+export function fetchData(url: string, callback: (err: Error | null, data?: string) => void): void {
+  setTimeout(() => {
+    if (!url.startsWith('http')) {
+      callback(new Error('invalid url'))
+      return
+    }
+    callback(null, 'data:' + url)
+  }, 10)
+}
+"""
+
+[[validate]]
+type = "file_contains"
+path = "src/fetcher.ts"
+pattern = "async"
+
+[[validate]]
+type = "file_contains"
+path = "src/fetcher.ts"
+pattern = "await"
+
+[[validate]]
+type = "file_not_contains"
+path = "src/fetcher.ts"
+pattern = "callback("
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/fetcher.ts"]

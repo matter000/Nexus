@@ -12,7 +12,7 @@ import type { ToolContext, ToolHandler } from './registry'
 const definition: ToolDefinition = {
   name: 'grep',
   description:
-    '在项目中搜索代码。使用 ripgrep 进行快速正则搜索。支持文件类型过滤和上下文行。返回匹配的文件:行号:内容。',
+    '在项目中按文本内容搜索（ripgrep 正则）。返回匹配的文件:行号:内容。已知符号名找定义/引用用 search_symbol，按文件名找路径用 glob，概念相关但词面不同用 semantic_search。',
   inputSchema: {
     type: 'object',
     properties: {

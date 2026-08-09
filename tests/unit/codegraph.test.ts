@@ -10,6 +10,7 @@ import {
   formatGraphForContext,
   type CodeGraph,
 } from '../../src/context/CodeGraph'
+import { GraphCache, hashContent } from '../../src/context/GraphCache'
 import { join } from 'path'
 import { mkdtemp, mkdir, writeFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -31,9 +32,10 @@ describe('CodeGraph 增量更新', () => {
       'src/b.ts': 'export function funcB() { return 2 }',
     })
 
+    let originalGraph: CodeGraph | undefined
     try {
       // 1. 构建初始图谱
-      const originalGraph: CodeGraph = await buildCodeGraph(projectDir)
+      originalGraph = await buildCodeGraph(projectDir)
       expect(originalGraph.files.size).toBe(2)
       expect(originalGraph.files.has('src/a.ts')).toBe(true)
       expect(originalGraph.files.has('src/b.ts')).toBe(true)
@@ -56,6 +58,7 @@ describe('CodeGraph 增量更新', () => {
       const bSymbols = updatedGraph.files.get('src/b.ts')!.symbols
       expect(bSymbols.some((s) => s.name === 'funcB')).toBe(true)
     } finally {
+      originalGraph?.cache?.close()
       await rm(projectDir, { recursive: true, force: true })
     }
   })
@@ -66,8 +69,9 @@ describe('CodeGraph 增量更新', () => {
       'src/main.ts': 'export function main() {}',
     })
 
+    let graph: CodeGraph | undefined
     try {
-      const graph = await buildCodeGraph(projectDir)
+      graph = await buildCodeGraph(projectDir)
       const beforeUpdate = formatGraphForContext(graph)
 
       // 修改 utils.ts
@@ -79,6 +83,7 @@ describe('CodeGraph 增量更新', () => {
       expect(afterUpdate).toContain('main.ts')
       expect(afterUpdate).toContain('helperUpdated')
     } finally {
+      graph?.cache?.close()
       await rm(projectDir, { recursive: true, force: true })
     }
   })
@@ -89,8 +94,9 @@ describe('CodeGraph 增量更新', () => {
       'src/delete-me.ts': 'export function removeMe() {}',
     })
 
+    let graph: CodeGraph | undefined
     try {
-      const graph = await buildCodeGraph(projectDir)
+      graph = await buildCodeGraph(projectDir)
       expect(graph.files.size).toBe(2)
 
       // 删除文件后触发增量更新（updateCodeGraph 应感知到文件消失）
@@ -102,6 +108,61 @@ describe('CodeGraph 增量更新', () => {
       // keep.ts 必须保留
       expect(updatedGraph.files.has('src/keep.ts')).toBe(true)
       expect(updatedGraph.files.size).toBe(1)
+    } finally {
+      graph?.cache?.close()
+      await rm(projectDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('CodeGraph 磁盘缓存（内容哈希增量）', () => {
+  it('GraphCache 命中返回骨架，哈希不匹配时失效', async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), 'nexus-cache-test-'))
+    try {
+      const cache = new GraphCache(projectDir)
+      const skeleton = {
+        filePath: 'src/x.ts',
+        symbols: [
+          {
+            name: 'foo',
+            kind: 'function' as const,
+            filePath: 'src/x.ts',
+            startLine: 1,
+            endLine: 2,
+            signature: 'function foo()',
+            exports: true,
+          },
+        ],
+        imports: [],
+        lineCount: 2,
+      }
+      const hash = hashContent('export function foo() {}')
+
+      cache.set('src/x.ts', hash, skeleton)
+      expect(cache.get('src/x.ts', hash)).toEqual(skeleton)
+      // 内容变化（哈希不同）→ 缓存失效
+      expect(cache.get('src/x.ts', hashContent('changed'))).toBeNull()
+      cache.close()
+    } finally {
+      await rm(projectDir, { recursive: true, force: true })
+    }
+  })
+
+  it('buildCodeGraph 挂载缓存且二次构建结果一致', async () => {
+    const projectDir = await createTempProject({
+      'src/mod.ts': 'export function alpha() { return 1 }',
+    })
+    let graph: CodeGraph | null = null
+    try {
+      graph = await buildCodeGraph(projectDir)
+      expect(graph.cache).toBeDefined()
+      expect(graph.files.get('src/mod.ts')!.symbols.some((s) => s.name === 'alpha')).toBe(true)
+      graph.cache?.close()
+
+      // 二次构建：文件未变，命中缓存后图谱结果应一致
+      const second = await buildCodeGraph(projectDir)
+      expect(second.files.get('src/mod.ts')!.symbols.some((s) => s.name === 'alpha')).toBe(true)
+      second.cache?.close()
     } finally {
       await rm(projectDir, { recursive: true, force: true })
     }

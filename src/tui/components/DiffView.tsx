@@ -5,6 +5,7 @@
 
 import { Box, Text } from 'ink'
 import React from 'react'
+import { theme } from '../theme'
 
 interface DiffViewProps {
   diff: string
@@ -30,20 +31,20 @@ export function DiffView({ diff, fileName, maxLines = 30 }: DiffViewProps) {
     <Box flexDirection="column">
       {fileName && (
         <Box>
-          <Text bold color="white">
+          <Text bold color={theme.colors.fg}>
             {fileName}
           </Text>
-          {(added > 0 || removed > 0) && <Text color="gray"> </Text>}
-          {added > 0 && <Text color="green">+{added}</Text>}
-          {added > 0 && removed > 0 && <Text color="gray"> </Text>}
-          {removed > 0 && <Text color="red">-{removed}</Text>}
+          {(added > 0 || removed > 0) && <Text color={theme.colors.muted}> </Text>}
+          {added > 0 && <Text color={theme.colors.success}>+{added}</Text>}
+          {added > 0 && removed > 0 && <Text color={theme.colors.muted}> </Text>}
+          {removed > 0 && <Text color={theme.colors.error}>-{removed}</Text>}
         </Box>
       )}
       {displayLines.map((line, i) => (
         <DiffLine key={i} line={line} />
       ))}
       {truncated && (
-        <Text color="gray" dimColor>
+        <Text color={theme.colors.muted} dimColor>
           {' '}
           ... 还有 {lines.length - maxLines} 行
         </Text>
@@ -54,24 +55,24 @@ export function DiffView({ diff, fileName, maxLines = 30 }: DiffViewProps) {
 
 function DiffLine({ line }: { line: string }) {
   if (line.startsWith('+') && !line.startsWith('+++')) {
-    return <Text color="green">{line}</Text>
+    return <Text color={theme.colors.success}>{line}</Text>
   }
   if (line.startsWith('-') && !line.startsWith('---')) {
-    return <Text color="red">{line}</Text>
+    return <Text color={theme.colors.error}>{line}</Text>
   }
   if (line.startsWith('@@')) {
     return (
-      <Text color="cyan" dimColor>
+      <Text color={theme.colors.primary} dimColor>
         {line}
       </Text>
     )
   }
   if (line.startsWith('+++') || line.startsWith('---')) {
     return (
-      <Text color="gray" bold>
+      <Text color={theme.colors.muted} bold>
         {line}
       </Text>
     )
   }
-  return <Text color="gray">{line}</Text>
+  return <Text color={theme.colors.muted}>{line}</Text>
 }

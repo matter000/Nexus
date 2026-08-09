@@ -8,6 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import type { SecretsConfig } from '../../src/config-secrets'
+import { normalizeMessagesForSDK } from '../../src/agent/ReActLoop'
 import { parseDeepSeekError } from '../../src/router/providers/deepseekErrors'
 import {
   anthropicAdapter,
@@ -112,13 +113,30 @@ describe('Provider 适配器 isAvailable 与 secrets 一致性', () => {
 // ─── DeepSeek 思考模式角色策略（深度适配） ─────────────────────────────
 
 describe('deepseekAdapter.getModelParameters 思考模式角色策略', () => {
-  it('planner/executor 关闭思考模式（SDK 不回传 reasoning_content，避免 422）', () => {
+  it('planner/executor 默认开启思考模式（reasoning_content 回传已由拦截器保证）', () => {
     for (const role of ['planner', 'executor'] as const) {
       for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
         const params = deepseekAdapter.getModelParameters!(model, role)!
-        expect(params.thinking).toEqual({ type: 'disabled' })
-        // 关闭思考模式后不应再携带推理深度控制
+        expect(params.thinking).toEqual({ type: 'enabled' })
+        // 开启思考模式后不应再携带推理深度控制（flash 不可控，pro 由角色参数决定）
         expect(params.reasoningEffort).toBeUndefined()
+      }
+    }
+  })
+
+  it('NEXUS_DEEPSEEK_THINKING=off 时 planner/executor 回退非思考模式', () => {
+    const prev = process.env.NEXUS_DEEPSEEK_THINKING
+    try {
+      process.env.NEXUS_DEEPSEEK_THINKING = 'off'
+      for (const role of ['planner', 'executor'] as const) {
+        const params = deepseekAdapter.getModelParameters!('deepseek-v4-flash', role)!
+        expect(params.thinking).toEqual({ type: 'disabled' })
+      }
+    } finally {
+      if (prev === undefined) {
+        delete process.env.NEXUS_DEEPSEEK_THINKING
+      } else {
+        process.env.NEXUS_DEEPSEEK_THINKING = prev
       }
     }
   })
@@ -157,5 +175,42 @@ describe('parseDeepSeekError reasoning_content 契约错误', () => {
     const parsed = parseDeepSeekError(new Error('429 Too Many Requests'))
     expect(parsed.disableThinking).toBeUndefined()
     expect(parsed.recoverable).toBe(true)
+  })
+})
+
+// ─── Anthropic 前缀缓存断点（normalizeMessagesForSDK） ──────────────────────
+
+describe('Anthropic 缓存断点注入', () => {
+  // 双 system 消息（stable 段 + dynamic 段）+ 一条用户消息
+  const messages = [
+    { role: 'system', content: 'STABLE' },
+    { role: 'system', content: 'DYNAMIC' },
+    { role: 'user', content: '问题' },
+  ] as unknown as Parameters<typeof normalizeMessagesForSDK>[0]
+
+  it('启用断点时仅第一条 system 消息附带 cacheControl', () => {
+    const normalized = normalizeMessagesForSDK(messages, { anthropicCacheBreakpoint: true })
+    const first = normalized[0] as { content: string; providerOptions?: unknown }
+    const second = normalized[1] as { content: string; providerOptions?: unknown }
+    expect(first.content).toBe('STABLE')
+    expect(first.providerOptions).toEqual({
+      anthropic: { cacheControl: { type: 'ephemeral' } },
+    })
+    // dynamic 段与后续消息不附带断点（断点后内容每轮变化，缓存无意义）
+    expect(second.providerOptions).toBeUndefined()
+    expect((normalized[2] as { providerOptions?: unknown }).providerOptions).toBeUndefined()
+  })
+
+  it('非 anthropic provider（不传选项）时不附带 cacheControl', () => {
+    const normalized = normalizeMessagesForSDK(messages)
+    expect((normalized[0] as { providerOptions?: unknown }).providerOptions).toBeUndefined()
+  })
+
+  it('无 system 消息时不附带断点且不报错', () => {
+    const noSystem = [
+      { role: 'user', content: '问题' },
+    ] as unknown as Parameters<typeof normalizeMessagesForSDK>[0]
+    const normalized = normalizeMessagesForSDK(noSystem, { anthropicCacheBreakpoint: true })
+    expect((normalized[0] as { providerOptions?: unknown }).providerOptions).toBeUndefined()
   })
 })

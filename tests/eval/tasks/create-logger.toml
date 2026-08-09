@@ -1,0 +1,32 @@
+[id]
+name = "创建结构化日志模块"
+category = "create-file"
+difficulty = "easy"
+description = "创建支持级别过滤的结构化 logger 模块"
+
+[request]
+user_prompt = "创建 src/logger.ts：导出 LogLevel 类型（'info' | 'warn' | 'error'）、createLogger(minLevel) 工厂函数，返回的对象带 info/warn/error 三个方法，低于 minLevel 的日志不输出"
+
+[[initial_files]]
+path = "src/index.ts"
+content = """
+export {}
+"""
+
+[[validate]]
+type = "file_exists"
+path = "src/logger.ts"
+
+[[validate]]
+type = "file_contains"
+path = "src/logger.ts"
+pattern = "createLogger"
+
+[[validate]]
+type = "file_contains"
+path = "src/logger.ts"
+pattern = "LogLevel"
+
+[[validate]]
+type = "no_extra_files"
+allowed = ["src/index.ts", "src/logger.ts"]
