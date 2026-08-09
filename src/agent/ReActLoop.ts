@@ -371,6 +371,9 @@ export async function callLLMWithRetry(
             const result = streamText({
               ...(streamOptions as Parameters<typeof streamText>[0]),
               abortSignal: callSignal,
+              // system 消息位于 messages 数组（Anthropic 缓存断点依赖 cacheControl 附着），
+              // v6 默认警告此用法（安全提示）；显式声明以压制噪音（2026-08 冒烟发现）
+              allowSystemInMessages: true,
             })
 
             // 流式消费文本

@@ -22,10 +22,13 @@ let mockStreamTextAlwaysFails = false
 let mockGenerateTextError: string | null = null
 /** 最近一次 generateText 的 messages（验证 verifyPrompt 证据段注入） */
 let mockGenerateTextMessages: unknown[] = []
+/** 最近一次 streamText 的参数（验证 allowSystemInMessages 等调用契约） */
+let mockStreamTextOptions: Record<string, unknown> | null = null
 
 ;(mock as any).module('ai', () => ({
   streamText: (opts: Record<string, unknown>) => {
     streamTextCallCount++
+    mockStreamTextOptions = opts
     if (mockStreamTextAlwaysFails) {
       throw new Error('all models down')
     }
@@ -883,6 +886,16 @@ describe('Executor runVerification', () => {
     const outcome = executor.getVerifyOutcome()
     expect(outcome?.pass).toBe(false)
     expect(outcome?.failures[0].evidence).toBe('test: exit 1')
+  })
+
+  it('LLM 调用声明 allowSystemInMessages（system 消息位于 messages 的缓存断点结构）', async () => {
+    mockStreamTextSequence = [{ text: '任务完成', toolCalls: [] }]
+
+    const { config } = createMockExecutorConfig()
+    const executor = new Executor(config)
+    await executor.execute(TEST_PLAN, [])
+
+    expect(mockStreamTextOptions?.allowSystemInMessages).toBe(true)
   })
 
   it('正常完成后不强制把未完成 todo 标记为 complete（学习信号保真）', async () => {

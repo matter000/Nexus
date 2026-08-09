@@ -745,6 +745,26 @@ describe('Orchestrator', () => {
     expect(result.rounds).toBe(2)
   })
 
+  it('L4 trace 采集：/goal 轮次写入 loop_traces（真实 sqlite，不受 fs mock 影响）', async () => {
+    mockExecutorVerifyOutcomeSeq = [
+      { pass: false, failures: [{ todoId: '1', detail: '缺实现' }] },
+      { pass: true, failures: [] },
+    ]
+    const config = createDefaultConfig()
+    const orch = new Orchestrator(createOrchestratorConfig({ skipPlan: true, config }))
+    await orch.init()
+    await orch.startBackgroundInit()
+
+    await orch.runGoal({ goal: '让所有测试通过', maxRounds: 2 })
+
+    const { TraceStore } = await import('../../src/memory/TraceStore')
+    const store = new TraceStore('/tmp/test-project')
+    const goalTraces = store.recentTraces(50).filter((t) => t.kind === 'goal')
+    expect(goalTraces.length).toBeGreaterThanOrEqual(1)
+    expect(goalTraces[0].round).toBeGreaterThanOrEqual(1)
+    store.close()
+  })
+
   it('runLoop 门面：节拍执行一轮并写状态文件，abort 中断等待', async () => {
     const config = createDefaultConfig()
     const orch = new Orchestrator(createOrchestratorConfig({ skipPlan: true, config }))

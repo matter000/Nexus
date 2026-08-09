@@ -902,7 +902,23 @@ export class Orchestrator {
       abortSignal: this.abortController?.signal,
       onEvent: (e) => this.emit(e),
     })
-    return await loop.run()
+    const goalResult = await loop.run()
+    // L4 trace 采集：/goal 每轮持久化（kind='goal'，供失败模式聚类）
+    for (const round of goalResult.roundSummaries) {
+      this.learningManager.recordLoopTrace({
+        loopName: 'main',
+        kind: 'goal',
+        round: round.round,
+        iterations: 0,
+        evidencePassed: round.evidencePassed,
+        evidence: [],
+        verifyPass: round.verifyPass,
+        verifyFailures: 0,
+        cost: round.cost,
+        createdAt: Date.now(),
+      })
+    }
+    return goalResult
   }
 
   /**
@@ -994,6 +1010,20 @@ export class Orchestrator {
         await sleepWithAbort(intervalMs, this.abortController?.signal)
       }
     }
+
+    // L4 trace 采集：/loop 汇总一轮（kind='loop'，loop_name 按配置分文件）
+    this.learningManager.recordLoopTrace({
+      loopName: opts?.loopName ?? 'main',
+      kind: 'loop',
+      round: stateFile.round,
+      iterations: 0,
+      evidencePassed: null,
+      evidence: [],
+      verifyPass: null,
+      verifyFailures: 0,
+      cost: this.costTracker.getTotalCost(),
+      createdAt: Date.now(),
+    })
 
     return `/loop 结束：共 ${stateFile.round} 轮。状态文件: .nexus/loop-state.md（修改其中 stop_requested 可控制后续运行）`
   }
@@ -1163,6 +1193,21 @@ export class Orchestrator {
         ` / 验证 ${verifyPassed}/${verifyRounds.length} 轮通过` +
         ` / 总成本 $${cost.toFixed(4)}`,
     })
+    // L4 trace 采集：逐轮持久化（kind='exec'，供失败模式聚类）
+    for (const round of loopTrace) {
+      this.learningManager.recordLoopTrace({
+        loopName: 'main',
+        kind: 'exec',
+        round: round.round,
+        iterations: round.iterations,
+        evidencePassed: round.evidencePassed,
+        evidence: round.evidence,
+        verifyPass: round.verifyPass,
+        verifyFailures: round.verifyFailures,
+        cost: this.costTracker.getTotalCost(),
+        createdAt: Date.now(),
+      })
+    }
   }
 
   /** 中断当前操作 */
@@ -1362,6 +1407,14 @@ export class Orchestrator {
       this.emit({
         type: 'system_info',
         message: `[Memory] 本次会话反思出 ${result.newLessons} 条新教训（/memory 查看）`,
+      })
+    }
+    // L4：消费循环 trace 失败模式（高频失败 → 模板化教训，零 LLM 成本）
+    const traceResult = this.learningManager.consumeLoopTraces()
+    if (traceResult.newLessons > 0) {
+      this.emit({
+        type: 'system_info',
+        message: `[Memory] 已从循环 trace 提炼 ${traceResult.newLessons} 条失败模式教训（/memory 查看）`,
       })
     }
     if (result.skillProposals > 0) {

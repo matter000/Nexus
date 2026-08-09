@@ -664,6 +664,8 @@ ${evidenceText}
                 tools: verifyToolsSDK,
                 stopWhen: stepCountIs(1),
                 abortSignal: this.config.abortSignal,
+                // system 消息位于 messages（缓存断点附着），显式声明压制 v6 安全警告（同 ReActLoop）
+                allowSystemInMessages: true,
                 ...(verifyTopLevel as Record<string, never>),
                 ...(verifyProviderOptions ? { providerOptions: verifyProviderOptions } : {}),
               } as never),

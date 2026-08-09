@@ -52,6 +52,17 @@
 
 验证：loopConfig 7 用例（schedule 解析/默认值/损坏跳过/语法错误）+ loopScheduler 6 用例（补跑/tick 触发/runNow/启停/list/成本暂停）+ loopState 扩展 3 用例（分文件/parseFindings/往返）+ orchestrator 门面 1 用例（无配置降级）+ slashCommands 6 用例；隔离套件 40 文件 / 498 用例全绿；lint/tsc/import 边界全通过。**真实链路冒烟已完成（2026-08-09）**：loops.toml 心跳启动补跑执行一轮，loop-state-smoke-demo.md 状态文件（round/findings）写入正确，/loops list 状态正常。
 
+### L4 trace 驱动自改进（已完成，2026-08；LangChain 四层循环第四层：用历史 trace 自动改写指令/工具/评测器，让系统自我进化）
+
+实现范围：**loop_traces 持久化 + 执行链路采集 + 失败模式聚类生成教训**（零 LLM 成本模板化；Reflector 精化提炼留待有成本预算时评估）。
+
+1. **loop_traces 表**（migration v5）：loop_name/kind（exec|goal|loop）/round/iterations/evidence/verify/cost/created_at
+2. **TraceStore**（新增 `src/memory/TraceStore.ts`）：独立打开 nexus.db + 迁移；record/recentTraces/failurePatterns（按 loop_name+失败类型聚类，count ≥ minCount 防噪音）
+3. **采集链路**：Orchestrator 三处钩子——emitLoopTraceSummary 逐轮（kind='exec'）、runGoal roundSummaries（kind='goal'）、runLoop 汇总（kind='loop' 按 loop_name 分文件）；失败静默（学习系统旁路原则）
+4. **失败模式消费**：LearningManager.consumeLoopTraces（会话末调用）——高频失败（count≥3）且无等价教训时生成模板化教训（triggerDesc `[循环] <loop>: <pattern>`），零 LLM 成本；system_info 播报提炼数
+
+验证：traceStore 7 用例（往返/迁移幂等/聚类命中与阈值/独立聚类）+ learningManagerTrace 4 用例（教训生成/去重/阈值/降级）+ orchestrator 采集 1 用例（/goal 写入 loop_traces）+ executor 1 用例（allowSystemInMessages 契约）；隔离套件 42 文件 / 511 用例全绿；lint/tsc/import 边界全通过。
+
 ### DeepSeek 深度适配（已完成，2026-08；基于官方文档与社区 issue 交叉调研：V4 GA / 涨价预警 / 峰谷计价 / thinking 三约束）
 
 1. **reasoning_content 回传加固**（核心）：deepseekFetch 拦截器在请求体层完成思考模式契约变换——assistant 消息 content 中的 reasoning part 转为顶层 `reasoning_content` 字段并剥离 part；带 tool_calls 且缺 reasoning_content 的 assistant 消息注入空串兜底（社区验证的 200 修复，opencode #24104/#24442 同因）；剥离 `tool_choice`（thinking 模式 supportsToolChoice: false）。端到端验证确认 @ai-sdk/openai 会剥离 reasoning part（与社区一致），拦截器保证 wire 契约不 400

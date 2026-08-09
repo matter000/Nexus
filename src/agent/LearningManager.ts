@@ -7,6 +7,7 @@
 import type { LanguageModel } from 'ai'
 import { LessonRetriever } from '../memory/LessonRetriever'
 import { MemoryStore } from '../memory/MemoryStore'
+import { type FailurePattern, type LoopTraceRecord, TraceStore } from '../memory/TraceStore'
 import type { Experience } from '../memory/types'
 import { Reflector } from './Reflector'
 import { SkillLibrary } from './SkillLibrary'
@@ -25,6 +26,8 @@ export class LearningManager {
   private memoryStore: MemoryStore | null = null
   private lessonRetriever: LessonRetriever | null = null
   private skillLibrary: SkillLibrary | null = null
+  /** L4 trace 存储（循环执行轨迹持久化与失败模式聚类；失败静默降级） */
+  private traceStore: TraceStore | null = null
 
   /** 学习系统是否可用 */
   get available(): boolean {
@@ -47,11 +50,13 @@ export class LearningManager {
       this.memoryStore = new MemoryStore(projectRoot)
       this.lessonRetriever = new LessonRetriever(this.memoryStore)
       this.skillLibrary = new SkillLibrary(projectRoot, this.memoryStore)
+      this.traceStore = new TraceStore(projectRoot)
     } catch (err) {
       console.warn('[Memory] 学习系统初始化失败，自主学习能力不可用:', err)
       this.memoryStore = null
       this.lessonRetriever = null
       this.skillLibrary = null
+      this.traceStore = null
     }
   }
 
@@ -129,6 +134,45 @@ export class LearningManager {
     return result
   }
 
+  /**
+   * L4：记录一轮循环执行轨迹（exec/goal/loop；失败静默）。
+   * 采集点为 Orchestrator 循环结束（emitLoopTraceSummary / runGoal / runLoop）。
+   */
+  recordLoopTrace(trace: LoopTraceRecord): void {
+    this.traceStore?.record(trace)
+  }
+
+  /**
+   * L4：消费循环 trace 的失败模式——高频失败（count >= 3）且无等价教训时
+   * 生成模板化教训（零 LLM 成本）。返回统计供会话末播报。
+   */
+  consumeLoopTraces(minCount = 3): {
+    patterns: FailurePattern[]
+    newLessons: number
+  } {
+    const result = { patterns: [] as FailurePattern[], newLessons: 0 }
+    try {
+      if (!this.traceStore || !this.memoryStore) return result
+      const patterns = this.traceStore.failurePatterns(minCount)
+      result.patterns = patterns
+      const existing = this.memoryStore.listLessons()
+      for (const p of patterns) {
+        const key = `[循环] ${p.loopName}: ${p.pattern}`
+        // 已有等价教训（trigger_desc 前缀匹配）则跳过
+        if (existing.some((l) => l.triggerDesc.startsWith(`[循环] ${p.loopName}:`))) continue
+        this.memoryStore.addLesson({
+          triggerDesc: key,
+          advice: `该失败模式在循环 ${p.loopName} 中重复出现 ${p.count} 次。建议：任务开始时先运行对应证据门禁确认基线；失败后检查验证结论中的具体缺失项再重试，避免重复无用功。`,
+          kind: 'failure_pattern',
+        })
+        result.newLessons++
+      }
+    } catch (err) {
+      console.warn('[Memory] 循环 trace 消费失败:', err)
+    }
+    return result
+  }
+
   /** 查看学习记忆统计与 top 教训（/memory） */
   listMemory(): string {
     if (!this.memoryStore) return '学习系统不可用（未完成初始化）'
@@ -192,8 +236,10 @@ export class LearningManager {
   /** 关闭存储并重置（会话级生命周期结束） */
   close(): void {
     this.memoryStore?.close()
+    this.traceStore?.close()
     this.memoryStore = null
     this.lessonRetriever = null
     this.skillLibrary = null
+    this.traceStore = null
   }
 }

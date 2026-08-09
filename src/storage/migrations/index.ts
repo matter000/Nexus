@@ -158,6 +158,30 @@ export const migrations: Migration[] = [
       DROP TABLE IF EXISTS experiences;
     `,
   },
+  {
+    version: 5,
+    name: 'add_loop_traces_table',
+    up: `
+      CREATE TABLE IF NOT EXISTS loop_traces (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        loop_name TEXT NOT NULL DEFAULT 'main',
+        kind TEXT NOT NULL DEFAULT 'exec',
+        round INTEGER NOT NULL DEFAULT 0,
+        iterations INTEGER NOT NULL DEFAULT 0,
+        evidence_passed INTEGER,
+        evidence TEXT,
+        verify_pass INTEGER,
+        verify_failures INTEGER DEFAULT 0,
+        cost REAL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_loop_traces_created ON loop_traces(created_at);
+    `,
+    down: `
+      DROP TABLE IF EXISTS loop_traces;
+    `,
+  },
 ]
 
 /** 获取当前 schema 版本 */
