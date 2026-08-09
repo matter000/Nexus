@@ -762,10 +762,19 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         </Box>
       )}
 
-      {/* 欢迎面板（无用户消息时） */}
-      {showWelcome && (
-        <LogoBanner version="0.1.0" model={commandContext.getModel()} projectRoot={projectRoot} />
-      )}
+      {/* 欢迎面板（无用户消息时）：置于 Static 沉降区——渲染一次进入终端滚动历史，
+          不再参与动态重绘（终端 resize 放大时不会残留旧帧欢迎屏） */}
+      <Static items={showWelcome ? ['welcome'] : []}>
+        {() => (
+          <Box justifyContent="center" paddingX={1} marginBottom={1}>
+            <LogoBanner
+              version="0.1.0"
+              model={commandContext.getModel()}
+              projectRoot={projectRoot}
+            />
+          </Box>
+        )}
+      </Static>
       {/* 已定稿消息：Ink <Static> 沉降区——渲染一次后进入终端滚动历史，
           不再参与动态帧重布局（长会话防闪烁/防全量重排的核心手段） */}
       <Static items={messages}>
