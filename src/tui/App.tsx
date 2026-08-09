@@ -754,7 +754,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
       {showWelcome && (
         <Box justifyContent="center" paddingX={1}>
           <LogoBanner
-            version="0.1.0"
+            version="1.0.0"
             model={commandContext.getModel()}
             projectRoot={projectRoot}
             compact={welcomeCompact}

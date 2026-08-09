@@ -74,7 +74,7 @@ export class ExternalMCPManager {
         return false
       }
 
-      const client = new Client({ name: 'nexus', version: '0.1.0' }, { capabilities: {} })
+      const client = new Client({ name: 'nexus', version: '1.0.0' }, { capabilities: {} })
 
       // 带超时的连接
       const connectPromise = client.connect(transport)

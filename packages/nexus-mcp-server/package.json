@@ -1,6 +1,6 @@
 {
   "name": "@nexus/mcp-server",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Nexus MCP Server — 让 Cursor/VSCode/Claude Desktop 通过 MCP 协议调用 Nexus 工具（read_file, edit_file, bash, grep）",
   "type": "module",
   "main": "src/index.ts",

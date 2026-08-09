@@ -59,7 +59,7 @@ function errorResult(errorType: string, message: string, suggestion?: string) {
 
 const server = new McpServer({
   name: 'nexus',
-  version: '0.1.0',
+  version: '1.0.0',
 })
 
 // ─── read_file ────────────────────────────────────────────────────────────────

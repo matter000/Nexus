@@ -23,7 +23,7 @@ import { eventBus } from './core/eventBus'
 import { App } from './tui/App'
 import { exportSession } from './utils/export'
 
-const VERSION = '0.1.0'
+const VERSION = '1.0.0'
 
 // 审批 resolver 由 core/approvalRegistry 统一管理（按 callId 索引）。
 // 入口与 TUI 均通过该模块交互，避免 globalThis 单槽与循环依赖。
