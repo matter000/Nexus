@@ -21,6 +21,8 @@ export const theme = {
     error: '#F47174',
     /** 次要文本（fg 56% 派生） */
     muted: '#878C98',
+    /** 输入框占位符（比 muted 更暗，虚化） */
+    placeholder: '#565D6B',
     /** 成功/完成 */
     success: '#3FB950',
     /** 弱边框 */

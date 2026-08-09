@@ -296,7 +296,7 @@ export function InputBox({
                 ))}
               </Box>
             ) : (
-              <Text color={theme.colors.muted} dimColor backgroundColor={fieldBg}>
+              <Text color={theme.colors.placeholder} italic backgroundColor={fieldBg}>
                 {disabled ? '执行中，无法输入 ' : `${placeholder} `}
               </Text>
             )}
