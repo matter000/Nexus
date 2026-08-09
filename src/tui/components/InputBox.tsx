@@ -4,26 +4,26 @@
  */
 
 import { Box, Text, useInput } from 'ink'
-import React, { useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { getAvailableCommands, getCommandCompletions } from '../../cli/commands'
 import { theme } from '../theme'
 
 interface InputBoxProps {
   onSubmit: (text: string) => void
   disabled?: boolean
-  placeholder?: string
   /** 外部填入值（欢迎屏示例任务等）：变化时同步到输入框 */
   externalValue?: string
 }
 
-export function InputBox({
-  onSubmit,
-  disabled = false,
-  placeholder = '输入任务...',
-  externalValue,
-}: InputBoxProps) {
+export function InputBox({ onSubmit, disabled = false, externalValue }: InputBoxProps) {
   const [value, setValue] = useState('')
   const [completionIndex, setCompletionIndex] = useState(-1)
+  /** 光标闪烁：500ms 交替显示/隐藏（空输入时唯一可输入指示） */
+  const [cursorVisible, setCursorVisible] = useState(true)
+  useEffect(() => {
+    const timer = setInterval(() => setCursorVisible((v) => !v), 500)
+    return () => clearInterval(timer)
+  }, [])
   /** 会话级输入历史栈（提交时入栈，↑/↓ 回溯） */
   const historyRef = useRef<string[]>([])
   /** 历史浏览索引：-1 表示不在浏览状态 */
@@ -296,13 +296,12 @@ export function InputBox({
                 ))}
               </Box>
             ) : (
-              <Text color={theme.colors.placeholder} italic backgroundColor={fieldBg}>
-                {disabled ? '执行中，无法输入 ' : `${placeholder} `}
-              </Text>
+              // 无占位文字：空输入时仅显示跳动光标
+              <Text backgroundColor={fieldBg}>{disabled ? '执行中，无法输入 ' : ' '}</Text>
             )}
             {!disabled && (
               <Text color={theme.colors.primary} backgroundColor={fieldBg}>
-                ▌
+                {cursorVisible ? '▌' : ' '}
               </Text>
             )}
           </Box>

@@ -6,11 +6,8 @@
 import { describe, expect, it } from 'bun:test'
 import { render } from 'ink-testing-library'
 import React from 'react'
-import {
-  formatApprovalParams,
-  ApprovalPrompt,
-} from '../../src/tui/components/ApprovalPrompt'
-import { AgentRunList, type AgentRun } from '../../src/tui/components/AgentRunList'
+import { type AgentRun, AgentRunList } from '../../src/tui/components/AgentRunList'
+import { ApprovalPrompt, formatApprovalParams } from '../../src/tui/components/ApprovalPrompt'
 import { InputBox } from '../../src/tui/components/InputBox'
 
 /** 去除 ANSI 转义码，便于断言纯文本内容 */
@@ -141,10 +138,12 @@ describe('InputBox 输入历史回溯', () => {
     await tick()
     expect(stripAnsi(lastFrame() ?? '')).toContain('second task')
 
-    // ↓ 越界回到空输入（显示 placeholder）
+    // ↓ 越界回到空输入（无占位文字，仅跳动光标）
     stdin.write('\u001B[B')
     await tick()
-    expect(stripAnsi(lastFrame() ?? '')).toContain('输入任务...')
+    const emptyFrame = stripAnsi(lastFrame() ?? '')
+    expect(emptyFrame).not.toContain('second task')
+    expect(emptyFrame).toContain('▌')
   })
 
   it('连续重复提交不叠加历史', async () => {
@@ -169,9 +168,11 @@ describe('InputBox 输入历史回溯', () => {
     stdin.write('\u001B[A')
     await tick()
     expect(stripAnsi(lastFrame() ?? '')).toContain('same')
-    // 历史栈只有一条：再按 ↑ 不会变化，↓ 一次即回空输入
+    // 历史栈只有一条：再按 ↑ 不会变化，↓ 一次即回空输入（无占位文字）
     stdin.write('\u001B[B')
     await tick()
-    expect(stripAnsi(lastFrame() ?? '')).toContain('输入任务...')
+    const emptyFrame = stripAnsi(lastFrame() ?? '')
+    expect(emptyFrame).not.toContain('same')
+    expect(emptyFrame).toContain('▌')
   })
 })
