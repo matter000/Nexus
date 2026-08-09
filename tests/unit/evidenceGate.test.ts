@@ -19,6 +19,21 @@ async function createFakeProject(scripts: Record<string, string>): Promise<strin
 }
 
 describe('EvidenceGate 命令执行', () => {
+  it('onGate 回调：每个非 skipped gate 完成后触发（进度可视化）', async () => {
+    const dir = await createFakeProject({})
+    const fired: Array<{ gate: string; passed: boolean }> = []
+    const gate = new EvidenceGate(
+      { lintCommand: 'bun -e process.exit(0)', testCommand: 'bun -e process.exit(1)' },
+      dir,
+      (gateName, result) => fired.push({ gate: gateName, passed: result.passed }),
+    )
+    await gate.runAll()
+    // lint 与 test 配置了命令 → 触发（typecheck 视 fixture 的 package.json 而定，不假设）
+    expect(fired.length).toBeGreaterThanOrEqual(2)
+    expect(fired.some((f) => f.gate === 'lint' && f.passed === true)).toBe(true)
+    expect(fired.some((f) => f.gate === 'test' && f.passed === false)).toBe(true)
+  })
+
   it('配置命令退出码 0 → passed', async () => {
     const dir = await createFakeProject({})
     const gate = new EvidenceGate({ lintCommand: 'bun -e process.exit(0)' }, dir)

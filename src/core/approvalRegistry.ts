@@ -5,8 +5,8 @@
  * 替代此前基于 globalThis 单槽 + 模块级变量的方案。
  */
 
-/** 工具审批结果：true 批准 / false 拒绝 */
-export type ToolApprovalResolve = (approved: boolean) => void
+/** 工具审批结果：true 批准 / false 拒绝；可选 reason（拒绝时用户说明，LLM 可读） */
+export type ToolApprovalResolve = (approved: boolean, reason?: string) => void
 
 /** 计划审批结果：'approve' | 'reject' | 反馈文本 */
 export type PlanApprovalResult = 'approve' | 'reject' | string

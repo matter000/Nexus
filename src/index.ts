@@ -7,6 +7,7 @@
 
 import { render } from 'ink'
 import React from 'react'
+import type { ToolApprovalDecision } from './agent/Executor'
 import { Orchestrator } from './agent/Orchestrator'
 import type { NexusConfig, NexusEvent } from './agent/types'
 import { getHelpText, parseArgs } from './cli/args'
@@ -179,7 +180,7 @@ async function main() {
       // 非交互模式下默认批准
       if (args.nonInteractive) return true
       const callId = nextApprovalCallId()
-      return new Promise<boolean>((resolve) => {
+      return new Promise<ToolApprovalDecision>((resolve) => {
         registerToolApproval(callId, resolve)
         eventBus.emit({ type: 'tool_approval_request', callId, tool, params, diff })
       })

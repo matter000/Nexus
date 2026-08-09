@@ -114,7 +114,13 @@ export function TaskTimeline({ todos, toolCalls, forceExpandTools }: TaskTimelin
 function ProgressBar({ completed, total }: { completed: number; total: number }) {
   const width = 20
   const filled = Math.round((completed / total) * width)
-  return <Text>{'▓'.repeat(filled) + '░'.repeat(Math.max(0, width - filled))}</Text>
+  // 完成段 success 色、剩余 muted 色（低饱和，与信息层次一致）
+  return (
+    <Text>
+      <Text color={theme.colors.success}>{'▓'.repeat(filled)}</Text>
+      <Text color={theme.colors.muted}>{'░'.repeat(Math.max(0, width - filled))}</Text>
+    </Text>
+  )
 }
 
 const TodoHeader = React.memo(function TodoHeader({ todo }: { todo: Todo }) {
@@ -135,6 +141,10 @@ const TodoHeader = React.memo(function TodoHeader({ todo }: { todo: Todo }) {
       >
         {todo.content}
       </Text>
+      {/* 当前执行中的任务：primary 色 ▶ 标记（高亮） */}
+      {todo.status === 'in_progress' && (
+        <Text color={theme.colors.primary}> {theme.symbols.inProgress}</Text>
+      )}
     </Box>
   )
 })

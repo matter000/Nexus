@@ -70,6 +70,17 @@ const EXECUTE_SYSTEM_SUFFIX = `
 - 预计超过 10 步的任务：每完成一个里程碑就用 update_notes(action="append") 记录关键决策、已改文件与下一步计划
 - 当你感觉上下文被压缩、丢失了之前的细节时，先 update_notes(action="read") 回读笔记再继续`
 
+/** 工具审批结果：boolean 兼容（true/false），或带拒绝原因的决策对象 */
+export type ToolApprovalDecision = boolean | { approved: boolean; reason?: string }
+
+/** 将审批结果归一化为决策对象 */
+export function normalizeApprovalDecision(d: ToolApprovalDecision): {
+  approved: boolean
+  reason?: string
+} {
+  return typeof d === 'boolean' ? { approved: d } : d
+}
+
 export interface ExecutorConfig {
   model: LanguageModel
   toolRegistry: ToolRegistry
@@ -78,12 +89,12 @@ export interface ExecutorConfig {
   maxIterations: number
   permissionMode: PermissionMode
   onEvent: (event: NexusEvent) => void
-  /** 审批回调:返回 true=批准, false=拒绝 */
+  /** 审批回调:返回 true=批准, false=拒绝；可返回带 reason 的决策对象 */
   requestApproval: (
     tool: string,
     params: Record<string, unknown>,
     diff?: string,
-  ) => Promise<boolean>
+  ) => Promise<ToolApprovalDecision>
   /** 成本追踪器 */
   costTracker: CostTracker
   /** 验证阶段模型（verifier 角色）；未提供时回退主模型 */
@@ -813,9 +824,11 @@ ${evidenceText}
     onEvent({ type: 'tool_call', tool: toolCall.toolName, params: args, callId, todoId })
 
     // 权限检查
-    const approved = await this.checkPermission(toolCall.toolName, args)
-    if (!approved) {
-      const rejectMsg = '用户拒绝了此操作。请换一种方式完成任务,或解释为什么需要这个操作。'
+    const decision = normalizeApprovalDecision(await this.checkPermission(toolCall.toolName, args))
+    if (!decision.approved) {
+      const rejectMsg = decision.reason
+        ? `用户拒绝了此操作：${decision.reason}。请根据反馈调整方式。`
+        : '用户拒绝了此操作。请换一种方式完成任务,或解释为什么需要这个操作。'
       // 审批拒绝用 user role（表达“用户不允许”的语义）
       messages.push({ role: 'user', content: `[工具被拒绝 ${toolCall.toolName}]: ${rejectMsg}` })
       toolResults.push({
@@ -1095,8 +1108,11 @@ ${evidenceText}
     return results
   }
 
-  /** 权限检查（edit_file 审批前生成 diff 预览） */
-  private async checkPermission(toolName: string, args: Record<string, unknown>): Promise<boolean> {
+  /** 权限检查（edit_file 审批前生成 diff 预览）；返回决策（可含拒绝原因） */
+  private async checkPermission(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolApprovalDecision> {
     const { permissionMode, requestApproval } = this.config
     const handler = this.config.toolRegistry.get(toolName)
 
@@ -1214,7 +1230,18 @@ ${evidenceText}
    * 全部 skipped（未配置命令）时静默通过；有实际检查时 emit 摘要供观测。
    */
   private async runEvidenceGate(): Promise<EvidenceSet> {
-    const gate = new EvidenceGate(this.config.evidence, this.config.toolContext.projectRoot)
+    const gate = new EvidenceGate(
+      this.config.evidence,
+      this.config.toolContext.projectRoot,
+      // gate 级进度可视化：每完成一个门禁发 system_info（TUI 状态行覆盖展示 lint ✓ / typecheck ⟳ / test ⏳）
+      (gateName, result) => {
+        if (result.skipped) return
+        this.config.onEvent({
+          type: 'system_info',
+          message: `门禁 ${gateName} ${result.passed ? '✓' : '✗'} · ${result.command}`,
+        })
+      },
+    )
     const result = await gate.runAll()
     const ran = result.results.filter((r) => !r.skipped)
     if (ran.length > 0) {

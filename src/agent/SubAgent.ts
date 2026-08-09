@@ -19,6 +19,7 @@ import type { WorktreeInfo, WorktreeManager } from '../sandbox/WorktreeManager'
 import type { ToolContext, ToolRegistry } from '../tools/registry'
 import { resolveToolParameters } from '../tools/schemas'
 import type { AgentEngineRegistry } from './AgentEngine'
+import type { ToolApprovalDecision } from './Executor'
 import { Mailbox } from './Mailbox'
 import { splitModelParameters } from './ReActLoop'
 import type {
@@ -38,12 +39,12 @@ export interface SubAgentConfig {
   onEvent: (event: NexusEvent) => void
   /** 权限模式（与 Executor 一致） */
   permissionMode: PermissionMode
-  /** 审批回调 */
+  /** 审批回调：返回 true=批准 / false=拒绝 / 带 reason 决策对象 */
   requestApproval: (
     tool: string,
     params: Record<string, unknown>,
     diff?: string,
-  ) => Promise<boolean>
+  ) => Promise<ToolApprovalDecision>
   /** 成本追踪器 */
   costTracker: CostTracker
   /** 当前模型角色（用于成本记录） */
@@ -452,8 +453,11 @@ ${task.description}
     }
   }
 
-  /** 权限检查（与 Executor 逻辑一致） */
-  private async checkPermission(toolName: string, args: Record<string, unknown>): Promise<boolean> {
+  /** 权限检查（与 Executor 逻辑一致）；返回决策（可含拒绝原因） */
+  private async checkPermission(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolApprovalDecision> {
     const { toolRegistry, permissionMode, requestApproval } = this.config
     const handler = toolRegistry.get(toolName)
     // 只读工具无需审批

@@ -102,13 +102,13 @@ export const ToolCard = React.memo(function ToolCard({
     return (
       <Box>
         <Text color={theme.colors.muted}>{emoji} </Text>
-        <Text color={theme.colors.tool}>{tool}</Text>
+        <Text color={theme.colors.tool}>{tool.padEnd(20)}</Text>
         {detail ? <Text color={theme.colors.muted}> ─ {detail}</Text> : null}
         <Text color={statusColor}> {statusIcon}</Text>
         {summary ? (
           <Text color={theme.colors.muted} dimColor>
             {' '}
-            {summary}
+            · {summary}
           </Text>
         ) : null}
       </Box>

@@ -41,6 +41,14 @@ export const theme = {
   /** 面背景（输入框等容器内衬，对应设计稿 seed-surface） */
   surfaces: {
     field: '#11151D',
+    /** 用户消息角色行背景（Claude Code 风格底色，深灰蓝） */
+    user: '#16202E',
+  },
+  /** 进度条阈值着色（低/中/高占用 → success/warning/error） */
+  progressBar: {
+    low: '#3FB950',
+    mid: '#D29922',
+    high: '#F47174',
   },
   symbols: {
     user: '◆',

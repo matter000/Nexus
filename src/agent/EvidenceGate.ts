@@ -84,6 +84,7 @@ export class EvidenceGate {
   constructor(
     config: EvidenceConfig | undefined,
     private readonly projectRoot: string,
+    private readonly onGate?: (gate: EvidenceGateName, result: EvidenceResult) => void,
   ) {
     this.config = {
       ...config,
@@ -92,11 +93,13 @@ export class EvidenceGate {
     }
   }
 
-  /** 运行全部已解析命令的门禁；未配置命令的 gate 标记 skipped */
+  /** 运行全部已解析命令的门禁；未配置命令的 gate 标记 skipped；每 gate 完成后触发 onGate（进度可视化） */
   async runAll(): Promise<EvidenceSet> {
     const results: EvidenceResult[] = []
     for (const gate of ['lint', 'typecheck', 'test'] as const) {
-      results.push(await this.runGate(gate))
+      const result = await this.runGate(gate)
+      results.push(result)
+      this.onGate?.(gate, result)
     }
     return { passed: results.every((r) => r.skipped || r.passed), results }
   }

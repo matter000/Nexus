@@ -341,6 +341,36 @@ describe('Executor 权限拒绝', () => {
     expect((toolResultEvents[0] as { error?: string }).error).toContain('拒绝')
   })
 
+  it('拒绝带原因：tool_result 错误信息包含用户理由（LLM 可读反馈）', async () => {
+    mockToolExecute = async () => ({ result: '不应执行' })
+    mockStreamTextSequence = [
+      {
+        text: '',
+        toolCalls: [
+          { toolName: 'edit_file', input: { path: 'test.ts', old_string: 'a', new_string: 'b' } },
+        ],
+      },
+      { text: '好的，我换一种方式', toolCalls: [] },
+    ]
+
+    const { config, events } = createMockExecutorConfig({
+      permissionMode: 'ask',
+      requestApproval: async () => ({ approved: false, reason: '不要修改配置文件' }),
+      toolRegistry: createMockToolRegistry({
+        get: (name: string) =>
+          name === 'edit_file' ? { definition: { requiresApproval: true } } : null,
+      }),
+    })
+
+    const executor = new Executor(config)
+    await executor.execute(TEST_PLAN, [])
+
+    const toolResultEvents = events.filter((e) => e.type === 'tool_result')
+    const errorText = (toolResultEvents[0] as { error?: string }).error ?? ''
+    expect(errorText).toContain('不要修改配置文件')
+    expect(errorText).toContain('拒绝')
+  })
+
   it('yolo 模式下不请求审批直接执行', async () => {
     let approvalRequested = false
     mockToolExecute = async () => ({ result: '编辑成功' })

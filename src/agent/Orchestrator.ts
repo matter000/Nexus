@@ -26,7 +26,12 @@ import { recordError } from '../utils/errorReport'
 import { AgentEngineRegistry } from './AgentEngine'
 import { loadAgentEngineConfigs } from './agentsConfig'
 import { type EvidenceResult, formatEvidenceSummary } from './EvidenceGate'
-import { Executor, type ExecutorConfig, type VerifyFailure } from './Executor'
+import {
+  Executor,
+  type ExecutorConfig,
+  type ToolApprovalDecision,
+  type VerifyFailure,
+} from './Executor'
 import { type ExecutionSignals, GoalLoop, type GoalLoopResult } from './GoalLoop'
 import { LearningManager } from './LearningManager'
 import { type LoopConfig, LoopConfigLoader } from './LoopConfigLoader'
@@ -96,7 +101,7 @@ export interface OrchestratorConfig {
     tool: string,
     params: Record<string, unknown>,
     diff?: string,
-  ) => Promise<boolean>
+  ) => Promise<ToolApprovalDecision>
   /** 计划审批：返回 'approve' | 'reject' | 反馈文本（反馈文本触发重规划） */
   requestPlanApproval: (plan: Plan) => Promise<'approve' | 'reject' | string>
 }
@@ -172,9 +177,11 @@ export class Orchestrator {
     this.toolRegistry.setWorktreeManager(this.worktreeManager)
     this.toolRegistry.setTaskBoard(this.taskBoard)
     this.toolRegistry.setMailbox(this.mailbox)
-    this.toolRegistry.setMergeApprovalHandler((diffSummary, branchCount) =>
-      this.cfg.requestApproval('git_merge', { branchCount }, diffSummary),
-    )
+    this.toolRegistry.setMergeApprovalHandler(async (diffSummary, branchCount) => {
+      // 工具层 merge 审批接口为 boolean，此处归一化 decision（拒绝原因暂不传递）
+      const decision = await this.cfg.requestApproval('git_merge', { branchCount }, diffSummary)
+      return typeof decision === 'boolean' ? decision : decision.approved
+    })
   }
 
   /** 设置是否跳过 Plan 阶段（运行时切换 plan/auto 模式） */

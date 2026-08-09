@@ -36,9 +36,13 @@ export const MessageItem = React.memo(function MessageItem({ message }: { messag
   if (message.role === 'user') {
     return (
       <Box flexDirection="column">
-        <Text color={theme.colors.user} bold>
-          {theme.symbols.user} 用户
-        </Text>
+        {/* 用户角色行：背景色块（Claude Code 风格），内容无额外缩进 */}
+        <Box>
+          <Text color={theme.colors.user} bold backgroundColor={theme.surfaces.user}>
+            {' '}
+            {theme.symbols.user} 用户{' '}
+          </Text>
+        </Box>
         <Box paddingLeft={2}>
           <Text>{message.content}</Text>
         </Box>
@@ -49,10 +53,13 @@ export const MessageItem = React.memo(function MessageItem({ message }: { messag
   if (message.role === 'assistant') {
     return (
       <Box flexDirection="column">
-        <Text color={theme.colors.assistant} bold>
-          {theme.symbols.assistant} Nexus
-        </Text>
-        <Box paddingLeft={2}>
+        {/* assistant 角色行：品牌蓝竖线边框（Claude Code 风格），内容对齐竖线内 */}
+        <Box borderLeft borderColor={theme.colors.assistant} paddingLeft={1}>
+          <Text color={theme.colors.assistant} bold>
+            {theme.symbols.assistant} Nexus
+          </Text>
+        </Box>
+        <Box borderLeft borderColor={theme.colors.assistant} paddingLeft={1}>
           <Markdown content={message.content} />
         </Box>
       </Box>
