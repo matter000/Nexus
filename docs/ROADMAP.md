@@ -186,3 +186,11 @@
 - 交付 `.github/workflows/nexus-cloud-automation.yml`（模板，默认不启用）+ `docs/CLOUD_SCHEDULING.md`（映射表/启用 5 步/防失忆/多任务扩展/安全成本）
 - 复用 `--non-interactive --output json` CLI 入口，零运行时代码变更；prompt 与 workflow 解耦（.nexus/cloud-tasks/<name>.prompt）
 - 不实际启用任何定时 workflow；用户按文档自行启用（GitHub Actions cron 最小粒度 5 分钟）
+
+### 真实门回归基线（2026-08-09，DeepSeek 真实链路）
+
+- 执行：`eval tests/eval/tasks --real --difficulty easy`（隔离 HOME 避开 secrets 的 defaultProvider 干扰 + `--model deepseek-v4-flash` 命中 MODEL_PROVIDER_MAP 直达 deepseek），3 轮共 $0.30
+- **easy 7 任务：5 通过（71%，≥ CI 门 60%）**——create-logger / extract-constant / fix-divzero / math-rename / offbyone；email-validation / nullguard 仅 Windows 本地无 bash 导致 bash_pass 环境性失败（file 规则全过，CI ubuntu 可完整验收）
+- medium 抽查 3 个新任务（generic-stack / error-path / json-parse-tolerance）：file 规则与 no_extra_files 全过，仅 bash_pass 环境性失败——prompt 可理解、agent 行为正确
+- **暴露并修复两处缺陷**：① harness `Validator.ts` no_extra_files 把 Checkpoint 初始化的 `.git/` 计入 diff 干净度（真实回归误杀 5 个 easy 任务）→ listAllFiles 跳过 .git；② offbyone 任务 prompt 未约束文件范围（agent 合理补测试被 no_extra_files 拒绝）→ prompt 明确“仅修改 src/paginate.ts”
+- 关键经验：真实回归必须排除 secrets.toml 的 defaultProvider 干扰（模型名不在 MODEL_PROVIDER_MAP 时会被解析到默认自定义 provider）

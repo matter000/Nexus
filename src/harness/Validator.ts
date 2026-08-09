@@ -127,7 +127,7 @@ async function checkRule(
   }
 }
 
-/** 递归列出目录内所有文件的相对路径（POSIX 分隔符） */
+/** 递归列出目录内所有文件的相对路径（POSIX 分隔符）。跳过 .git（checkpoint 初始化产物，非任务产物） */
 async function listAllFiles(root: string): Promise<string[]> {
   const results: string[] = []
   const walk = async (current: string): Promise<void> => {
@@ -135,6 +135,9 @@ async function listAllFiles(root: string): Promise<string[]> {
     for (const entry of entries) {
       const fullPath = join(current, entry.name)
       if (entry.isDirectory()) {
+        // 跳过 git 内部目录：真实回归暴露——CheckpointManager 初始化 git 仓库产生 .git，
+        // 不排除会误报 no_extra_files 违规
+        if (entry.name === '.git') continue
         await walk(fullPath)
       } else if (entry.isFile()) {
         results.push(relative(root, fullPath).replace(/\\/g, '/'))

@@ -5,7 +5,7 @@ difficulty = "easy"
 description = "修复 paginate 函数 slice 上界越界的 off-by-one bug"
 
 [request]
-user_prompt = "修复 paginate 函数的分页 bug：当前每页会多返回一条数据，页码边界不正确"
+user_prompt = "修复 paginate 函数的分页 bug：当前每页会多返回一条数据，页码边界不正确。仅修改 src/paginate.ts，不要创建或修改其他文件"
 
 [[initial_files]]
 path = "src/paginate.ts"
