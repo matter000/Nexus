@@ -82,6 +82,11 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   /** 最近一次 LLM 调用的上下文占用（prompt token / 窗口），状态栏展示利用率 */
   const [ctxUsage, setCtxUsage] = useState<{ prompt: number; window: number } | null>(null)
   const [phase, setPhase] = useState<AgentPhase>('idle')
+  /** phase 镜像 ref：供 handleEvent 闭包内判断当前阶段（避免闭包陈旧） */
+  const phaseRef = useRef<AgentPhase>('idle')
+  useEffect(() => {
+    phaseRef.current = phase
+  }, [phase])
   const [streamingText, setStreamingText] = useState('')
   const [approval, setApproval] = useState<ApprovalState | null>(null)
   /** 审批拒绝原因输入模式：x 键激活，Enter 提交 / Esc 取消 */
@@ -512,7 +517,9 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           clearStallHint()
           flushStream()
           stopStreamTimer()
-          if (event.text) {
+          // Plan 阶段的中间探索文本不沉淀为对话消息（避免多轮探索产生重复回复、减少滚动区内容）；
+          // 规划结果通过计划审批面板呈现。Execute 阶段正常沉淀。
+          if (event.text && phaseRef.current !== 'planning') {
             setMessages((prev) => [
               ...prev,
               { id: `assistant-${msgIdRef.current++}`, role: 'assistant', content: event.text },
@@ -564,6 +571,10 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         case 'plan_approval_request': {
           const planResolve = takePlanApprovalResolve(event.callId)
           if (planResolve) {
+            // 进入计划审批：清空探索阶段的时间线/流式残留，呈现干净的审批面板（减少动态区帧高与残影）
+            setToolCalls([])
+            setTodos([])
+            setStreamingText('')
             setPlanApproval({ plan: event.plan, resolve: planResolve })
             setPhase('awaiting_approval')
           }

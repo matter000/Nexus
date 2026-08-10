@@ -7,6 +7,7 @@ import { render } from 'ink-testing-library'
 import React from 'react'
 import { App } from '../../src/tui/App'
 import { eventBus } from '../../src/core/eventBus'
+import { registerPlanApproval } from '../../src/core/approvalRegistry'
 
 /** 去除 ANSI 转义码 */
 function stripAnsi(s: string): string {
@@ -160,5 +161,45 @@ describe('App 集成', () => {
     // 帮助浮层打开时输入框边框仍在帧中（底部固定区未消失）
     expect(frame).toContain('快捷键')
     expect(/❯|输入/.test(frame)).toBe(true)
+  })
+
+  it('Plan 阶段 llm_done 文本不沉淀，Execute 阶段正常沉淀', async () => {
+    const { lastFrame } = await renderApp()
+    // Plan 阶段：llm_start(plan) → 等 phaseRef 同步 → llm_done 带文本（不沉淀）
+    eventBus.emit({ type: 'llm_start', phase: 'plan' } as never)
+    await tick()
+    eventBus.emit({ type: 'llm_done', text: '规划中间探索文本' } as never)
+    await tick()
+    expect(stripAnsi(lastFrame() ?? '')).not.toContain('规划中间探索文本')
+    // Execute 阶段：llm_start(execute) → llm_done 带文本（正常沉淀）
+    eventBus.emit({ type: 'llm_start', phase: 'execute' } as never)
+    await tick()
+    eventBus.emit({ type: 'llm_done', text: '最终执行结果' } as never)
+    await tick()
+    expect(stripAnsi(lastFrame() ?? '')).toContain('最终执行结果')
+  })
+
+  it('plan_approval_request 清空探索时间线', async () => {
+    const { lastFrame } = await renderApp()
+    // 探索阶段工具调用进时间线
+    eventBus.emit({
+      type: 'tool_call',
+      tool: 'list_directory',
+      params: { path: '.' },
+      callId: 'c1',
+    } as never)
+    await tick()
+    expect(stripAnsi(lastFrame() ?? '')).toContain('list_directory')
+    // 进入计划审批：先注册审批 resolver，再发事件（handler 依赖 resolver 存在）→ 时间线被清空
+    registerPlanApproval('p1', () => {})
+    eventBus.emit({
+      type: 'plan_approval_request',
+      callId: 'p1',
+      plan: { summary: '计划', todos: [], filesToModify: [], estimatedSteps: 1 },
+    } as never)
+    await tick()
+    const frame = stripAnsi(lastFrame() ?? '')
+    expect(frame).not.toContain('list_directory')
+    expect(frame).toContain('计划审批')
   })
 })
