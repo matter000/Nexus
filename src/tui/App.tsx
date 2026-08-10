@@ -81,7 +81,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   /** 子智能体执行状态（agent_start/agent_done 事件驱动，多智能体可见性） */
   const [agentRuns, setAgentRuns] = useState<AgentRun[]>([])
   /** 成本仪表盘渲染触发器：cost_update 时 +1，驱动状态栏命令式重读 getCost() */
-  const [costTick, setCostTick] = useState(0)
+  const [, setCostTick] = useState(0)
   /** system_info 降噪：最新一条作为可变状态行展示，不逐条追加消息 */
   const [statusLine, setStatusLine] = useState<string | null>(null)
   /** 最近一次 LLM 调用的上下文占用（prompt token / 窗口），状态栏展示利用率 */
@@ -128,6 +128,20 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   /** 流式节流缓冲：llm_chunk 先入队，定时器批量 flush（防每 chunk 一次 setState 的高频重渲染） */
   const streamBufferRef = useRef('')
   const streamTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  /** 流停滞提示：8s 无 chunk 时状态行告知用户（区分“卡死”与“等待网络/模型”） */
+  const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const armStallHint = useCallback(() => {
+    if (stallTimerRef.current) clearTimeout(stallTimerRef.current)
+    stallTimerRef.current = setTimeout(() => {
+      setStatusLine('⏳ 等待模型响应（网络波动时可能稍慢，超时自动重试）')
+    }, 8000)
+  }, [])
+  const clearStallHint = useCallback(() => {
+    if (stallTimerRef.current) {
+      clearTimeout(stallTimerRef.current)
+      stallTimerRef.current = null
+    }
+  }, [])
   /** Ctrl+C 中断状态：执行中首次按 Ctrl+C 中断操作，再按一次才退出 */
   const interruptRequestedRef = useRef(false)
   // 面板回调 refs（由 App 的 useInput 统一调度，避免多组件 useInput 冲突）
@@ -481,11 +495,17 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           stopStreamTimer()
           streamBufferRef.current = ''
           setStreamingText('')
+          // 新一轮调用：重新武装停滞提示
+          clearStallHint()
+          armStallHint()
           break
 
         case 'llm_chunk':
           // 流式节流：chunk 入缓冲，80ms 定时批量 flush（防每 chunk 一次 setState 的高频重渲染）
           streamBufferRef.current += event.text
+          // 有数据到达：重置停滞提示计时器
+          clearStallHint()
+          armStallHint()
           if (!streamTimerRef.current) {
             streamTimerRef.current = setInterval(() => {
               flushStream()
@@ -494,6 +514,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           break
 
         case 'llm_done':
+          clearStallHint()
           flushStream()
           stopStreamTimer()
           if (event.text) {
@@ -613,6 +634,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           break
 
         case 'done':
+          clearStallHint()
           flushStream()
           stopStreamTimer()
           updateBusy(false)
@@ -658,6 +680,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           break
 
         case 'error':
+          clearStallHint()
           flushStream()
           stopStreamTimer()
           // 错误分级：可恢复错误（重试中）走状态行降噪；致命错误追加消息留痕
@@ -696,6 +719,8 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
       updateBusy,
       commandContext,
       fileArtifacts,
+      armStallHint,
+      clearStallHint,
     ],
   )
 

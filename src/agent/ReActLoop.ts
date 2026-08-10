@@ -27,9 +27,10 @@ import type { ModelRole, NexusEvent } from './types'
 /** streamText 已知的顶层参数键，其余键收进 providerOptions.openai 透传（v6: maxTokens 已改名 maxOutputTokens） */
 const KNOWN_TOP_LEVEL_PARAMS = new Set(['temperature', 'topP', 'maxOutputTokens'])
 
-/** 流停滞看门狗：连续无 chunk 超过该时长判定为连接挂起，中止并交由重试兜底 */
+/** 流停滞看门狗：连续无 chunk 超过该时长判定为连接挂起，中止并交由重试兜底
+ * 30s 默认：兼顾正常思考间隔与用户感知（90s 等待会让用户误以为永久卡死） */
 const STREAM_STALL_TIMEOUT_MS =
-  Number.parseInt(process.env.NEXUS_STALL_TIMEOUT_MS ?? '', 10) || 90_000
+  Number.parseInt(process.env.NEXUS_STALL_TIMEOUT_MS ?? '', 10) || 30_000
 /** 单次 LLM 调用总超时（含建连+生成），防止服务端静默挂起导致 Agent 永久卡死 */
 const LLM_CALL_TIMEOUT_MS = Number.parseInt(process.env.NEXUS_LLM_TIMEOUT_MS ?? '', 10) || 600_000
 /**
