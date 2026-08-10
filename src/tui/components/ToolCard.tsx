@@ -15,6 +15,8 @@ interface ToolCardProps {
   result?: string
   error?: string
   forceExpand?: boolean
+  /** 执行耗时（ms；tool_result 后由 App 计算传入） */
+  durationMs?: number
 }
 
 const TOOL_EMOJIS: Record<string, string> = {
@@ -56,6 +58,7 @@ export const ToolCard = React.memo(function ToolCard({
   result,
   error,
   forceExpand,
+  durationMs,
 }: ToolCardProps) {
   const emoji = TOOL_EMOJIS[tool] ?? '🔧'
   const detail = extractDetail(tool, params)
@@ -87,6 +90,14 @@ export const ToolCard = React.memo(function ToolCard({
     approval: theme.colors.warning,
   }[status] as string
 
+  // 耗时格式化：<1s 用 ms，≥1s 用 s
+  const durationText =
+    durationMs === undefined
+      ? ''
+      : durationMs < 1000
+        ? `${durationMs}ms`
+        : `${(durationMs / 1000).toFixed(1)}s`
+
   // 折叠态：单行（无边框）
   if (collapsed) {
     const summary =
@@ -105,6 +116,13 @@ export const ToolCard = React.memo(function ToolCard({
         <Text color={theme.colors.tool}>{tool.padEnd(20)}</Text>
         {detail ? <Text color={theme.colors.muted}> ─ {detail}</Text> : null}
         <Text color={statusColor}> {statusIcon}</Text>
+        {/* 耗时徽章：done/error 且已计时时显示 */}
+        {durationText && (status === 'done' || status === 'error') && (
+          <Text color={theme.colors.muted} dimColor>
+            {' '}
+            {durationText}
+          </Text>
+        )}
         {summary ? (
           <Text color={theme.colors.muted} dimColor>
             {' '}

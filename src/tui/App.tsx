@@ -15,6 +15,7 @@ import { requiresForcedApproval } from '../sandbox/CommandGuard'
 import { type AgentRun, AgentRunList } from './components/AgentRunList'
 import { ApiConfigPanel } from './components/ApiConfigPanel'
 import { ApprovalPrompt, formatApprovalParams } from './components/ApprovalPrompt'
+import { HelpOverlay } from './components/HelpOverlay'
 import { InputBox } from './components/InputBox'
 import { LoadingSpinner } from './components/LoadingSpinner'
 import { LogoBanner } from './components/LogoBanner'
@@ -22,6 +23,7 @@ import { Markdown } from './components/Markdown'
 import { type Message, MessageItem } from './components/MessageList'
 import { ModelSelector } from './components/ModelSelector'
 import { PlanApprovalPanel } from './components/PlanApprovalPanel'
+import { type SessionEntry, SessionList } from './components/SessionList'
 import { TaskTimeline } from './components/TaskTimeline'
 import type { ToolStatus } from './components/ToolCard'
 import { theme } from './theme'
@@ -48,6 +50,10 @@ interface ToolCallDisplay {
   error?: string
   /** 发起该调用的任务归属（按任务分组展示） */
   todoId?: string
+  /** 调用发起时间戳（耗时徽章计算基准） */
+  startedAt?: number
+  /** 执行耗时（ms；tool_result 时计算） */
+  durationMs?: number
 }
 
 interface ApprovalState {
@@ -104,6 +110,12 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
   const queueRef = useRef<string[]>([])
   const [showConfig, setShowConfig] = useState(false)
   const [showModelSelector, setShowModelSelector] = useState(false)
+  /** ? 快捷键/命令帮助浮层 */
+  const [showHelp, setShowHelp] = useState(false)
+  /** /resume 交互式会话列表（无参数时打开） */
+  const [showResumeList, setShowResumeList] = useState(false)
+  const [resumeSessions, setResumeSessions] = useState<SessionEntry[]>([])
+  const [resumeIndex, setResumeIndex] = useState(0)
   const [isFirstRun, setIsFirstRun] = useState(false)
   /** 欢迎屏示例任务 → 输入框（数字键 1/2/3 填入） */
   const [pendingInput, setPendingInput] = useState('')
@@ -331,6 +343,55 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
       return
     }
 
+    // 会话列表浮层：↑↓ 选择 / Enter 恢复 / Esc 取消
+    if (showResumeList) {
+      if (key.escape) {
+        setShowResumeList(false)
+        return
+      }
+      if (key.upArrow) {
+        setResumeIndex((i) => Math.max(0, i - 1))
+        return
+      }
+      if (key.downArrow) {
+        setResumeIndex((i) => Math.min(resumeSessions.length - 1, i + 1))
+        return
+      }
+      if (key.return) {
+        const pick = resumeSessions[Math.min(resumeIndex, resumeSessions.length - 1)]
+        setShowResumeList(false)
+        if (pick) {
+          commandContext.restoreSession(pick.id).then((r) => {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `sys-${msgIdRef.current++}`,
+                role: 'system',
+                content: r.message,
+              },
+            ])
+            setRenderTick((n) => n + 1)
+          })
+        }
+        return
+      }
+      return
+    }
+
+    // 帮助浮层：Esc 或 ? 关闭（打开时其他键不响应）
+    if (showHelp) {
+      if (key.escape || input === '?') {
+        setShowHelp(false)
+      }
+      return
+    }
+
+    // ? 打开快捷键/命令帮助（非 busy、无面板时；欢迎态也可打开）
+    if (input === '?' && !busyRef.current && !showConfig && !showModelSelector) {
+      setShowHelp(true)
+      return
+    }
+
     // 欢迎屏示例任务：非 busy 且无面板时按 1/2/3 填入输入框
     if (showWelcome && !busyRef.current && (input === '1' || input === '2' || input === '3')) {
       const examples = [
@@ -356,6 +417,14 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         // /model 或 /m（无参数）打开交互式模型选择器；带参数的 /model <name> 走原直接切换逻辑
         if (text === '/model' || text === '/m') {
           setShowModelSelector(true)
+          return
+        }
+        // /resume 无参数：打开交互式会话列表（带参数走原文本路径）
+        if (text === '/resume' || text === '/r') {
+          const sessions = commandContext.listRecentSessions()
+          setResumeSessions(sessions)
+          setResumeIndex(0)
+          setShowResumeList(true)
           return
         }
         const result = await handleSlashCommand(text, commandContext)
@@ -445,6 +514,7 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
               params: event.params,
               status: 'running',
               todoId: event.todoId,
+              startedAt: Date.now(),
             },
           ])
           break
@@ -494,6 +564,8 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
                     result: event.result,
                     error: event.error,
                     todoId: tc.todoId ?? event.todoId,
+                    // 耗时徽章：调用发起到结果返回的实际耗时
+                    durationMs: tc.startedAt ? Date.now() - tc.startedAt : undefined,
                   }
                 : tc,
             ),
@@ -822,6 +894,12 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           />
         )}
 
+        {/* 快捷键/命令帮助浮层（? 打开，Esc 关闭）——渲染在动态区，输入框位置不变 */}
+        {showHelp && <HelpOverlay />}
+
+        {/* 会话选择浮层（/resume 无参数打开）——同上，输入框保持居中 */}
+        {showResumeList && <SessionList sessions={resumeSessions} selectionIndex={resumeIndex} />}
+
         {/* 计划审批面板 — 输入由 App useInput 统一处理；e 进入修改意见模式 */}
         {planApproval && (
           <PlanApprovalPanel
@@ -882,14 +960,20 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         {/* 输入行 */}
         <InputBox
           onSubmit={handleSubmit}
-          disabled={!!approval || !!planApproval || showConfig || showModelSelector}
+          disabled={
+            !!approval ||
+            !!planApproval ||
+            showConfig ||
+            showModelSelector ||
+            showHelp ||
+            showResumeList
+          }
           externalValue={pendingInput}
         />
-        {/* 快捷键提示行 */}
+        {/* 快捷键提示行（精简为 ? 帮助入口） */}
         <Box>
           <Text color={theme.colors.muted} dimColor>
-            [Ctrl+C 中断] [/ 命令] [Tab 补全] [↑ 历史] [Ctrl+R 搜索历史] [T 工具展开] [Alt+Enter
-            换行] [! 快捷命令]
+            [? 帮助] [Ctrl+C 中断] [! 快捷命令] [Shift+Tab 权限]
           </Text>
         </Box>
       </Box>

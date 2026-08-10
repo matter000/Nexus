@@ -19,6 +19,8 @@ export interface TimelineToolCall {
   error?: string
   /** 发起该调用的任务归属 */
   todoId?: string
+  /** 执行耗时（ms） */
+  durationMs?: number
 }
 
 interface TaskTimelineProps {
@@ -65,6 +67,7 @@ export function TaskTimeline({ todos, toolCalls, forceExpandTools }: TaskTimelin
               result={tc.result}
               error={tc.error}
               forceExpand={forceExpandTools}
+              durationMs={tc.durationMs}
             />
           ))}
         </Box>
@@ -96,6 +99,7 @@ export function TaskTimeline({ todos, toolCalls, forceExpandTools }: TaskTimelin
                 result={tc.result}
                 error={tc.error}
                 forceExpand={forceExpandTools}
+                durationMs={tc.durationMs}
               />
             ))}
             {artifacts.map((path) => (

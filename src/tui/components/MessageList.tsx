@@ -35,15 +35,15 @@ export function MessageList({ messages }: MessageListProps) {
 export const MessageItem = React.memo(function MessageItem({ message }: { message: Message }) {
   if (message.role === 'user') {
     return (
-      <Box flexDirection="column">
-        {/* 用户角色行：背景色块（Claude Code 风格），内容无额外缩进 */}
+      // 用户消息：右对齐 + 背景色块 + 最大宽度 80%（Claude Code 风格，对话主客一眼分清）
+      <Box flexDirection="column" alignItems="flex-end">
         <Box>
           <Text color={theme.colors.user} bold backgroundColor={theme.surfaces.user}>
             {' '}
             {theme.symbols.user} 用户{' '}
           </Text>
         </Box>
-        <Box paddingLeft={2}>
+        <Box paddingLeft={2} width="80%">
           <Text>{message.content}</Text>
         </Box>
       </Box>
