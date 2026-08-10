@@ -138,7 +138,7 @@ describe('InputBox 输入历史回溯', () => {
     await tick()
     expect(stripAnsi(lastFrame() ?? '')).toContain('second task')
 
-    // ↓ 越界回到空输入（无占位文字，仅跳动光标）
+    // ↓ 越界回到空输入（显示 placeholder 占位文字 + 跳动光标）
     stdin.write('\u001B[B')
     await tick()
     const emptyFrame = stripAnsi(lastFrame() ?? '')
@@ -168,7 +168,7 @@ describe('InputBox 输入历史回溯', () => {
     stdin.write('\u001B[A')
     await tick()
     expect(stripAnsi(lastFrame() ?? '')).toContain('same')
-    // 历史栈只有一条：再按 ↑ 不会变化，↓ 一次即回空输入（无占位文字）
+    // 历史栈只有一条：再按 ↑ 不会变化，↓ 一次即回空输入（显示 placeholder 占位文字）
     stdin.write('\u001B[B')
     await tick()
     const emptyFrame = stripAnsi(lastFrame() ?? '')

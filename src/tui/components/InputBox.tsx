@@ -218,7 +218,6 @@ export function InputBox({ onSubmit, disabled = false, externalValue }: InputBox
 
   // 显示多行内容：将 \n 拆分为多行 Text
   const displayLines = value.split('\n')
-  const fieldBg = theme.surfaces.field
 
   return (
     <Box flexDirection="column" width="70%">
@@ -280,37 +279,40 @@ export function InputBox({ onSubmit, disabled = false, externalValue }: InputBox
         </Box>
       )}
       <Box flexDirection="column">
-        {/* 输入框：圆角边框 + 面背景，对齐画布 promptline 样式 */}
-        <Box borderStyle="round" borderColor={theme.colors.border}>
-          <Box>
-            <Text
-              color={disabled ? theme.colors.muted : theme.colors.primary}
-              bold
-              dimColor={disabled}
-              backgroundColor={fieldBg}
-            >
-              {' ❯ '}
-            </Text>
-            {value ? (
-              <Box flexDirection="column">
-                {displayLines.map((line, i) => (
-                  <Text key={i} backgroundColor={fieldBg}>
-                    {line || ' '}
-                  </Text>
-                ))}
-              </Box>
-            ) : (
-              // 无占位文字：空输入时仅显示跳动光标
-              <Text backgroundColor={fieldBg}>{disabled ? '执行中，无法输入 ' : ' '}</Text>
-            )}
-            {!disabled && (
-              <Text color={theme.colors.primary} backgroundColor={fieldBg}>
-                {cursorVisible ? '▌' : ' '}
+        {/* 输入框：左侧竖线光标贯穿（OpenCode 风格，无边框无背景） */}
+        <Box>
+          {/* 左侧竖线：贯穿输入区每一行（disabled 时转 muted） */}
+          <Box flexDirection="column" marginRight={1}>
+            {displayLines.map((_, i) => (
+              <Text key={i} color={disabled ? theme.colors.muted : theme.colors.primary}>
+                │
               </Text>
-            )}
+            ))}
           </Box>
+          {/* 输入内容区 */}
+          {value ? (
+            <Box flexDirection="column">
+              {displayLines.map((line, i) => (
+                <Box key={i}>
+                  <Text>{line || ' '}</Text>
+                  {/* 光标在最后一行末尾（多行不重复） */}
+                  {!disabled && i === displayLines.length - 1 && (
+                    <Text color={theme.colors.primary}>{cursorVisible ? '▌' : ' '}</Text>
+                  )}
+                </Box>
+              ))}
+            </Box>
+          ) : (
+            /* 空输入：placeholder 占位文字 + 光标 */
+            <Box>
+              <Text color={theme.colors.muted} dimColor>
+                {disabled ? '执行中，无法输入' : '输入任务，@ 引用文件，! 运行命令'}
+              </Text>
+              {!disabled && <Text color={theme.colors.primary}>{cursorVisible ? '▌' : ' '}</Text>}
+            </Box>
+          )}
         </Box>
-        {/* 多行提示 */}
+        {/* 多行提示（保留） */}
         {value.includes('\n') && (
           <Text color={theme.colors.muted} dimColor italic>
             [Alt+Enter 换行 · Enter 提交]
