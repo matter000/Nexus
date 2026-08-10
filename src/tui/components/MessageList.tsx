@@ -56,14 +56,12 @@ export const MessageItem = React.memo(function MessageItem({ message }: { messag
 
   if (message.role === 'assistant') {
     return (
+      // assistant 消息：扇平极简（仿 OpenCode）——角色标记 + 缩进内容，无竖线边框
       <Box flexDirection="column">
-        {/* assistant 角色行：品牌蓝竖线边框（Claude Code 风格），内容对齐竖线内 */}
-        <Box borderLeft borderColor={theme.colors.assistant} paddingLeft={1}>
-          <Text color={theme.colors.assistant} bold>
-            {theme.symbols.assistant} Nexus
-          </Text>
-        </Box>
-        <Box borderLeft borderColor={theme.colors.assistant} paddingLeft={1}>
+        <Text color={theme.colors.assistant} bold>
+          {theme.symbols.assistant} Nexus
+        </Text>
+        <Box paddingLeft={2} marginTop={0}>
           <Markdown content={message.content} />
         </Box>
       </Box>

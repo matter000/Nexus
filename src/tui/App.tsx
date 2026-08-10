@@ -28,11 +28,6 @@ import { TaskTimeline } from './components/TaskTimeline'
 import type { ToolStatus } from './components/ToolCard'
 import { theme } from './theme'
 
-/** token 数紧凑格式化（状态栏上下文占用展示） */
-function formatTokenCount(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n)
-}
-
 /** 权限模式中文标签（Shift+Tab 轮换 + 状态栏展示） */
 const PERMISSION_LABELS: Record<'ask' | 'auto-edit' | 'auto-all' | 'yolo', string> = {
   ask: '询问',
@@ -754,20 +749,10 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
 
   const hasUserMessages = messages.some((m) => m.role === 'user' || m.role === 'assistant')
 
-  // 成本仪表盘：会话累计成本/token/缓存命中率（costTick 驱动重读；数据源 CostTracker，展示层零成本）
+  // 成本仪表盘：会话累计成本（costTick 驱动重读；数据源 CostTracker，展示层零成本）
   const cost = commandContext.getCost()
   const costStr = cost.total > 0 && cost.total < 0.001 ? '<$0.001' : `$${cost.total.toFixed(3)}`
-  const cacheRate = cost.cacheHitRate
-  const cacheColor =
-    cacheRate === undefined
-      ? theme.colors.muted
-      : cacheRate >= 0.5
-        ? theme.colors.success
-        : cacheRate >= 0.2
-          ? theme.colors.warning
-          : theme.colors.muted
-  const todosDone = todos.filter((t) => t.status === 'complete').length
-  // 上下文占用比例（0~1），驱动进度条阈值着色与 /compact 预警
+  // 上下文占用比例（0~1），驱动阈值着色与 /compact 预警
   const ctxRatio = ctxUsage && ctxUsage.window > 0 ? ctxUsage.prompt / ctxUsage.window : null
   const ctxBarColor =
     ctxRatio === null
@@ -780,6 +765,11 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
 
   // 欢迎态：无对话内容且无面板覆盖时，展示居中欢迎屏
   const showWelcome = !hasUserMessages && !streamingText && !showConfig && !showModelSelector
+
+  // 底部状态栏（仿 OpenCode）：项目目录名 + 版本号
+  const projectDirName = projectRoot.split(/[\\/]/).filter(Boolean).pop() ?? projectRoot
+  const modeLabel = commandContext.getSkipPlan() ? 'Auto' : 'Plan'
+  const modeColor = commandContext.getSkipPlan() ? theme.colors.accent : theme.colors.success
 
   // 终端可视高度：欢迎屏按高度自动裁剪（compact 模式），保证首帧不溢出视口（防 resize 残影）
   const { stdout } = useStdout()
@@ -883,15 +873,13 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         {/* 子智能体执行卡片（多智能体协作可见性） */}
         <AgentRunList runs={agentRuns} />
 
-        {/* 流式输出（Markdown 渲染，与定稿消息一致；已 80ms 节流批渲染；assistant 竖线样式与 MessageItem 对齐） */}
+        {/* 流式输出（Markdown 渲染，与定稿消息一致；已 80ms 节流批渲染；assistant 扇平样式与 MessageItem 对齐） */}
         {streamingText && (
           <Box flexDirection="column" marginTop={messages.length > 0 ? 1 : 0}>
-            <Box borderLeft borderColor={theme.colors.assistant} paddingLeft={1}>
-              <Text color={theme.colors.assistant} bold>
-                {theme.symbols.assistant} Nexus
-              </Text>
-            </Box>
-            <Box borderLeft borderColor={theme.colors.assistant} paddingLeft={1}>
+            <Text color={theme.colors.assistant} bold>
+              {theme.symbols.assistant} Nexus
+            </Text>
+            <Box paddingLeft={2}>
               <Markdown content={streamingText} />
             </Box>
           </Box>
@@ -939,51 +927,6 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
 
       {/* 底部固定区域（始终居中，对话后不左移） */}
       <Box flexDirection="column" paddingX={1} alignItems="center">
-        {/* 输入行上方：L1 状态行（模型/模式/权限/阶段）在左 + ctx/成本信息行在右，同一行 */}
-        <Box marginBottom={1}>
-          <Text bold color={theme.colors.primary}>
-            {commandContext.getModel()}
-          </Text>
-          <Text
-            color={commandContext.getSkipPlan() ? theme.colors.accent : theme.colors.success}
-            bold
-          >
-            {' '}
-            [{commandContext.getSkipPlan() ? 'Auto' : 'Plan'}]
-          </Text>
-          {/* 权限模式标记（Shift+Tab 轮换） */}
-          <Text color={theme.colors.muted}>
-            {' '}
-            [{PERMISSION_LABELS[commandContext.getPermissionMode()]}]
-          </Text>
-          <Text color={phaseColor}> ● {phaseLabel}</Text>
-          {/* 上下文占用进度条 + 百分比（阈值着色，>80% 追加 /compact 预警） */}
-          {ctxUsage && ctxRatio !== null && (
-            <Text color={theme.colors.muted}>
-              {' '}
-              ctx <Text color={ctxBarColor}>{'▓'.repeat(Math.round(ctxRatio * 16))}</Text>
-              <Text color={theme.colors.muted}>
-                {'░'.repeat(16 - Math.round(ctxRatio * 16))} {Math.round(ctxRatio * 100)}%
-              </Text>
-            </Text>
-          )}
-          {/* 成本仪表盘：会话累计费用 / token / 缓存命中率 */}
-          {cost.total > 0 && (
-            <Text color={theme.colors.muted}>
-              {` · ${costStr} · in ${formatTokenCount(cost.inputTokens)}/out ${formatTokenCount(cost.outputTokens)}`}
-            </Text>
-          )}
-          {cacheRate !== undefined && cost.total > 0 && (
-            <Text color={cacheColor}>{` · cache ${Math.round(cacheRate * 100)}%`}</Text>
-          )}
-          {todos.length > 0 && (
-            <Text color={theme.colors.muted}>{` · todo ${todosDone}/${todos.length}`}</Text>
-          )}
-          {/* 上下文水位预警：>80% 时提示 /compact（仅超阈值出现，降噪） */}
-          {ctxRatio !== null && ctxRatio >= 0.8 && (
-            <Text color={theme.colors.warning}> — 建议 /compact</Text>
-          )}
-        </Box>
         {/* 输入行 */}
         <InputBox
           onSubmit={handleSubmit}
@@ -997,11 +940,31 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
           }
           externalValue={pendingInput}
         />
-        {/* 快捷键提示行（精简为 ? 帮助入口） */}
-        <Box>
-          <Text color={theme.colors.muted} dimColor>
-            [? 帮助] [Ctrl+C 中断] [! 快捷命令] [Shift+Tab 权限]
-          </Text>
+        {/* 底部状态栏（仿 OpenCode）：单行紧凑，左侧 项目·模型·阶段·ctx，右侧 成本·版本·帮助 */}
+        <Box width="100%" justifyContent="space-between" marginTop={1} paddingX={1}>
+          {/* 左侧：项目目录 · 模型[模式] · 阶段 · ctx 占用 */}
+          <Box>
+            <Text color={theme.colors.muted}>{projectDirName}</Text>
+            <Text color={theme.colors.muted}> · </Text>
+            <Text color={theme.colors.primary} bold>
+              {commandContext.getModel()}
+            </Text>
+            <Text color={modeColor}> [{modeLabel}]</Text>
+            <Text color={phaseColor}> ● {phaseLabel}</Text>
+            {ctxUsage && ctxRatio !== null && (
+              <Text color={ctxBarColor}> · ctx {Math.round(ctxRatio * 100)}%</Text>
+            )}
+            {ctxRatio !== null && ctxRatio >= 0.8 && (
+              <Text color={theme.colors.warning}> ↑/compact</Text>
+            )}
+          </Box>
+          {/* 右侧：成本 · 版本 · 帮助入口 */}
+          <Box>
+            {cost.total > 0 && <Text color={theme.colors.muted}>{costStr} · </Text>}
+            <Text color={theme.colors.muted} dimColor>
+              v1.0.0 · ? 帮助 · Shift+Tab 权限
+            </Text>
+          </Box>
         </Box>
       </Box>
     </Box>
