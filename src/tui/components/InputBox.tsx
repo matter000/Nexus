@@ -18,12 +18,16 @@ interface InputBoxProps {
 export function InputBox({ onSubmit, disabled = false, externalValue }: InputBoxProps) {
   const [value, setValue] = useState('')
   const [completionIndex, setCompletionIndex] = useState(-1)
-  /** 光标闪烁：500ms 交替显示/隐藏（空输入时唯一可输入指示） */
+  /** 光标闪烁：仅空输入且可交互时运行（500ms 交替）；输入中/禁用时停止，避免无意义全帧重渲染 */
   const [cursorVisible, setCursorVisible] = useState(true)
   useEffect(() => {
+    if (disabled || value) {
+      setCursorVisible(true)
+      return
+    }
     const timer = setInterval(() => setCursorVisible((v) => !v), 500)
     return () => clearInterval(timer)
-  }, [])
+  }, [disabled, value])
   /** 会话级输入历史栈（提交时入栈，↑/↓ 回溯） */
   const historyRef = useRef<string[]>([])
   /** 历史浏览索引：-1 表示不在浏览状态 */
