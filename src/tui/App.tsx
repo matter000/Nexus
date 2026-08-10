@@ -843,12 +843,14 @@ export function App({ onSubmit, onApproval, commandContext, projectRoot }: AppPr
         )}
       </Static>
 
-      {/* 动态区：任务时间线 + 子智能体卡片 + 流式输出 + 审批（帧高有界，避免整屏重绘） */}
+      {/* 动态区：任务时间线 + 子智能体卡片 + 流式输出 + 审批（帧高有界，避免整屏重绘）
+          overflowY hidden：内容超高时裁剪而非溢出滚动区（根治终端旧帧残留/重复显示） */}
       <Box
         flexDirection="column"
         flexGrow={1}
         paddingX={1}
         alignItems={showWelcome ? 'center' : 'flex-start'}
+        overflowY="hidden"
       >
         {/* 任务分组时间线：每个任务下列出它的工具调用与产出文件 */}
         <TaskTimeline todos={todos} toolCalls={toolCalls} forceExpandTools={forceExpandTools} />

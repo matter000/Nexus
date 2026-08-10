@@ -32,6 +32,9 @@ interface TaskTimelineProps {
 /** 产出文件的工具（成功调用即视为文件产物） */
 const ARTIFACT_TOOLS = new Set(['edit_file', 'create_file'])
 
+/** 每个任务/分组最多显示的工具调用数（超出折叠为汇总行，防动态区无限增长） */
+const MAX_CALLS_PER_GROUP = 12
+
 export function TaskTimeline({ todos, toolCalls, forceExpandTools }: TaskTimelineProps) {
   if (todos.length === 0 && toolCalls.length === 0) return null
 
@@ -52,13 +55,13 @@ export function TaskTimeline({ todos, toolCalls, forceExpandTools }: TaskTimelin
         </Box>
       )}
 
-      {/* 无任务归属的调用：Plan 阶段探索、todo 建立前的操作等 */}
+      {/* 无任务归属的调用：Plan 阶段探索、todo 建立前的操作等（最多显示最近 MAX_CALLS_PER_GROUP 个） */}
       {unassigned.length > 0 && (
         <Box flexDirection="column">
           <Text color={theme.colors.muted} dimColor>
             ── 准备/其他 ──
           </Text>
-          {unassigned.map((tc) => (
+          {unassigned.slice(-MAX_CALLS_PER_GROUP).map((tc) => (
             <ToolCard
               key={tc.callId}
               tool={tc.tool}
@@ -70,6 +73,11 @@ export function TaskTimeline({ todos, toolCalls, forceExpandTools }: TaskTimelin
               durationMs={tc.durationMs}
             />
           ))}
+          {unassigned.length > MAX_CALLS_PER_GROUP && (
+            <Text color={theme.colors.muted} dimColor>
+              … 还有 {unassigned.length - MAX_CALLS_PER_GROUP} 个调用（共 {unassigned.length}）
+            </Text>
+          )}
         </Box>
       )}
 
@@ -90,7 +98,7 @@ export function TaskTimeline({ todos, toolCalls, forceExpandTools }: TaskTimelin
         return (
           <Box key={todo.id} flexDirection="column">
             <TodoHeader todo={todo} />
-            {calls.map((tc) => (
+            {calls.slice(-MAX_CALLS_PER_GROUP).map((tc) => (
               <ToolCard
                 key={tc.callId}
                 tool={tc.tool}
@@ -102,6 +110,11 @@ export function TaskTimeline({ todos, toolCalls, forceExpandTools }: TaskTimelin
                 durationMs={tc.durationMs}
               />
             ))}
+            {calls.length > MAX_CALLS_PER_GROUP && (
+              <Text color={theme.colors.muted} dimColor>
+                … 还有 {calls.length - MAX_CALLS_PER_GROUP} 个调用（共 {calls.length}）
+              </Text>
+            )}
             {artifacts.map((path) => (
               <Box key={path} paddingLeft={4}>
                 <Text color={theme.colors.muted}>└ </Text>
